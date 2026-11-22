@@ -1,5 +1,13 @@
 # 变更记录
 
+## 0.4.6 — 2026-11-23
+
+- Android Companion V0.3.4 versionCode 9：增加 Secrets 固定证书签名的 Gradle 配置；仍为可调试 APK，以兼容现有 run-as 配置下发。
+- GitHub Actions 通过私有 Secrets 临时解码 keystore，编译后删除；无 Secret 时明确标记临时 Debug 签名，部分 Secret 配置直接失败。发布产物与 Mac 桌面面板展示签名模式，不假装已经解决旧签名迁移。
+- Mac V0.4.6 Build 23：增加内置 Android APK 签名状态提示；保留不自动清空数据的升级安全逻辑，短信/电话音频路径未改。
+- 新增 Android 固定签名迁移说明及通话本地转写与飞书转发设计方案。当前未实现 ASR；不依赖付费 API / ChatGPT Plus 非官方接口。
+
+
 ## 0.4.5 — 2026-11-23
 
 - Android Companion V0.3.3 (versionCode 8)：首次启动显示电话监听及完整短信推送的用途披露，用户确认后自动请求 Android 电话与短信系统授权；电话权限授予后自动启动监听。
