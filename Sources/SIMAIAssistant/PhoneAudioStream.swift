@@ -126,7 +126,7 @@ private final class LiveMacSpeaker {
         // Count completion at actual playback, not merely buffer consumption,
         // so pending measures the speaker backlog more accurately.
         player.scheduleBuffer(pcm, completionCallbackType: .dataPlayedBack,
-                              completionHandler: { [weak self] in
+                              completionHandler: { [weak self] _ in
             guard let self else { return }
             self.gate.lock()
             self.pending = max(0, self.pending - 1)
