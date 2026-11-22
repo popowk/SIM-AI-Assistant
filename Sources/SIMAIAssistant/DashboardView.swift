@@ -562,7 +562,7 @@ struct DashboardView: View {
             Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.3.4 (16)").font(.caption.monospaced())
+            Text("0.4.3 (20)").font(.caption.monospaced())
         }
     }
 
