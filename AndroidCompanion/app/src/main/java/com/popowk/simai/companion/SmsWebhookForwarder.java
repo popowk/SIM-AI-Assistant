@@ -49,6 +49,8 @@ public final class SmsWebhookForwarder extends BroadcastReceiver {
     static final String KEY_SECRET = "feishu_signing_secret";
     private static final String KEY_LAST_STATUS = "last_delivery_status";
     private static final String KEY_LAST_TIME = "last_delivery_time";
+    private static final String KEY_SMS_BROADCAST_COUNT = "received_sms_broadcast_count";
+    private static final String KEY_SMS_BROADCAST_AT = "received_sms_broadcast_at";
 
     private static final String TAG = "SIMAI-SMS";
     private static final int MAX_BODY_CHARS = 65536;
@@ -94,6 +96,26 @@ public final class SmsWebhookForwarder extends BroadcastReceiver {
         prefs(context).edit().remove(KEY_WEBHOOK).remove(KEY_SECRET).apply();
     }
 
+    static int receivedBroadcastCount(Context context) {
+        return prefs(context).getInt(KEY_SMS_BROADCAST_COUNT, 0);
+    }
+
+    static String lastBroadcastDescription(Context context) {
+        long timestamp = prefs(context).getLong(KEY_SMS_BROADCAST_AT, 0);
+        return timestamp == 0 ? "尚未收到"
+                : android.text.format.DateFormat.format("MM-dd HH:mm:ss", timestamp).toString();
+    }
+
+    private static void noteBroadcastReceived(Context context) {
+        SharedPreferences previous = prefs(context);
+        previous.edit()
+                .putInt(KEY_SMS_BROADCAST_COUNT,
+                        Math.min(Integer.MAX_VALUE, previous.getInt(KEY_SMS_BROADCAST_COUNT, 0) + 1))
+                .putLong(KEY_SMS_BROADCAST_AT, System.currentTimeMillis())
+                .apply();
+        // Never log sender, SMS body, code, PDU or full webhook credentials.
+    }
+
     static String status(Context context) {
         applyPendingADBSettings(context);
         SharedPreferences p = prefs(context);
@@ -120,12 +142,27 @@ public final class SmsWebhookForwarder extends BroadcastReceiver {
     }
 
     @Override public void onReceive(Context context, Intent intent) {
-        if (intent == null || !Telephony.Sms.Intents.SMS_RECEIVED_ACTION.equals(intent.getAction())
-                || !isEnabled(context) || !hasConfiguration(context)
-                || context.checkSelfPermission(Manifest.permission.RECEIVE_SMS)
-                        != PackageManager.PERMISSION_GRANTED) return;
+        if (intent == null || !Telephony.Sms.Intents.SMS_RECEIVED_ACTION.equals(intent.getAction()))
+            return;
+        noteBroadcastReceived(context);
+        if (!isEnabled(context)) {
+            record(context, "收到短信广播，但转发开关关闭");
+            return;
+        }
+        if (!hasConfiguration(context)) {
+            record(context, "收到短信广播，但飞书 Webhook 未配置");
+            return;
+        }
+        if (context.checkSelfPermission(Manifest.permission.RECEIVE_SMS)
+                != PackageManager.PERMISSION_GRANTED) {
+            record(context, "收到短信广播，但短信权限未授权");
+            return;
+        }
         SmsMessage[] parts = Telephony.Sms.Intents.getMessagesFromIntent(intent);
-        if (parts == null || parts.length == 0) return;
+        if (parts == null || parts.length == 0) {
+            record(context, "收到短信广播，但系统未提供短信分段内容");
+            return;
+        }
         String sender = parts[0] != null ? parts[0].getOriginatingAddress() : null;
         StringBuilder body = new StringBuilder();
         long timestamp = 0;
@@ -135,7 +172,7 @@ public final class SmsWebhookForwarder extends BroadcastReceiver {
             if (timestamp == 0) timestamp = part.getTimestampMillis();
         }
         if (body.length() == 0 || body.length() > MAX_BODY_CHARS) {
-            record(context, "短信过长或为空，未转发");
+            record(context, "短信正文过长或为空，未转发");
             return;
         }
         String text = body.toString();
