@@ -11,6 +11,8 @@ struct DashboardView: View {
     @State private var confirmLiveVoice = false
     @State private var confirmLiveMic = false
     @State private var confirmChatGPTInput = false
+    @State private var confirmAIReplyMonitor = false
+    @State private var confirmAIReplyToPhone = false
     @State private var cleanupDays = 7
     @State private var confirmLogCleanup = false
     @State private var confirmAPKInstall = false
@@ -25,6 +27,7 @@ struct DashboardView: View {
                 phoneAudioPanel
                 liveVoicePanel
                 chatGPTVoicePanel
+                aiReplyPanel
                 audioPanel
                 diagnosticPanel
                 footer
@@ -71,6 +74,20 @@ struct DashboardView: View {
         } message: {
             Text("电话下行将经 BlackHole 2ch 送入你自行开启的 ChatGPT Voice。ChatGPT 会处理收到的语音，请先获得通话另一方明确同意。AI 回复仍只在 Mac 播放，不会自动送回手机；SIM AI Assistant 不存储原始音频。随时可关闭路由或停止电话连接。")
         }
+        .confirmationDialog("开启 GPT 回复音频监听？",
+                            isPresented: $confirmAIReplyMonitor, titleVisibility: .visible) {
+            Button("确认监听（仅耳机，不发送给电话）") { model.setAIReplyMonitor(true) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("请先将 ChatGPT 的输出设置为 BlackHole 16ch，并在 SIM AI Assistant 中选择真实耳机/扬声器。此操作仅将 BlackHole 16ch 的音频实时播放到选定耳机，默认不发送到电话。若系统输出也使用 BlackHole 16ch，其它应用声音也可能进入此通道，请静音其它应用。")
+        }
+        .confirmationDialog("将 GPT 回复声音发送给真实电话对方？",
+                            isPresented: $confirmAIReplyToPhone, titleVisibility: .visible) {
+            Button("通话双方已同意，开启 AI 回复回传") { model.setAIReplyToPhone(true) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("此操作会把 BlackHole 16ch 中播放的声音发送到运营商电话，并自动关闭 Mac 麦克风。请确认对方明确知道语音由 AI 生成、已同意接收，而且 BlackHole 16ch 只有 ChatGPT 输出。若它是系统默认输出，通知音或其他应用声音也可能被发送。可随时点击立即关闭回传。")
+        }
         .confirmationDialog("确认清理本应用日志？", isPresented: $confirmLogCleanup,
                             titleVisibility: .visible) {
             Button(cleanupDays == 0 ? "清空全部日志" : "删除旧日志", role: .destructive) { model.cleanOldLogs(days: cleanupDays) }
@@ -112,7 +129,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("电话音频 + ChatGPT Voice 单向输入 · V0.4.0")
+                Text("电话音频 + ChatGPT Voice 隔离双向桥接 · V0.4.1")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -278,7 +295,7 @@ struct DashboardView: View {
     }
 
     private var liveVoicePanel: some View {
-        panel("第二阶段 · 真实电话双向语音（V0.4.0）", symbol: "waveform") {
+        panel("第二阶段 · 真实电话双向语音（V0.4.1）", symbol: "waveform") {
             Text("手动启动 · 16 kHz 单声道 PCM · 每帧 20 ms · 单次最多 3 分钟。音频通过独立 ADB 转发通道，不使用电话状态 HTTP 服务。")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
@@ -325,7 +342,7 @@ struct DashboardView: View {
     }
 
     private var chatGPTVoicePanel: some View {
-        panel("第三阶段 · ChatGPT Plus Voice 辅助输入（V0.4.0 实验）",
+        panel("第三阶段 · ChatGPT Plus Voice 输入（V0.4.1）",
               symbol: "waveform.path") {
             Text("仅将电话下行送至 BlackHole 2ch 虚拟麦克风。ChatGPT Voice 需要你在官方界面手动开启；AI 回复不会自动传入电话，不使用任何付费 API 或第三方 OAuth。")
                 .font(.caption).foregroundStyle(.secondary)
@@ -361,6 +378,56 @@ struct DashboardView: View {
             Text("操作：① 安装 BlackHole 2ch；② 保持 Mac 默认输出为耳机；③ 在浏览器打开官方 ChatGPT Voice，选择 BlackHole 2ch 作为输入；④ 在双方同意的通话中建立 PCM，再点击上方路由按钮。")
                 .font(.caption).foregroundStyle(.secondary)
             Text("注意：此版不发送 AI 语音给电话对方，不进行自动接听，不修改 macOS 默认设备，不抓取 ChatGPT 登录或会话。关闭音频连接将自动停用路由。")
+                .font(.caption).foregroundStyle(.orange)
+        }
+    }
+
+    private var aiReplyPanel: some View {
+        panel("第四阶段 · GPT 回复监听与人工回传（V0.4.1 实验）",
+              symbol: "headphones") {
+            Text("BlackHole 2ch 传电话给 GPT；独立的 BlackHole 16ch 接收 GPT 回复。先在 Mac 耳机监听，只有二次授权才把回复送给电话对方。")
+                .font(.caption).foregroundStyle(.secondary)
+            let blackHoleReturnReady = model.audio.devices.contains {
+                $0.displayName.caseInsensitiveCompare("BlackHole 16ch") == .orderedSame
+            }
+            Text(blackHoleReturnReady ? "独立回复输入：已找到 BlackHole 16ch" :
+                    "独立回复输入：缺少 BlackHole 16ch（可通过 brew install blackhole-16ch 安装）")
+                .font(.caption)
+                .foregroundStyle(blackHoleReturnReady ? .green : .orange)
+            Picker("Mac 真实耳机/扬声器", selection: $model.selectedVoiceMonitorOutputID) {
+                Text("请先选择输出设备").tag("")
+                ForEach(model.audio.devices.filter { device in
+                    !device.displayName.localizedCaseInsensitiveContains("BlackHole") &&
+                    !device.displayName.localizedCaseInsensitiveContains("aggregate") &&
+                    !device.displayName.localizedCaseInsensitiveContains("multi-output")
+                }, id: \.id) { device in
+                    Text(device.displayName).tag(device.id)
+                }
+            }
+            .disabled(model.aiReplyMonitorEnabled)
+            Text("建议先选择上述物理输出，再开始实时电话音频；之后可将系统输出切到 BlackHole 16ch，并用本应用监听 GPT。此选择不会更改系统默认设备。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("开始在耳机监听 GPT") { confirmAIReplyMonitor = true }
+                    .disabled(!blackHoleReturnReady || !model.liveVoiceActive ||
+                              model.aiReplyMonitorEnabled || model.selectedVoiceMonitorOutputID.isEmpty)
+                Button("停止监听") { model.setAIReplyMonitor(false) }
+                    .disabled(!model.aiReplyMonitorEnabled)
+            }
+            .buttonStyle(.bordered)
+            HStack {
+                Button("人工授权：将 GPT 回复发给电话") { confirmAIReplyToPhone = true }
+                    .disabled(!model.aiReplyMonitorEnabled || model.aiReplyToPhoneEnabled)
+                Button("立即关闭 AI 电话回传") { model.setAIReplyToPhone(false) }
+                    .disabled(!model.aiReplyToPhoneEnabled)
+            }
+            .buttonStyle(.borderedProminent)
+            Text(model.aiReplyReturnStatus).font(.subheadline.weight(.medium))
+            Text("AI 回复采集：\(model.aiReplyReceivedFrames) 帧 · 耳机播放丢帧：\(model.aiReplyMonitorDropped) 帧 · 电话上行欠载：\(model.aiReplyUplinkUnderflow) 帧")
+                .font(.caption.monospaced()).foregroundStyle(.secondary)
+            Text("测试顺序：先正常播放一段 GPT 回复并确认 Mac 耳机听得见，再在双方同意的测试电话里开启人工回传，并让对方确认能否听清；不要同时打开 Mac 麦克风与 AI 回传。")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("重要：如果将系统输出设为 BlackHole 16ch，其他应用的声音也可能进入电话。请关闭通知和无关音频，避免隐私泄露。此功能不自动接听、不替你操作官方 ChatGPT Voice，通话结束自动断开。")
                 .font(.caption).foregroundStyle(.orange)
         }
     }
