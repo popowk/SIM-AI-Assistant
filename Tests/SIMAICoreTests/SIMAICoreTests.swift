@@ -144,7 +144,7 @@ final class SIMAICoreTests: XCTestCase {
         XCTAssertEqual(cursor.lastSequence, 1)
     }
 
-    func testZIPContainsOnlyScrubbedDeviceNames() throws {
+    func testZIPContainsOnlyScrubbedAudioDeviceNames() throws {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temp) }
@@ -161,14 +161,14 @@ final class SIMAICoreTests: XCTestCase {
         // Validate with the platform unzip command if present, without requiring a shell pipeline.
         let command = Process()
         command.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-        command.arguments = ["-p", zip.path, "SIM-AI-Diagnostics/bluetooth-status.json"]
+        command.arguments = ["-p", zip.path, "SIM-AI-Diagnostics/audio-devices.json"]
         let pipe = Pipe(); command.standardOutput = pipe
         try command.run()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         command.waitUntilExit()
         let json = String(data: data, encoding: .utf8) ?? ""
         XCTAssertEqual(command.terminationStatus, 0)
-        XCTAssertFalse(json.contains("私人手机"))
+        XCTAssertFalse(json.contains("John\'s AirPods"))
         XCTAssertFalse(json.contains("AA:BB"))
         XCTAssertTrue(json.contains("音频设备 1"))
     }
