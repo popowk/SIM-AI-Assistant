@@ -131,7 +131,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("电话音频 + GPT Voice + 飞书短信通知 · V0.4.5")
+                Text("电话音频 + GPT Voice + 飞书短信通知 · V0.4.6")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -197,8 +197,11 @@ struct DashboardView: View {
             Text("自动识别默认开启：手机接入 USB、恢复已授权无线 ADB 或 Mac 唤醒后，会自动检测并尝试恢复来电状态；有多台设备时不会猜测选择。")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
-            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.3.3" : "当前构建未包含")")
+            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.3.4" : "当前构建未包含")")
                 .font(.caption)
+            Text(model.embeddedAPKSigningStatus)
+                .font(.caption)
+                .foregroundStyle(.orange)
             Button {
                 confirmAPKInstall = true
             } label: {
@@ -562,7 +565,7 @@ struct DashboardView: View {
             Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.4.5 (22)").font(.caption.monospaced())
+            Text("0.4.6 (23)").font(.caption.monospaced())
         }
     }
 
