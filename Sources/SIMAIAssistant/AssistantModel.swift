@@ -70,8 +70,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.5"
-    let buildNumber = "22"
+    let version = "0.4.6"
+    let buildNumber = "23"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -986,6 +986,22 @@ final class AssistantModel: ObservableObject {
     }
 
 
+    var embeddedAPKSigningStatus: String {
+        guard let resource = Bundle.main.resourceURL?
+                .appendingPathComponent("SIMAI-Android-Signing.txt"),
+              let data = try? String(contentsOf: resource, encoding: .utf8) else {
+            return "签名来源未知；升级前请确认新旧 APK 签名一致"
+        }
+        switch data.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "STABLE_SECRET_SIGNING":
+            return "固定签名构建：同一证书的后续升级可保留应用数据"
+        case "EPHEMERAL_DEBUG_SIGNING":
+            return "临时 Debug 签名：可能无法覆盖旧版，遇到不兼容绝不自动清空数据"
+        default:
+            return "签名状态无法验证；请勿仅为升级而直接清空手机数据"
+        }
+    }
+
     var embeddedAPKAvailable: Bool {
         guard let bundle = Bundle.main.resourceURL else { return false }
         return FileManager.default.fileExists(
@@ -1045,7 +1061,7 @@ final class AssistantModel: ObservableObject {
         apkInstallStatus = "正在通过 ADB 安装/覆盖手机应用……"
         let adb = selectedADBPath
         log(.info, .system, "用户确认开始安装或覆盖 Android 伴侣 APK",
-            details: ["version": "0.3.3"])
+            details: ["version": "0.3.4"])
         Task.detached(priority: .userInitiated) { [weak self] in
             let outcome = ADBInspector.install(at: adb, apk: resource)
             await MainActor.run {
