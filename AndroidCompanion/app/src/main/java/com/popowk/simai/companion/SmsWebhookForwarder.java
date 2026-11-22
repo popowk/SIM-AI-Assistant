@@ -14,6 +14,9 @@ import android.util.Log;
 import org.json.JSONObject;
 
 import java.io.InputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
@@ -49,6 +52,10 @@ public final class SmsWebhookForwarder extends BroadcastReceiver {
 
     private static final String TAG = "SIMAI-SMS";
     private static final int MAX_BODY_CHARS = 65536;
+    // Mac can push this file into the debug app sandbox via the ADB stdin
+    // stream. It contains credentials and is never exposed through a URL.
+    private static final String ADB_PENDING_CONFIG = "simai-feishu-sync.json";
+    private static final Object CONFIG_LOCK = new Object();
     private static final ThreadPoolExecutor SENDER = new ThreadPoolExecutor(
             1, 1, 10L, TimeUnit.SECONDS, new ArrayBlockingQueue<>(4),
             runnable -> {
@@ -59,10 +66,12 @@ public final class SmsWebhookForwarder extends BroadcastReceiver {
     private static final Map<String, Long> recent = new LinkedHashMap<>();
 
     public static boolean isEnabled(Context context) {
+        applyPendingADBSettings(context);
         return prefs(context).getBoolean(KEY_ENABLED, true);
     }
 
     public static boolean hasConfiguration(Context context) {
+        applyPendingADBSettings(context);
         return validWebhook(prefs(context).getString(KEY_WEBHOOK, ""));
     }
 
@@ -82,6 +91,7 @@ public final class SmsWebhookForwarder extends BroadcastReceiver {
     }
 
     static String status(Context context) {
+        applyPendingADBSettings(context);
         SharedPreferences p = prefs(context);
         return p.getString(KEY_LAST_STATUS, "尚未发送") +
                 (p.getLong(KEY_LAST_TIME, 0) == 0 ? "" :
@@ -156,6 +166,55 @@ public final class SmsWebhookForwarder extends BroadcastReceiver {
         }
     }
 
+    /**
+     * Import a configuration written by the authorized ADB user into
+     * app-private preferences. This runs before inspecting new SMS, so no
+     * phone-call monitor service or Mac daemon must remain running.
+     *
+     * The file is created mode 0600 by run-as, consumed exactly once, and
+     * deleted after commit. Secrets are never printed to logcat.
+     */
+    private static void applyPendingADBSettings(Context context) {
+        synchronized (CONFIG_LOCK) {
+            File pending = new File(context.getFilesDir(), ADB_PENDING_CONFIG);
+            if (!pending.isFile()) return;
+            try {
+                if (pending.length() < 2 || pending.length() > 4096) {
+                    pending.delete();
+                    return;
+                }
+                byte[] bytes;
+                try (FileInputStream in = new FileInputStream(pending);
+                     ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+                    byte[] buffer = new byte[1024];
+                    int read;
+                    while ((read = in.read(buffer)) != -1) {
+                        output.write(buffer, 0, read);
+                        if (output.size() > 4096) return;
+                    }
+                    bytes = output.toByteArray();
+                }
+                JSONObject settings = new JSONObject(new String(bytes, StandardCharsets.UTF_8));
+                String webhook = settings.optString("webhook", "");
+                String secret = settings.optString("secret", "");
+                Object enabled = settings.opt("enabled");
+                if (!validWebhook(webhook) || secret.getBytes(StandardCharsets.UTF_8).length > 256
+                        || !(enabled instanceof Boolean)) {
+                    pending.delete();
+                    return;
+                }
+                SharedPreferences.Editor editor = prefs(context).edit()
+                        .putString(KEY_WEBHOOK, webhook.trim())
+                        .putString(KEY_SECRET, secret)
+                        .putBoolean(KEY_ENABLED, (Boolean) enabled);
+                if (editor.commit()) pending.delete();
+            } catch (Exception ignored) {
+                // Do not emit exception messages, raw JSON or secrets.
+                Log.w(TAG, "ADB SMS settings import failed");
+            }
+        }
+    }
+
     private static SharedPreferences prefs(Context context) {
         return context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
@@ -186,6 +245,7 @@ public final class SmsWebhookForwarder extends BroadcastReceiver {
     }
 
     private static void send(Context context, String sender, String text, boolean test) {
+        applyPendingADBSettings(context);
         if (!test && (!isEnabled(context) ||
                 context.checkSelfPermission(Manifest.permission.RECEIVE_SMS)
                         != PackageManager.PERMISSION_GRANTED)) return;
