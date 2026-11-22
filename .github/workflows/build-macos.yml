@@ -6,6 +6,11 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# Only the newest main build should publish the easy-download test release.
+concurrency:
+  group: simai-build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+
 permissions:
   contents: write
 
@@ -88,6 +93,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          # Older commits may finish out of order; never overwrite the latest
+          # downloadable assets with a stale build.
+          MAIN_SHA="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "$MAIN_SHA" != "$GITHUB_SHA" ]]; then
+            echo "Skipping stale dev-latest upload for $GITHUB_SHA (main=$MAIN_SHA)"
+            exit 0
+          fi
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest --target "$(git rev-parse HEAD)" \
               --title "SIM AI Assistant · 最新测试版" --prerelease \
