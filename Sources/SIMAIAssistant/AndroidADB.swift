@@ -271,7 +271,7 @@ enum ADBInspector {
         let process = Process()
         process.executableURL = adb
         process.arguments = ["-s", serial, "shell", "-T",
-            "run-as \(appID) sh -c 'umask 077; cat > files/simai-feishu-sync.tmp && mv files/simai-feishu-sync.tmp files/simai-feishu-sync.json'"]
+            "run-as \(appID) sh -c 'umask 077; mkdir -p files && cat > files/simai-feishu-sync.tmp && mv files/simai-feishu-sync.tmp files/simai-feishu-sync.json'"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         let input = Pipe()
