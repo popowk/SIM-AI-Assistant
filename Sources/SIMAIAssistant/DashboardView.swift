@@ -423,7 +423,7 @@ struct DashboardView: View {
             }
             .buttonStyle(.borderedProminent)
             Text(model.aiReplyReturnStatus).font(.subheadline.weight(.medium))
-            Text("AI 回复采集：\(model.aiReplyReceivedFrames) 帧 · 耳机播放丢帧：\(model.aiReplyMonitorDropped) 帧 · 电话上行欠载：\(model.aiReplyUplinkUnderflow) 帧")
+            Text("AI 回复采集：\(model.aiReplyReceivedFrames) 帧 · 峰值 RMS：\(String(format: "%.5f", model.aiReplyPeakRMS)) · 耳机播放丢帧：\(model.aiReplyMonitorDropped) 帧 · 电话上行欠载：\(model.aiReplyUplinkUnderflow) 帧")
                 .font(.caption.monospaced()).foregroundStyle(.secondary)
             Text("测试顺序：先正常播放一段 GPT 回复并确认 Mac 耳机听得见，再在双方同意的测试电话里开启人工回传，并让对方确认能否听清；不要同时打开 Mac 麦克风与 AI 回传。")
                 .font(.caption).foregroundStyle(.secondary)
