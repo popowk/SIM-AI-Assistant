@@ -102,7 +102,7 @@ struct DashboardView: View {
             Button("确认安装 / 覆盖") { model.installAndroidCompanion() }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("使用所选已授权的 USB/无线 ADB 安装内置的测试 APK（adb install -r），仅作用于唯一已授权的 Android 设备。不会卸载旧应用；签名不一致时会失败并保留旧数据。")
+            Text("仅向唯一已授权的 Android 设备安装内置 APK。安装后会打开手机权限向导并尝试恢复 Mac 已保存的飞书设置；系统电话/短信授权仍由你在手机端确认。不会自动卸载旧应用。")
         }
         .confirmationDialog("要删除旧版 Android 伴侣 App 的全部数据并重装吗？",
                             isPresented: $confirmAPKReset, titleVisibility: .visible) {
@@ -131,7 +131,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("电话音频 + GPT Voice + 飞书短信通知 · V0.4.4")
+                Text("电话音频 + GPT Voice + 飞书短信通知 · V0.4.5")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -197,18 +197,18 @@ struct DashboardView: View {
             Text("自动识别默认开启：手机接入 USB、恢复已授权无线 ADB 或 Mac 唤醒后，会自动检测并尝试恢复来电状态；有多台设备时不会猜测选择。")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
-            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.3.2" : "当前构建未包含")")
+            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.3.3" : "当前构建未包含")")
                 .font(.caption)
             Button {
                 confirmAPKInstall = true
             } label: {
-                Label(model.adbInstalling ? "正在安装 APK…" : "一键安装 / 覆盖 APK",
+                Label(model.adbInstalling ? "正在安装 APK…" : "一键安装 / 覆盖并初始化",
                       systemImage: "square.and.arrow.down")
             }
             .disabled(model.adbInstalling || !model.embeddedAPKAvailable)
             .buttonStyle(.borderedProminent)
             Text(model.apkInstallStatus).font(.caption).foregroundStyle(.secondary)
-            Button("签名不一致？清空旧版伴侣数据后重装") { confirmAPKReset = true }
+            Button("签名不一致？确认清空后自动重装并初始化") { confirmAPKReset = true }
                 .disabled(model.adbInstalling || !model.embeddedAPKAvailable)
                 .font(.caption)
                 .foregroundStyle(.orange)
@@ -240,7 +240,7 @@ struct DashboardView: View {
             Text(model.adbBridgeHealthDetail).font(.caption).foregroundStyle(.secondary)
             Text("ADB 状态、Shell 响应与 Companion 电话事件服务分别诊断。锁屏时服务受限不等于撤销 ADB 授权；如果无线调试被系统关闭，仍需在手机上重新启用。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("手机 Companion V0.3.2 支持独立 ADB 下发飞书配置，无需先开启电话状态监听；短信权限仍需在手机端手动授权。")
+            Text("手机 Companion V0.3.3 安装后启动一次系统授权向导，获准后自动监听电话状态；锁屏增强和新短信转发默认开启。短信权限由系统决定。")
                 .font(.caption).foregroundStyle(.secondary)
             Text("实时电话状态：\(model.livePhoneState)")
                 .font(.headline)
@@ -290,7 +290,7 @@ struct DashboardView: View {
             }
             Text(model.feishuSyncStatus)
                 .font(.caption.weight(.medium))
-            Text("重要：保存到 Mac 不等于手机配置成功。手机需安装 Companion V0.3.2、授权 RECEIVE_SMS。ADB 写入成功后，手机会在打开 Companion 或下次收到新短信时导入配置；无需电话监听服务。")
+            Text("重要：保存到 Mac 不等于手机配置成功。手机需安装 Companion V0.3.3、授权 RECEIVE_SMS。ADB 写入成功后，手机会在打开 Companion 或下次收到新短信时导入配置；无需电话监听服务。")
                 .font(.caption).foregroundStyle(.secondary)
             Text("完整验证码会进入所选飞书群，请只使用自己管理、成员受限的群。Webhook 与密钥不会写入诊断日志、GitHub 或 ADB 命令参数。")
                 .font(.caption).foregroundStyle(.orange)
@@ -562,7 +562,7 @@ struct DashboardView: View {
             Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.4.4 (21)").font(.caption.monospaced())
+            Text("0.4.5 (22)").font(.caption.monospaced())
         }
     }
 
