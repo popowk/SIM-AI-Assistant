@@ -76,6 +76,7 @@ public final class SmsWebhookForwarder extends BroadcastReceiver {
     }
 
     static void setEnabled(Context context, boolean enabled) {
+        applyPendingADBSettings(context);
         prefs(context).edit().putBoolean(KEY_ENABLED, enabled).apply();
     }
 
@@ -83,10 +84,13 @@ public final class SmsWebhookForwarder extends BroadcastReceiver {
         if (!validWebhook(webhook)) return false;
         SharedPreferences.Editor edit = prefs(context).edit().putString(KEY_WEBHOOK, webhook.trim());
         if (updateSecret) edit.putString(KEY_SECRET, secret == null ? "" : secret);
-        return edit.commit();
+        boolean saved = edit.commit();
+        if (saved) new File(context.getFilesDir(), ADB_PENDING_CONFIG).delete();
+        return saved;
     }
 
     static void clearConfiguration(Context context) {
+        new File(context.getFilesDir(), ADB_PENDING_CONFIG).delete();
         prefs(context).edit().remove(KEY_WEBHOOK).remove(KEY_SECRET).apply();
     }
 
