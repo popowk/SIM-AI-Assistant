@@ -55,7 +55,7 @@ struct DashboardView: View {
             Button("确认安装 / 覆盖") { model.installAndroidCompanion() }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("使用所选 ADB，通过 USB 安装内置的测试 APK（adb install -r），仅作用于唯一已授权的 Android 设备。不会卸载旧应用；签名不一致时会失败并保留旧数据。")
+            Text("使用所选已授权的 USB/无线 ADB 安装内置的测试 APK（adb install -r），仅作用于唯一已授权的 Android 设备。不会卸载旧应用；签名不一致时会失败并保留旧数据。")
         }
         .confirmationDialog("要删除旧版 Android 伴侣 App 的全部数据并重装吗？",
                             isPresented: $confirmAPKReset, titleVisibility: .visible) {
@@ -84,7 +84,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("真实电话音频兼容性诊断 · V0.2.2")
+                Text("真实电话音频兼容性诊断 · V0.2.3")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -136,7 +136,7 @@ struct DashboardView: View {
             }
             Text(model.adbStatus).font(.caption).foregroundStyle(.secondary)
             Divider()
-            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.2.0" : "当前构建未包含")")
+            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.2.1" : "当前构建未包含")")
                 .font(.caption)
             Button {
                 confirmAPKInstall = true
@@ -167,7 +167,20 @@ struct DashboardView: View {
                 Text("最近成功同步：\(lastSync.formatted(date: .omitted, time: .standard))")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Text("Mac 会自动重新探测已授权 ADB、重建端口转发并同步电话事件；手机重启后若无线调试被系统关闭，需要重新授权或启动无线调试。")
+            HStack {
+                Button("诊断连接层（锁屏时也能检测）") { model.inspectBridgeHealth() }
+                    .disabled(model.adbBridgeHealthChecking || model.adbInstalling)
+                if model.adbBridgeHealthChecking {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            Text("ADB 授权：\(model.adbTransportHealth) · Shell：\(model.adbShellHealth) · 端口：\(model.adbForwardHealth)")
+                .font(.caption).foregroundStyle(.secondary)
+            Text(model.adbBridgeHealthDetail).font(.caption).foregroundStyle(.secondary)
+            Text("ADB 状态、Shell 响应与 Companion 电话事件服务分别诊断。锁屏时服务受限不等于撤销 ADB 授权；如果无线调试被系统关闭，仍需在手机上重新启用。")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("手机 Companion V0.2.1 新增可选锁屏运行增强及后台电池设置入口，关闭屏幕时仍可能受 OEM/Doze 限制。")
+                .font(.caption).foregroundStyle(.secondary)
                 .font(.caption).foregroundStyle(.secondary)
             Text("实时电话状态：\(model.livePhoneState)")
                 .font(.headline)
@@ -307,7 +320,7 @@ struct DashboardView: View {
             Text("已验证来电状态同步；双向电话音频仍需在 vivo S9e 上实测。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.2.2 (9)").font(.caption.monospaced())
+            Text("0.2.3 (10)").font(.caption.monospaced())
         }
     }
 

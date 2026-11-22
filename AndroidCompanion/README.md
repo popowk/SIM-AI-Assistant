@@ -1,4 +1,4 @@
-# SIM AI Companion — Android 0.2.0 测试版
+# SIM AI Companion — Android 0.2.1 测试版
 
 ## 功能
 - 由用户主动启动/停止本机电话状态监听服务，展示 IDLE/RINGING/OFFHOOK。
@@ -25,3 +25,14 @@ APK 默认通过 Android SDK 的临时 debug 签名生成。**同一 APK 重复�
 - 事件字段：`schema/session/running/state/seq/events[{seq,state,at}]`，不传号码、联系人、设备 ID 或电话音频。
 - Mac 建立 `adb forward tcp:0 tcp:18764`，自动轮询、去重和恢复。
 - 只有 debug APK 支持 run-as。签名不同无法覆盖时，使用 Mac 端**需明确确认**的重装选项，会清空此 APK 自己的私有数据。
+
+
+## V0.2.1 锁屏监听可用性增强
+
+App 需要用户明确启动电话状态监听，才在本机 127.0.0.1 接收已经授权的 Mac ADB 转发请求。
+
+- 状态 HTTP 端点处理改为 2 个请求线程 + 有界排队，避免单个请求长时间占用监听循环。
+- 前台服务有条件地允许系统重启（START_STICKY）。
+- 「锁屏运行增强」是**默认关闭**的可选项，使用 PARTIAL_WAKE_LOCK 维持 CPU 活动，明显可能增加电耗。禁用或停止监听后释放。它不会重新开启无线调试、解除系统授权或保证绕过省电限制。
+- 通过「打开本应用系统设置」进入 vivo 的后台/电池管理，允许后台运行等操作需要用户自行确认。
+- 打包版本为 0.2.1 (versionCode 3)。旧版的 CI debug 签名可能不同；不要悄悄卸载造成数据和权限损失。

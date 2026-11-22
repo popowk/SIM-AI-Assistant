@@ -15,6 +15,14 @@ struct ADBInstallOutcome {
     let status: String
 }
 
+struct ADBHealthReport {
+    let transport: String
+    let shell: String
+    let forward: String
+    let reason: String
+    let code: String // Constant diagnostic category, never a serial or IP.
+}
+
 struct ADBBridgeLink {
     let serial: String        // Only in memory, never logged or exported.
     let token: String         // Private app token, never logged or exported.
@@ -216,6 +224,85 @@ enum ADBInspector {
                          message: "ADB 状态转发已建立，正在接收手机事件")
         default:
             return .init(link: nil, message: "ADB 端口转发失败，将自动重试；检查手机无线调试是否开启")
+        }
+    }
+
+    /// Diagnoses three separate layers without exporting a serial, IP,
+    /// authentication token, phone number or raw adb output:
+    /// 1) ADB authorization, 2) ability to execute shell, 3) port forward.
+    /// The phone status HTTP response is checked independently by the Model.
+    static func inspectBridgeHealth(at selected: String?, link: ADBBridgeLink?) -> ADBHealthReport {
+        guard let adb = executable(at: selected) else {
+            return .init(transport: "未找到 adb", shell: "未检测",
+                         forward: "未检测", reason: "请检查 adb 路径",
+                         code: "ADB_MISSING")
+        }
+        let devices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 8) {
+        case .completed(0, let output):
+            devices = parseDevices(output)
+        case .timedOut:
+            return .init(transport: "查询超时", shell: "未检测", forward: "未检测",
+                         reason: "ADB 服务没有及时响应", code: "ADB_LIST_TIMEOUT")
+        default:
+            return .init(transport: "ADB 查询失败", shell: "未检测", forward: "未检测",
+                         reason: "ADB 无法列出设备", code: "ADB_LIST_FAILED")
+        }
+        let authorized = devices.filter { $0.state == "device" }
+        let target: String?
+        if let serial = link?.serial, devices.contains(where: { $0.serial == serial && $0.state == "device" }) {
+            target = serial
+        } else if authorized.count == 1 {
+            target = authorized[0].serial
+        } else {
+            target = nil
+        }
+        guard let serial = target else {
+            let offline = devices.contains { $0.state == "offline" }
+            let unauthorized = devices.contains { $0.state == "unauthorized" }
+            return .init(transport: unauthorized ? "未授权" : offline ? "设备离线" : "未发现唯一已授权设备",
+                         shell: "未检测", forward: "未检测",
+                         reason: unauthorized ? "请在手机解锁后允许该 Mac 调试；无法自动代替授权"
+                               : "可能是无线调试关闭、Wi-Fi 中断或 OEM 锁屏限制",
+                         code: unauthorized ? "ADB_UNAUTHORIZED" : offline ? "ADB_OFFLINE" : "ADB_NOT_READY")
+        }
+
+        // ADB reports "device" even on some systems where a lock-screen
+        // shell RPC is suspended. Verify that an actual benign command runs.
+        switch run(adb, args: ["-s", serial, "shell", "echo", "SIMAI_HEALTH_OK"], timeout: 6) {
+        case .completed(0, let value) where value.contains("SIMAI_HEALTH_OK"):
+            break
+        case .timedOut:
+            return .init(transport: "ADB 已授权", shell: "命令超时", forward: "未检测",
+                         reason: "ADB 枚举正常，但锁屏时 shell 可能被挂起",
+                         code: "ADB_SHELL_TIMEOUT")
+        default:
+            return .init(transport: "ADB 已授权", shell: "命令失败", forward: "未检测",
+                         reason: "手机尚不能执行 shell 命令",
+                         code: "ADB_SHELL_FAILED")
+        }
+
+        // "forward --list" contains the device serial. Compare in memory
+        // and do not expose any of its raw output.
+        guard let link else {
+            return .init(transport: "ADB 已授权", shell: "命令正常", forward: "尚未建立",
+                         reason: "手机 Shell 在线；请检查 Companion 状态桥接",
+                         code: "ADB_READY_NO_BRIDGE")
+        }
+        switch run(adb, args: ["-s", serial, "forward", "--list"], timeout: 6) {
+        case .completed(0, let result):
+            let mapped = result.split(whereSeparator: \.isNewline).contains {
+                $0.contains("tcp:\(link.localPort)") && $0.contains("tcp:18764")
+            }
+            return .init(transport: "ADB 已授权", shell: "命令正常",
+                         forward: mapped ? "映射存在" : "映射丢失",
+                         reason: mapped ? "ADB 与端口映射正常；手机本地状态服务可能休眠或无响应"
+                                        : "端口映射已丢失，应用会自动重新建立",
+                         code: mapped ? "PHONE_SERVICE_TIMEOUT" : "ADB_FORWARD_MISSING")
+        default:
+            return .init(transport: "ADB 已授权", shell: "命令正常", forward: "无法查询",
+                         reason: "ADB 可执行命令，但无法检查端口映射",
+                         code: "ADB_FORWARD_QUERY_FAILED")
         }
     }
 

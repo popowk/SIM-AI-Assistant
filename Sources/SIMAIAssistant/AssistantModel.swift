@@ -19,6 +19,11 @@ final class AssistantModel: ObservableObject {
     @Published var liveBridgeStatus = "正在检查 ADB 连接"
     @Published var livePhoneState = "未连接"
     @Published var liveBridgeLastSync: Date?
+    @Published var adbTransportHealth = "尚未检查"
+    @Published var adbShellHealth = "尚未检查"
+    @Published var adbForwardHealth = "尚未检查"
+    @Published var adbBridgeHealthDetail = "锁屏后可点击「诊断连接层」"
+    @Published var adbBridgeHealthChecking = false
     @Published var liveCallEvents: [String] = []
     @Published var audioProbeBusy = false
     @Published var audioProbeStatus = "尚未测试真实电话音频"
@@ -32,8 +37,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.2.2"
-    let buildNumber = "9"
+    let version = "0.2.3"
+    let buildNumber = "10"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -148,6 +153,34 @@ final class AssistantModel: ObservableObject {
         // Preserve cursor on temporary USB disconnect to avoid replaying old call events.
     }
 
+    /// One quick, non-invasive diagnostic. Does not modify Android state or
+    /// restart global ADB, and does not expose raw device identifiers.
+    func inspectBridgeHealth() {
+        guard !adbBridgeHealthChecking && !adbInstalling else { return }
+        adbBridgeHealthChecking = true
+        let adb = selectedADBPath
+        let link = bridgeLink
+        let generation = bridgeGeneration
+        Task.detached(priority: .utility) { [weak self] in
+            let report = ADBInspector.inspectBridgeHealth(at: adb, link: link)
+            await MainActor.run {
+                guard let self else { return }
+                self.adbBridgeHealthChecking = false
+                guard generation == self.bridgeGeneration else { return }
+                self.adbTransportHealth = report.transport
+                self.adbShellHealth = report.shell
+                self.adbForwardHealth = report.forward
+                self.adbBridgeHealthDetail = report.reason
+                self.log(report.code == "PHONE_SERVICE_TIMEOUT" ? .warn : .info,
+                         .call, "已检查 ADB / Shell / 状态端口健康",
+                         details: ["diagnosis": report.code,
+                                   "transport": report.transport,
+                                   "shell": report.shell,
+                                   "forward": report.forward])
+            }
+        }
+    }
+
     private func resetBridgeRetry() {
         bridgeRetryAfter = .distantPast
         bridgeConsecutiveFailures = 0
@@ -218,6 +251,10 @@ final class AssistantModel: ObservableObject {
                     }
                     self.livePhoneState = snapshot.state
                     self.liveBridgeLastSync = Date()
+                    self.adbTransportHealth = "ADB 已授权"
+                    self.adbShellHealth = "正常（状态服务可达）"
+                    self.adbForwardHealth = "工作正常"
+                    self.adbBridgeHealthDetail = "状态桥接已回应，无需解锁确认"
                     if self.bridgeConsecutiveFailures > 0 {
                         self.log(.info, .call, "ADB 电话状态同步已恢复",
                                  details: ["failedAttempts": "\(self.bridgeConsecutiveFailures)"])
@@ -232,6 +269,11 @@ final class AssistantModel: ObservableObject {
                     let nsError = error as NSError
                     self.noteBridgeFailure(code: "\(nsError.code)", domain: nsError.domain)
                     self.livePhoneState = "未连接"
+                    if self.bridgeConsecutiveFailures == 1 {
+                        // Distinguish "ADB unauthorized/offline" from "Android
+                        // companion HTTP service suspended while screen is off".
+                        self.inspectBridgeHealth()
+                    }
                     // A single timeout can be transient. Re-use the existing tunnel
                     // once before replacing it, to reduce ADB forward churn.
                     if self.bridgeConsecutiveFailures >= 2 { self.closeLiveBridge() }
@@ -264,6 +306,7 @@ final class AssistantModel: ObservableObject {
                     }
                     self.pollLiveBridge()
                 } else {
+                    if self.bridgeConsecutiveFailures == 0 { self.inspectBridgeHealth() }
                     self.noteBridgeFailure(code: "ADB_UNAVAILABLE", domain: "SIMAI.ADB")
                     self.liveBridgeStatus = "\(result.message)；自动重连已退避"
                 }
@@ -467,7 +510,7 @@ final class AssistantModel: ObservableObject {
         apkInstallStatus = "正在通过 ADB 安装/覆盖手机应用……"
         let adb = selectedADBPath
         log(.info, .system, "用户确认开始安装或覆盖 Android 伴侣 APK",
-            details: ["version": "0.2.0"])
+            details: ["version": "0.2.1"])
         Task.detached(priority: .userInitiated) { [weak self] in
             let outcome = ADBInspector.install(at: adb, apk: resource)
             await MainActor.run {

@@ -8,8 +8,11 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
+import android.net.Uri;
 import android.view.View;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -38,7 +41,7 @@ public final class MainActivity extends Activity {
         scroller.addView(column);
 
         TextView title = new TextView(this);
-        title.setText("SIM AI Companion · V0.2.0");
+        title.setText("SIM AI Companion · V0.2.1");
         title.setTextSize(22f);
         column.addView(title);
         TextView description = new TextView(this);
@@ -82,8 +85,38 @@ public final class MainActivity extends Activity {
         });
         column.addView(stop);
 
+        CheckBox stayAwake = new CheckBox(this);
+        stayAwake.setText("锁屏运行增强（可选，增加耗电）");
+        stayAwake.setChecked(getSharedPreferences(CallMonitorService.PREFS, MODE_PRIVATE)
+                .getBoolean(CallMonitorService.KEEP_AWAKE, false));
+        stayAwake.setOnCheckedChangeListener((buttonView, enabled) -> {
+            getSharedPreferences(CallMonitorService.PREFS, MODE_PRIVATE).edit()
+                    .putBoolean(CallMonitorService.KEEP_AWAKE, enabled).apply();
+            if (CallMonitorService.running) {
+                try {
+                    startService(new Intent(this, CallMonitorService.class));
+                } catch (Exception error) {
+                    CallMonitorService.note("锁屏运行设置应用失败：" + error.getClass().getSimpleName());
+                }
+            }
+            refresh();
+        });
+        column.addView(stayAwake);
+
+        TextView stayAwakeHelp = new TextView(this);
+        stayAwakeHelp.setText("锁屏运行增强只维持电话状态监听进程的 CPU 唤醒锁（服务运行时），不点亮屏幕，也不能绕过系统对无线 ADB/Doze 的限制。长期启用会增加电量消耗。建议先在 vivo 系统设置中将本应用设为允许后台运行/自启动。");
+        column.addView(stayAwakeHelp);
+        Button batterySettings = new Button(this);
+        batterySettings.setText("打开本应用系统设置 · 检查电池/后台权限");
+        batterySettings.setOnClickListener(v -> {
+            Intent settings = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(settings);
+        });
+        column.addView(batterySettings);
+
         TextView caution = new TextView(this);
-        caution.setText("\n拨打测试：用另一部手机拨打本机联通 SIM，检查 RINGING → OFFHOOK → IDLE。\n后台省电限制可能中止监听服务。USB ADB 连接后会自动向 Mac 同步匿名来电状态（需 Mac V0.1.4）。\n");
+        caution.setText("\n拨打测试：用另一部手机拨打本机联通 SIM，检查 RINGING → OFFHOOK → IDLE。\n后台省电限制可能中止监听服务。USB 或无线 ADB 授权后，Mac 会读取匿名来电状态。锁屏运行增强需要用户明确勾选；不保证无线 ADB 锁屏后始终可用。\n");
         column.addView(caution);
         log = new TextView(this);
         log.setTextIsSelectable(true);

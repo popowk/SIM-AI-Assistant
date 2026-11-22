@@ -1,5 +1,12 @@
 # 变更记录
 
+## 0.2.3 — 2026-11-22
+
+- Mac 增加锁屏期间的 ADB / shell / 端口转发 / HTTP 状态服务分层诊断。按需或首次 HTTP 超时自动检测，日志只有固定类别，无设备地址与授权 token。
+- Android Companion V0.2.1：HTTP 事件接口改为有限并发；前台监听启用 START_STICKY；手机端增加自愿开启的 PARTIAL_WAKE_LOCK「锁屏运行增强」和应用电池设置入口。
+- 不保证解决所有 vivo OriginOS 锁屏限制；无线 ADB 被系统关闭或用户调试授权撤销时仍需用户手动处理。
+- Android APK debug 签名问题仍存在，不会在 Mac 更新时自动卸载手机 App。
+
 ## 0.2.2 — 2026-11-22
 
 - 根据用户实际诊断日志修复：ADB 延迟补收 RINGING → OFFHOOK → IDLE，导致 Mac 显示 IDLE、上下行测试按钮不可用。改为只在用户确认并通过手机 Android 音频通话模式检查后执行测试，不再依赖 Mac 实时电话状态。

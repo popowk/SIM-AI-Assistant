@@ -9,6 +9,9 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.PowerManager;
+import android.os.Handler;
+import android.os.Looper;
 import android.telephony.PhoneStateListener;
 import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
@@ -25,6 +28,22 @@ import java.util.Locale;
  */
 public final class CallMonitorService extends Service {
     private static final String CHANNEL = "sim_ai_phone_monitor";
+    public static final String PREFS = "simai_monitor_preferences";
+    public static final String KEEP_AWAKE = "keep_cpu_awake_for_lock_screen_sync";
+    private static final long WAKELOCK_TIMEOUT = 20L * 60 * 1000;
+    private static final long WAKELOCK_RENEWAL = 15L * 60 * 1000;
+    private final Handler wakeHandler = new Handler(Looper.getMainLooper());
+    private PowerManager.WakeLock lock;
+    private final Runnable renewLock = new Runnable() {
+        @Override public void run() {
+            if (!running || !getSharedPreferences(PREFS, MODE_PRIVATE)
+                    .getBoolean(KEEP_AWAKE, false)) return;
+            if (lock != null) {
+                lock.acquire(WAKELOCK_TIMEOUT);
+                wakeHandler.postDelayed(this, WAKELOCK_RENEWAL);
+            }
+        }
+    };
     public static volatile boolean running = false;
     public static volatile String lastState = "未启动";
     private static final List<String> history = new ArrayList<>();
@@ -85,6 +104,7 @@ public final class CallMonitorService extends Service {
                     telephonyManager.listen(legacyListener, PhoneStateListener.LISTEN_CALL_STATE);
                 }
                 running = true;
+                applyKeepAwakeSetting();
                 handleState(telephonyManager.getCallState());
                 note("监听已启动，等待实际来电");
             } catch (Exception error) {
@@ -94,7 +114,41 @@ public final class CallMonitorService extends Service {
                 stopSelf();
             }
         }
-        return START_NOT_STICKY;
+        // User explicitly started a foreground monitor. Allow a system-requested
+        // service restart after memory pressure; does not override force-stop or
+        // vendor background restrictions.
+        if (running) applyKeepAwakeSetting();
+        return START_STICKY;
+    }
+
+    private void applyKeepAwakeSetting() {
+        wakeHandler.removeCallbacks(renewLock);
+        boolean requested = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getBoolean(KEEP_AWAKE, false);
+        if (!requested) {
+            releaseWakeLock();
+            return;
+        }
+        try {
+            if (lock == null) {
+                PowerManager manager = getSystemService(PowerManager.class);
+                lock = manager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SIMAI:PhoneStateBridge");
+                lock.setReferenceCounted(false);
+            }
+            lock.acquire(WAKELOCK_TIMEOUT);
+            wakeHandler.postDelayed(renewLock, WAKELOCK_RENEWAL);
+        } catch (Exception failed) {
+            note("锁屏运行增强不可用：" + failed.getClass().getSimpleName());
+            releaseWakeLock();
+        }
+    }
+
+    private void releaseWakeLock() {
+        wakeHandler.removeCallbacks(renewLock);
+        if (lock != null) {
+            if (lock.isHeld()) lock.release();
+            lock = null;
+        }
     }
 
     private void handleState(int state) {
@@ -117,6 +171,7 @@ public final class CallMonitorService extends Service {
     }
 
     @Override public void onDestroy() {
+        releaseWakeLock();
         if (bridge != null) { bridge.stop(); bridge = null; }
         if (telephonyManager != null) {
             try {

@@ -19,6 +19,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Tiny read-only call-state endpoint, available only on Android loopback.
@@ -36,6 +40,7 @@ final class PhoneEventBridge {
     private int sequence = 0;
     private ServerSocket listener;
     private Thread worker;
+    private ThreadPoolExecutor requests;
 
     private static final class CallEvent {
         final int seq;
@@ -84,27 +89,48 @@ final class PhoneEventBridge {
 
     void start() throws Exception {
         if (active) return;
-        listener = new ServerSocket(PORT, 4, InetAddress.getByName("127.0.0.1"));
+        listener = new ServerSocket(PORT, 12, InetAddress.getByName("127.0.0.1"));
+        requests = new ThreadPoolExecutor(2, 2, 30L, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(8), job -> {
+                    Thread thread = new Thread(job, "SIMAI-CallBridge-Request");
+                    thread.setDaemon(true);
+                    return thread;
+                });
         active = true;
         worker = new Thread(this::serve, "SIMAI-CallEventBridge");
         worker.setDaemon(true);
         worker.start();
-        Log.i("SIMAICompanion", "Local USB diagnostic bridge listening (no phone identifiers)");
+        Log.i("SIMAICompanion", "Loopback call-state bridge listening (no phone identifiers)");
     }
 
     void stop() {
         active = false;
         try { if (listener != null) listener.close(); } catch (Exception ignored) {}
         if (worker != null) worker.interrupt();
+        if (requests != null) requests.shutdownNow();
     }
 
     private void serve() {
         while (active) {
-            try (Socket client = listener.accept()) {
-                client.setSoTimeout(2000);
-                handle(client);
+            try {
+                final Socket client = listener.accept();
+                if (!active) { client.close(); break; }
+                try {
+                    requests.execute(() -> {
+                        try (Socket connected = client) {
+                            connected.setSoTimeout(1500);
+                            handle(connected);
+                        } catch (Exception error) {
+                            if (active) Log.w("SIMAICompanion", "Local bridge request: "
+                                    + error.getClass().getSimpleName());
+                        }
+                    });
+                } catch (RejectedExecutionException busy) {
+                    // Never let stalled requests block the accept loop.
+                    client.close();
+                }
             } catch (Exception error) {
-                if (active) Log.w("SIMAICompanion", "Local bridge request failed: "
+                if (active) Log.w("SIMAICompanion", "Bridge accept failed: "
                         + error.getClass().getSimpleName());
             }
         }
