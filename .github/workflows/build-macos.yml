@@ -56,12 +56,40 @@ jobs:
           gradle-version: '8.9'
 
       - name: Build Android Companion test APK
+        env:
+          SIMAI_ANDROID_KEYSTORE_B64: ${{ secrets.SIMAI_ANDROID_KEYSTORE_B64 }}
+          SIMAI_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.SIMAI_ANDROID_KEYSTORE_PASSWORD }}
+          SIMAI_ANDROID_KEY_ALIAS: ${{ secrets.SIMAI_ANDROID_KEY_ALIAS }}
+          SIMAI_ANDROID_KEY_PASSWORD: ${{ secrets.SIMAI_ANDROID_KEY_PASSWORD }}
+        shell: bash
         run: |
-          gradle -p AndroidCompanion :app:assembleDebug --no-daemon
+          set -euo pipefail
           mkdir -p dist
-          cp AndroidCompanion/app/build/outputs/apk/debug/app-debug.apk dist/SIMAI-Companion-v0.3.3-debug.apk
-          test -s dist/SIMAI-Companion-v0.3.3-debug.apk
-          shasum -a 256 dist/SIMAI-Companion-v0.3.3-debug.apk > dist/SIMAI-Companion-v0.3.3-debug.apk.sha256
+          signing_fields=0
+          for field in "$SIMAI_ANDROID_KEYSTORE_B64" "$SIMAI_ANDROID_KEYSTORE_PASSWORD" "$SIMAI_ANDROID_KEY_ALIAS" "$SIMAI_ANDROID_KEY_PASSWORD"; do
+            if [[ -n "$field" ]]; then signing_fields=$((signing_fields + 1)); fi
+          done
+          if [[ "$signing_fields" == 4 ]]; then
+            KEYSTORE_PATH="$(mktemp "$RUNNER_TEMP/simai-android-XXXXXX.jks")"
+            trap 'rm -f "$KEYSTORE_PATH"' EXIT
+            chmod 600 "$KEYSTORE_PATH"
+            printf '%s' "$SIMAI_ANDROID_KEYSTORE_B64" | base64 -D > "$KEYSTORE_PATH"
+            test -s "$KEYSTORE_PATH"
+            export SIMAI_ANDROID_KEYSTORE_PATH="$KEYSTORE_PATH"
+            printf 'STABLE_SECRET_SIGNING\n' > dist/SIMAI-Android-Signing.txt
+            echo "Android debug APK signed with private GitHub Secrets keystore."
+          elif [[ "$signing_fields" == 0 ]]; then
+            printf 'EPHEMERAL_DEBUG_SIGNING\n' > dist/SIMAI-Android-Signing.txt
+            echo "::warning::Fixed signing secrets are absent. Runner debug APK may not upgrade the current phone app without a signing migration."
+          else
+            echo "::error::Only some of the four signing secrets are set. Refusing to build an ambiguously signed APK."
+            exit 1
+          fi
+          gradle -p AndroidCompanion :app:assembleDebug --no-daemon
+          cp AndroidCompanion/app/build/outputs/apk/debug/app-debug.apk dist/SIMAI-Companion-v0.3.4-debug.apk
+          test -s dist/SIMAI-Companion-v0.3.4-debug.apk
+          shasum -a 256 dist/SIMAI-Companion-v0.3.4-debug.apk > dist/SIMAI-Companion-v0.3.4-debug.apk.sha256
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose dist/SIMAI-Companion-v0.3.4-debug.apk
 
 
       - name: Build Android 13 audio capability helper
@@ -70,8 +98,9 @@ jobs:
       - name: Run tests and build arm64 app
         env:
           TARGET_TRIPLE: arm64-apple-macosx13.0
-          ANDROID_COMPANION_APK_PATH: ${{ github.workspace }}/dist/SIMAI-Companion-v0.3.3-debug.apk
+          ANDROID_COMPANION_APK_PATH: ${{ github.workspace }}/dist/SIMAI-Companion-v0.3.4-debug.apk
           ANDROID_AUDIO_PROBE_JAR_PATH: ${{ github.workspace }}/dist/SIMAI-Audio-Probe.jar
+          ANDROID_COMPANION_SIGNING_STATUS_PATH: ${{ github.workspace }}/dist/SIMAI-Android-Signing.txt
         run: bash Scripts/build-macos.sh
 
       - name: Upload downloadable macOS app
@@ -79,11 +108,12 @@ jobs:
         with:
           name: SIM-AI-Assistant-macOS-arm64
           path: |
-            dist/SIM-AI-Assistant-v0.4.5-macos-arm64.zip
-            dist/SIM-AI-Assistant-v0.4.5-macos-arm64.zip.sha256
+            dist/SIM-AI-Assistant-v0.4.6-macos-arm64.zip
+            dist/SIM-AI-Assistant-v0.4.6-macos-arm64.zip.sha256
             dist/SIMAI-Audio-Probe.jar
-            dist/SIMAI-Companion-v0.3.3-debug.apk
-            dist/SIMAI-Companion-v0.3.3-debug.apk.sha256
+            dist/SIMAI-Android-Signing.txt
+            dist/SIMAI-Companion-v0.3.4-debug.apk
+            dist/SIMAI-Companion-v0.3.4-debug.apk.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -103,14 +133,15 @@ jobs:
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest --target "$(git rev-parse HEAD)" \
               --title "SIM AI Assistant · 最新测试版" --prerelease \
-              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.5 手机首次打开提供权限引导，获准后自动启动电话状态监听，锁屏增强和短信转发新装默认开启；Mac 安装/清装成功后自动恢复飞书配置。新增无敏感内容的 SMS 广播接收计数，验证码短信仍受 Android 定向投递限制。"
+              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.6 增加 GitHub Secrets 固定 Android 调试 APK 签名支持、签名状态标记及安全升级检查；未配置密钥仍为临时调试签名，不能保证无损覆盖。"
           fi
           gh release upload dev-latest \
-            dist/SIM-AI-Assistant-v0.4.5-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.5-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.6-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.6-macos-arm64.zip.sha256 \
             dist/SIMAI-Audio-Probe.jar \
-            dist/SIMAI-Companion-v0.3.3-debug.apk \
-            dist/SIMAI-Companion-v0.3.3-debug.apk.sha256 --clobber
+            dist/SIMAI-Android-Signing.txt \
+            dist/SIMAI-Companion-v0.3.4-debug.apk \
+            dist/SIMAI-Companion-v0.3.4-debug.apk.sha256 --clobber
 
       - name: Publish versioned prerelease on tag
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -119,10 +150,11 @@ jobs:
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/SIM-AI-Assistant-v0.4.5-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.5-macos-arm64.zip.sha256 \
-            dist/SIMAI-Companion-v0.3.3-debug.apk \
-            dist/SIMAI-Companion-v0.3.3-debug.apk.sha256 \
+            dist/SIM-AI-Assistant-v0.4.6-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.6-macos-arm64.zip.sha256 \
+            dist/SIMAI-Companion-v0.3.4-debug.apk \
+            dist/SIMAI-Companion-v0.3.4-debug.apk.sha256 \
+            dist/SIMAI-Android-Signing.txt \
             dist/SIMAI-Audio-Probe.jar \
             --title "SIM AI Assistant $GITHUB_REF_NAME" --prerelease \
             --notes "macOS Apple Silicon arm64 测试版，未公证；请查看 README 和校验 SHA256。"
