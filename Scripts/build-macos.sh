@@ -49,6 +49,14 @@ else
   echo "注意：未设置 ANDROID_COMPANION_APK_PATH，当前本地构建不含 APK。"
 fi
 
+if [[ -n "${ANDROID_COMPANION_SIGNING_STATUS_PATH:-}" ]]; then
+  if [[ ! -s "$ANDROID_COMPANION_SIGNING_STATUS_PATH" ]]; then
+    echo "错误：Android APK 签名状态文件不存在。" >&2
+    exit 6
+  fi
+  cp "$ANDROID_COMPANION_SIGNING_STATUS_PATH" "$APP/Contents/Resources/SIMAI-Android-Signing.txt"
+fi
+
 if [[ -n "${ANDROID_AUDIO_PROBE_JAR_PATH:-}" ]]; then
   if [[ ! -s "$ANDROID_AUDIO_PROBE_JAR_PATH" ]]; then
     echo "错误：Android 音频诊断助手文件缺失：$ANDROID_AUDIO_PROBE_JAR_PATH" >&2
@@ -80,7 +88,7 @@ codesign --verify --verbose "$APP"
 echo "[5/5] 生成发行 ZIP..."
 ARCH="${TARGET_TRIPLE%%-*}"
 if [[ -z "${TARGET_TRIPLE:-}" ]]; then ARCH="$(uname -m)"; fi
-ARCHIVE="$DIST/SIM-AI-Assistant-v0.4.5-macos-$ARCH.zip"
+ARCHIVE="$DIST/SIM-AI-Assistant-v0.4.6-macos-$ARCH.zip"
 rm -f "$ARCHIVE"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
 shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
