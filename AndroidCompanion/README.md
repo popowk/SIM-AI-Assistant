@@ -1,4 +1,10 @@
-# SIM AI Companion — Android 0.3.3 测试版
+# SIM AI Companion — Android 0.3.4 测试版
+
+## V0.3.4 · 固定签名可选（先完成仓库私钥配置）
+
+- Gradle Debug APK 在同时提供 keystore 路径、口令、alias、私钥口令时使用相同的开发者证书签名；GitHub Actions 从加密的 Repository Secrets 获取材料，安全地编译并删除临时文件。仍为 debug APK，保留 ADB run-as 机制。
+- **尚未配置 Secrets 的 GitHub Runner 仍使用临时 debug 签名**，并在 Mac 安装面板提醒不保证无损覆盖；已有旧证书找不到时可能需要最后一次手动确认的签名迁移，绝不自动卸载。
+- 详见根目录 docs/ANDROID_SIGNING_MIGRATION.md。版本码 9，Android Companion V0.3.4，Mac V0.4.6 Build 23。SMS 转发/电话权限行为不变。
 
 ## V0.3.0 · 飞书短信 Webhook 通知（默认开启开关）
 
