@@ -1,4 +1,4 @@
-# SIM AI Assistant · V0.4.2（电话 AI 语音 + 飞书短信通知）
+# SIM AI Assistant · V0.4.3（桌面管理飞书短信 + 电话 AI 语音）
 
 **设备目标**：vivo S9e / Android 13 / 中国联通实体 SIM + Apple Silicon Mac / macOS 26.6.2。
 **源代码**：https://github.com/popowk/SIM-AI-Assistant
@@ -10,6 +10,20 @@
 - Android → Mac：私有通信令牌、本机端口转发、匿名电话状态同步和去重、断线重连。此前 vivo S9e 的真实来电日志已验证此项。
 - Mac 本地音频设备检查、麦克风电平、扬声器试听和设备恢复。
 - 诊断 ZIP、匿名事件日志、1/7/14 天清理与「清空全部（含今天）」。
+
+## V0.4.3 · 在 Mac 填写并保存飞书 Webhook，同步到手机（2026-11-23）
+
+Mac 诊断中心新增「飞书 Webhook · Mac 设置与手机同步」面板：
+
+- 在桌面粘贴飞书机器人地址、输入可选的签名密钥、切换「自动转发新短信」（默认开启），点击「保存到 Mac 并同步手机」。地址与签名写入**当前 Mac 用户登录钥匙串**，不放入 UserDefaults、JSONL、导出 ZIP 或 ADB shell 命令参数。
+- 支持「重新同步已保存配置」：Mac 读取自己钥匙串内容，通过**唯一已授权手机**的 ADB 端口转发（原有手机端 `127.0.0.1:18764`）发送 POST `/sms/config`，带原有私有 64 位 `X-SIMAI-Token`。手机只接受官方飞书 HTTPS Webhook，并将配置保存于 Android App 私有首选项。
+- 手机同步成功后，Mac 界面显示「已同步手机」，并报告 Android 是否已获 `RECEIVE_SMS` 权限及转发开关状态。失败只报告错误类别，绝不打印 Webhook/签名；手机拒绝配置不会误报成功。手机端 GET `/sms/status` 只返回开关、权限和是否配置等非敏感布尔值。
+- 若 Android 服务未启动/ADB 未授权/手机离线，**Mac 可以先保存**，但不声称已同步；需要打开手机 SIM AI Companion「开始监听电话状态」，确保系统权限和 ADB 连接后重新点击同步。同步时不会向多台 Android 设备随意推送，也不会因断线自动发送配置到不确定的新设备。
+- 首次使用需将 Android Companion 更新至 **V0.3.1**（版本码 6）：在手机端用户确认 `RECEIVE_SMS` 权限之后，新短信（包括验证码全文）才可按当前开关直接推送到飞书。未来 Mac 不在线时手机仍可正常运行。Mac 本身**不读取 SMS 全文**。
+
+**升级**：Mac V0.4.3 Build 20 内置 Android Companion V0.3.1，也可独立安装 APK。原有 Android debug 签名可能跨 GitHub Actions 不一致；若覆盖安装失败不会自动卸载或丢数据。原有 V0.4.1 GPT 音频链路不变。
+
+**注意隐私**：验证码被发送到所配置飞书群，群成员可能查看。请使用成员受限的私人群并启用机器人签名；在手机上完成首次授权。构建通过不表示已在用户的 vivo S9e 上实测 Webhook 同步与短信送达。
 
 ## V0.4.2 · 短信全文自动发送飞书 Webhook（2026-11-23）
 
