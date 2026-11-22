@@ -13,6 +13,10 @@ final class AssistantModel: ObservableObject {
     @Published var probeStatus = "尚未测试"
     @Published var adbStatus = "未检测 ADB"
     @Published var adbChecking = false
+    @Published var autoADBDetectionEnabled =
+        UserDefaults.standard.object(forKey: "SIMAI_AUTO_ADB") as? Bool ?? true
+    @Published var adbDiscoveryDescription = "自动识别中"
+    @Published var lastADBScanAt: Date?
     @Published var adbInstalling = false
     @Published var apkInstallStatus = "尚未安装伴侣 APK"
     @Published var liveSyncEnabled = UserDefaults.standard.object(forKey: "SIMAI_LIVE_SYNC") as? Bool ?? true
@@ -45,8 +49,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.3.2"
-    let buildNumber = "14"
+    let version = "0.3.3"
+    let buildNumber = "15"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -54,6 +58,11 @@ final class AssistantModel: ObservableObject {
     private var voiceStream: PhoneAudioStream?
     private var voiceSessionID = ""
     private var bridgeTimer: Timer?
+    private var wakeObserver: NSObjectProtocol?
+    private var nextADBScanAt = Date.distantPast
+    private var adbScanGeneration = 0
+    private var adbScanSignature = ""
+    private var adbWasAuthorized = false
     private var bridgeLink: ADBBridgeLink?
     private var bridgeBusy = false
     private var bridgeCursor = PhoneBridgeCursor()
@@ -126,10 +135,93 @@ final class AssistantModel: ObservableObject {
     // never from Mac Bluetooth and never from a cellular audio channel.
     private func startLiveSyncTimer() {
         guard bridgeTimer == nil else { return }
-        bridgeTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.pollLiveBridge() }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.recoverAfterMacWake() }
         }
+        bridgeTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.autoInspectADBIfNeeded()
+                self?.pollLiveBridge()
+            }
+        }
+        autoInspectADBIfNeeded(force: true)
         pollLiveBridge()
+    }
+
+    func setAutoADBDetectionEnabled(_ enabled: Bool) {
+        autoADBDetectionEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "SIMAI_AUTO_ADB")
+        if enabled {
+            nextADBScanAt = .distantPast
+            autoInspectADBIfNeeded(force: true)
+        }
+    }
+
+    private func recoverAfterMacWake() {
+        nextADBScanAt = .distantPast
+        let stale = liveBridgeLastSync.map { Date().timeIntervalSince($0) > 20 } ?? true
+        if stale && liveSyncEnabled {
+            closeLiveBridge()
+            resetBridgeRetry()
+            livePhoneState = "未连接"
+            liveBridgeStatus = "Mac 唤醒，正在自动检测并恢复来电状态……"
+            log(.info, .call, "Mac 唤醒，重建可能过期的电话状态通道")
+        }
+        autoInspectADBIfNeeded(force: true)
+        if liveSyncEnabled { pollLiveBridge() }
+    }
+
+    /// Read-only automatic discovery. Never polls or pushes audio, changes
+    /// Android permissions or connects to multiple devices. Rate limits are
+    /// deliberately long while live calls are streaming.
+    private func autoInspectADBIfNeeded(force: Bool = false) {
+        guard autoADBDetectionEnabled, !adbChecking, !adbInstalling,
+              !liveVoiceStarting, !liveVoiceActive,
+              force || Date() >= nextADBScanAt else { return }
+        adbChecking = true
+        let path = selectedADBPath
+        let scanGeneration = adbScanGeneration
+        nextADBScanAt = Date().addingTimeInterval(12)
+        Task.detached(priority: .utility) { [weak self] in
+            let found = ADBInspector.inspect(at: path)
+            let description = ADBInspector.discoveryLabel(at: path)
+            await MainActor.run {
+                guard let self else { return }
+                guard scanGeneration == self.adbScanGeneration,
+                      path == self.selectedADBPath else { return }
+                self.adbChecking = false
+                self.adbStatus = found.status
+                self.adbDiscoveryDescription = description
+                self.lastADBScanAt = Date()
+                let connected = found.authorized == 1
+                self.nextADBScanAt = Date().addingTimeInterval(
+                    BridgeRetryPolicy.adbScanInterval(
+                        authorizedDevices: found.authorized,
+                        recentlySynced: self.liveBridgeLastSync.map {
+                            Date().timeIntervalSince($0) <= 15
+                        } ?? false))
+                let signature = "\(found.installed)/\(found.authorized)/\(found.unauthorized)/\(found.offline)/\(description)"
+                if signature != self.adbScanSignature {
+                    self.adbScanSignature = signature
+                    self.log(connected ? .info : .warn, .system,
+                             "自动识别 Android ADB 状态变化",
+                             details: ["installed": "\(found.installed)",
+                                       "authorized": "\(found.authorized)",
+                                       "unauthorized": "\(found.unauthorized)",
+                                       "offline": "\(found.offline)",
+                                       "source": description])
+                }
+                let reconnected = !self.adbWasAuthorized && connected
+                self.adbWasAuthorized = connected
+                if reconnected && self.liveSyncEnabled && self.bridgeLink == nil {
+                    self.resetBridgeRetry()
+                    self.liveBridgeStatus = "自动发现已授权手机，正在恢复来电状态……"
+                    self.pollLiveBridge()
+                }
+            }
+        }
     }
 
     func setLiveSyncEnabled(_ value: Bool) {
@@ -161,6 +253,7 @@ final class AssistantModel: ObservableObject {
             }
         }
         bridgeLink = nil
+        bridgeBusy = false
         bridgeUsingFileFallback = false
         nextHTTPRecoveryAttempt = .distantPast
         bridgeGeneration += 1
@@ -258,8 +351,8 @@ final class AssistantModel: ObservableObject {
             let result = ADBInspector.readPrivateStateSnapshot(at: adb)
             await MainActor.run {
                 guard let self else { return }
-                self.bridgeBusy = false
                 guard self.liveSyncEnabled, generation == self.bridgeGeneration else { return }
+                self.bridgeBusy = false
                 if let snapshot = result.snapshot {
                     self.applyBridgeSnapshot(snapshot, source: "ADB_FILE")
                     self.bridgeUsingFileFallback = true
@@ -297,7 +390,6 @@ final class AssistantModel: ObservableObject {
                 do {
                     let (data, response) = try await URLSession.shared.data(for: request)
                     guard self.liveSyncEnabled, generation == self.bridgeGeneration else {
-                        self.bridgeBusy = false
                         return
                     }
                     let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -314,7 +406,6 @@ final class AssistantModel: ObservableObject {
                     self.nextHTTPRecoveryAttempt = .distantPast
                 } catch {
                     guard self.liveSyncEnabled, generation == self.bridgeGeneration else {
-                        self.bridgeBusy = false
                         return
                     }
                     let nsError = error as NSError
@@ -326,7 +417,6 @@ final class AssistantModel: ObservableObject {
                         ADBInspector.readPrivateStateSnapshot(at: adb)
                     }.value
                     guard self.liveSyncEnabled, generation == self.bridgeGeneration else {
-                        self.bridgeBusy = false
                         return
                     }
                     if let snapshot = fallback.snapshot {
@@ -355,7 +445,6 @@ final class AssistantModel: ObservableObject {
                     ADBInspector.openBridge(at: path)
                 }.value
                 guard let self else { return }
-                self.bridgeBusy = false
                 guard self.liveSyncEnabled, generation == self.bridgeGeneration else {
                     if let link = result.link {
                         Task.detached(priority: .utility) {
@@ -364,8 +453,12 @@ final class AssistantModel: ObservableObject {
                     }
                     return
                 }
+                self.bridgeBusy = false
                 if let link = result.link {
                     self.bridgeLink = link
+                    self.adbStatus = "ADB 已自动识别 1 台已授权手机"
+                    self.adbDiscoveryDescription = ADBInspector.discoveryLabel(at: path)
+                    self.adbWasAuthorized = true
                     // Keep the previous Android session and sequence across ADB port changes.
                     self.liveBridgeStatus = result.message
                     if self.bridgeConsecutiveFailures == 0 {
@@ -615,12 +708,27 @@ final class AssistantModel: ObservableObject {
         adbChecking = true
         adbStatus = "检测 ADB 中……"
         let selectedPath = selectedADBPath
+        let generation = adbScanGeneration
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = ADBInspector.inspect(at: selectedPath)
+            let description = ADBInspector.discoveryLabel(at: selectedPath)
             await MainActor.run {
                 guard let self else { return }
+                guard generation == self.adbScanGeneration,
+                      selectedPath == self.selectedADBPath else { return }
                 self.adbChecking = false
                 self.adbStatus = result.status
+                self.adbDiscoveryDescription = description
+                self.lastADBScanAt = Date()
+                self.adbWasAuthorized = result.authorized == 1
+                self.adbScanSignature = "\(result.installed)/\(result.authorized)/\(result.unauthorized)/\(result.offline)/\(description)"
+                self.nextADBScanAt = Date().addingTimeInterval(
+                    BridgeRetryPolicy.adbScanInterval(authorizedDevices: result.authorized,
+                                                       recentlySynced: false))
+                if result.authorized == 1 && self.liveSyncEnabled && self.bridgeLink == nil {
+                    self.resetBridgeRetry()
+                    self.pollLiveBridge()
+                }
                 self.log(.info, .system, "Android ADB 自检完成（不读取设备序列号和电话音频）",
                     details: ["adbInstalled": "\(result.installed)",
                               "authorizedCount": "\(result.authorized)",
@@ -654,10 +762,13 @@ final class AssistantModel: ObservableObject {
             }
             closeLiveBridge()
             resetBridgeRetry()
+            adbScanGeneration += 1
+            adbChecking = false
+            nextADBScanAt = .distantPast
             selectedADBPath = url.path
             UserDefaults.standard.set(url.path, forKey: "SIMAI_ADB_PATH")
             log(.info, .system, "用户手动设置 ADB 路径（路径不写入诊断日志）")
-            inspectADB()
+            autoInspectADBIfNeeded(force: true)
             pollLiveBridge()
         }
     }
@@ -665,10 +776,13 @@ final class AssistantModel: ObservableObject {
     func resetADBSelection() {
         closeLiveBridge()
         resetBridgeRetry()
+        adbScanGeneration += 1
+        adbChecking = false
+        nextADBScanAt = .distantPast
         selectedADBPath = ""
         UserDefaults.standard.removeObject(forKey: "SIMAI_ADB_PATH")
         log(.info, .system, "ADB 切换为自动路径检测")
-        inspectADB()
+        autoInspectADBIfNeeded(force: true)
         pollLiveBridge()
     }
 

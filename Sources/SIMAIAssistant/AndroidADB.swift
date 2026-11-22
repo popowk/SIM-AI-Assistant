@@ -73,8 +73,13 @@ enum ADBInspector {
     /// Explicitly selected executable takes priority over PATH and common installations.
     static func executable(at selected: String?) -> URL? {
         let manager = FileManager.default
-        if let selected, !selected.isEmpty {
-            return manager.isExecutableFile(atPath: selected) ? URL(fileURLWithPath: selected) : nil
+        // A moved/uninstalled manually selected adb must not permanently
+        // disable automatic recovery. Fall back to known installations without
+        // overwriting the user's explicit preference.
+        if let selected, !selected.isEmpty,
+           URL(fileURLWithPath: selected).lastPathComponent == "adb",
+           manager.isExecutableFile(atPath: selected) {
+            return URL(fileURLWithPath: selected)
         }
         let home = manager.homeDirectoryForCurrentUser
         let paths = [
@@ -85,6 +90,16 @@ enum ADBInspector {
             .split(separator: ":").map { String($0) + "/adb" }
         return paths.first(where: { manager.isExecutableFile(atPath: $0) })
             .map(URL.init(fileURLWithPath:))
+    }
+
+    static func discoveryLabel(at selected: String?) -> String {
+        guard let adb = executable(at: selected) else { return "未发现可执行的 ADB" }
+        let path = adb.path
+        if let selected, !selected.isEmpty && selected == path { return "手动指定" }
+        if path.hasPrefix("/opt/homebrew/") { return "Homebrew (Apple Silicon)" }
+        if path.hasPrefix("/usr/local/") { return "Homebrew / 系统工具" }
+        if path.contains("/Android/sdk/platform-tools/") { return "Android SDK" }
+        return "系统 PATH"
     }
 
     static func inspect(at selected: String? = nil) -> ADBInspection {

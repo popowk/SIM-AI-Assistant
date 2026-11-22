@@ -21,6 +21,14 @@ public enum BridgeRetryPolicy {
         return first > 0 && first < 224
     }
 
+    /// ADB read-only discovery runs frequently only while disconnected.
+    /// A healthy phone status bridge already proves the ADB transport works,
+    /// so use a slower scan to avoid contending with live audio traffic.
+    public static func adbScanInterval(authorizedDevices: Int,
+                                        recentlySynced: Bool) -> TimeInterval {
+        authorizedDevices == 1 && recentlySynced ? 45 : 12
+    }
+
     public static func delay(after consecutiveFailures: Int) -> TimeInterval {
         let capped = min(5, max(1, consecutiveFailures))
         return TimeInterval(min(30, 2 * (1 << (capped - 1))))

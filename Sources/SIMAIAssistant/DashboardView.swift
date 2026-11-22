@@ -101,7 +101,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("真实双向电话音频预览 · V0.3.2")
+                Text("真实双向电话音频预览 · V0.3.3")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -142,8 +142,12 @@ struct DashboardView: View {
                     .disabled(model.selectedADBPath.isEmpty)
             }
             .buttonStyle(.bordered)
+            Toggle("自动识别 ADB 和已授权手机", isOn: Binding(
+                get: { model.autoADBDetectionEnabled },
+                set: { model.setAutoADBDetectionEnabled($0) }
+            ))
             HStack {
-                Button("检测 ADB 设备") { model.inspectADB() }
+                Button("立即检测 ADB") { model.inspectADB() }
                     .disabled(model.adbChecking || model.adbInstalling)
                 Button("官方 Platform-Tools") {
                     if let url = URL(string: "https://developer.android.com/tools/releases/platform-tools") {
@@ -152,6 +156,16 @@ struct DashboardView: View {
                 }
             }
             Text(model.adbStatus).font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Text("ADB 来源：\(model.adbDiscoveryDescription)")
+                if let checked = model.lastADBScanAt {
+                    Text("最近检测：\(checked.formatted(date: .omitted, time: .standard))")
+                }
+                if model.adbChecking { ProgressView().controlSize(.mini) }
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            Text("自动识别默认开启：手机接入 USB、恢复已授权无线 ADB 或 Mac 唤醒后，会自动检测并尝试恢复来电状态；有多台设备时不会猜测选择。")
+                .font(.caption).foregroundStyle(.secondary)
             Divider()
             Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.2.2" : "当前构建未包含")")
                 .font(.caption)
@@ -169,7 +183,7 @@ struct DashboardView: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
             Divider()
-            Toggle("ADB 来电状态自动同步和断线自动恢复", isOn: Binding(
+            Toggle("来电状态自动连接、断线重试与锁屏备用同步", isOn: Binding(
                 get: { model.liveSyncEnabled },
                 set: { model.setLiveSyncEnabled($0) }
             ))
@@ -196,8 +210,7 @@ struct DashboardView: View {
             Text(model.adbBridgeHealthDetail).font(.caption).foregroundStyle(.secondary)
             Text("ADB 状态、Shell 响应与 Companion 电话事件服务分别诊断。锁屏时服务受限不等于撤销 ADB 授权；如果无线调试被系统关闭，仍需在手机上重新启用。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("手机 Companion V0.2.2 可供 Mac 在 HTTP 超时时读取匿名 ADB 状态快照；系统关闭 ADB 授权时仍须重新授权。")
-                .font(.caption).foregroundStyle(.secondary)
+            Text("手机 Companion V0.2.2 在 HTTP 超时时提供匿名 ADB 快照；系统撤销授权或关闭无线调试后仍须手机端手动恢复。")
                 .font(.caption).foregroundStyle(.secondary)
             Text("实时电话状态：\(model.livePhoneState)")
                 .font(.headline)
@@ -380,7 +393,7 @@ struct DashboardView: View {
             Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.3.2 (14)").font(.caption.monospaced())
+            Text("0.3.3 (15)").font(.caption.monospaced())
         }
     }
 

@@ -30,6 +30,17 @@ final class SIMAICoreTests: XCTestCase {
                        "AUDIO_HANDSHAKE_UNEXPECTED")
     }
 
+    func testAutomaticADBDiscoveryBackoffDoesNotCompeteWithAudio() {
+        XCTAssertEqual(BridgeRetryPolicy.adbScanInterval(authorizedDevices: 1,
+                            recentlySynced: true), 45)
+        XCTAssertEqual(BridgeRetryPolicy.adbScanInterval(authorizedDevices: 1,
+                            recentlySynced: false), 12)
+        XCTAssertEqual(BridgeRetryPolicy.adbScanInterval(authorizedDevices: 0,
+                            recentlySynced: false), 12)
+        XCTAssertEqual(BridgeRetryPolicy.adbScanInterval(authorizedDevices: 2,
+                            recentlySynced: true), 12)
+    }
+
     func testBridgeRetryBackoffIsBounded() {
         XCTAssertEqual(BridgeRetryPolicy.delay(after: 0), 2)
         XCTAssertEqual(BridgeRetryPolicy.delay(after: 1), 2)
