@@ -1045,7 +1045,7 @@ final class AssistantModel: ObservableObject {
         apkInstallStatus = "正在通过 ADB 安装/覆盖手机应用……"
         let adb = selectedADBPath
         log(.info, .system, "用户确认开始安装或覆盖 Android 伴侣 APK",
-            details: ["version": "0.2.1"])
+            details: ["version": "0.3.3"])
         Task.detached(priority: .userInitiated) { [weak self] in
             let outcome = ADBInspector.install(at: adb, apk: resource)
             await MainActor.run {
@@ -1058,6 +1058,10 @@ final class AssistantModel: ObservableObject {
                               "reason": outcome.status])
                 self.alertText = outcome.status
                 self.inspectADB()
+                if outcome.succeeded && FeishuWebhookStore.load() != nil {
+                    self.feishuSyncStatus = "手机 APK 已安装，正在自动恢复飞书配置……"
+                    self.syncFeishuSettings()
+                }
                 self.pollLiveBridge()
             }
         }
@@ -1087,6 +1091,10 @@ final class AssistantModel: ObservableObject {
                          "用户确认的 Android 伴侣重装操作结束",
                          details: ["success": "\(outcome.succeeded)"])
                 self.inspectADB()
+                if outcome.succeeded && FeishuWebhookStore.load() != nil {
+                    self.feishuSyncStatus = "手机应用清理重装完成，正在从 Mac 钥匙串恢复飞书配置……"
+                    self.syncFeishuSettings()
+                }
                 self.pollLiveBridge()
             }
         }
