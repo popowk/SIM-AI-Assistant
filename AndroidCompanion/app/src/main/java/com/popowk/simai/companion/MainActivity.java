@@ -239,6 +239,20 @@ public final class MainActivity extends Activity {
         log.setText("最近事件（不保存号码）：\n" +
                 String.join("\n", CallMonitorService.eventSnapshot()));
     }
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                                     int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == SMS_PERMISSION_REQUEST) {
+            boolean granted = checkSelfPermission(Manifest.permission.RECEIVE_SMS)
+                    == PackageManager.PERMISSION_GRANTED;
+            Toast.makeText(this, granted
+                    ? "短信接收权限已授权；配置 Webhook 后可自动发送新短信"
+                    : "短信权限未获授权。部分 Android 设备会限制侧载应用的短信权限，请检查系统权限与安装来源",
+                    Toast.LENGTH_LONG).show();
+        }
+        refresh();
+    }
+
     @Override protected void onResume() {
         super.onResume();
         handler.removeCallbacks(update);
