@@ -3,6 +3,28 @@ import XCTest
 @testable import SIMAICore
 
 final class SIMAICoreTests: XCTestCase {
+
+    func testBridgeRetryBackoffIsBounded() {
+        XCTAssertEqual(BridgeRetryPolicy.delay(after: 0), 2)
+        XCTAssertEqual(BridgeRetryPolicy.delay(after: 1), 2)
+        XCTAssertEqual(BridgeRetryPolicy.delay(after: 2), 4)
+        XCTAssertEqual(BridgeRetryPolicy.delay(after: 3), 8)
+        XCTAssertEqual(BridgeRetryPolicy.delay(after: 4), 16)
+        XCTAssertEqual(BridgeRetryPolicy.delay(after: 5), 30)
+        XCTAssertEqual(BridgeRetryPolicy.delay(after: 50), 30)
+    }
+
+    func testWirelessReconnectAddressIsStrictlyValidated() {
+        XCTAssertTrue(BridgeRetryPolicy.validWirelessEndpoint("192.168.2.20:5555"))
+        XCTAssertTrue(BridgeRetryPolicy.validWirelessEndpoint("10.0.0.6:43321"))
+        XCTAssertFalse(BridgeRetryPolicy.validWirelessEndpoint("192.168.2.300:5555"))
+        XCTAssertFalse(BridgeRetryPolicy.validWirelessEndpoint("192.168.2.20:0"))
+        XCTAssertFalse(BridgeRetryPolicy.validWirelessEndpoint("224.2.1.5:5555"))
+        XCTAssertFalse(BridgeRetryPolicy.validWirelessEndpoint("1.2.3.4:5555;rm -rf /"))
+        XCTAssertFalse(BridgeRetryPolicy.validWirelessEndpoint("adb-phone.local:5555"))
+        XCTAssertFalse(BridgeRetryPolicy.validWirelessEndpoint(""))
+    }
+
     func testPrivacyRedaction() {
         let raw = "phone +8613812345678 and 415-555-0199; MAC AA:BB:CC:DD:EE:FF; test@example.com; token sk-ABCDEFGHIJKLMN"
         let clean = PrivacyRedactor.clean(raw)

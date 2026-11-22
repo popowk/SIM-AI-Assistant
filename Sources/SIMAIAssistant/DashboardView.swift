@@ -33,7 +33,7 @@ struct DashboardView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("请先与同意参与测试的另一方接通真实电话，让对方持续说话。本测试只测量电话下行 PCM 峰值与 RMS，不录音、不传输语音，也不证明已分离出对方声音。")
+            Text("请先与同意参与测试的另一方接通真实电话，让对方持续说话。即使 Mac 状态同步暂时显示 IDLE/未连接也可测试，Android 端会再次确认正在通话。本测试只测量电话下行 PCM 峰值与 RMS，不录音、不传输语音。")
         }
         .confirmationDialog("向真实电话发送低音量测试音？", isPresented: $confirmUplink, titleVisibility: .visible) {
             Button("双方已同意，发送约 1 秒测试音") {
@@ -41,7 +41,7 @@ struct DashboardView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("必须是双方同意的测试电话，先接通并确认对方知晓即将听到两声测试音。程序会尝试向通话上行写入短促测试音；成功写入不代表对方一定听见。不会自动接听、不会保存声音。")
+            Text("必须是双方同意的测试电话，先接通并确认对方知晓即将听到两声测试音。即使 Mac 电话状态暂时未同步，Android 端仍会核实通话已接通；否则拒绝发送测试音。成功写入不代表对方一定听见。")
         }
         .confirmationDialog("确认清理本应用日志？", isPresented: $confirmLogCleanup,
                             titleVisibility: .visible) {
@@ -84,7 +84,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("真实电话音频兼容性诊断 · V0.2.1")
+                Text("真实电话音频兼容性诊断 · V0.2.2")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -152,7 +152,7 @@ struct DashboardView: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
             Divider()
-            Toggle("ADB 来电状态自动同步", isOn: Binding(
+            Toggle("ADB 来电状态自动同步和断线自动恢复", isOn: Binding(
                 get: { model.liveSyncEnabled },
                 set: { model.setLiveSyncEnabled($0) }
             ))
@@ -163,6 +163,12 @@ struct DashboardView: View {
                 Button("重新连接") { model.reconnectLiveBridge() }
                     .disabled(!model.liveSyncEnabled)
             }
+            if let lastSync = model.liveBridgeLastSync {
+                Text("最近成功同步：\(lastSync.formatted(date: .omitted, time: .standard))")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Mac 会自动重新探测已授权 ADB、重建端口转发并同步电话事件；手机重启后若无线调试被系统关闭，需要重新授权或启动无线调试。")
+                .font(.caption).foregroundStyle(.secondary)
             Text("实时电话状态：\(model.livePhoneState)")
                 .font(.headline)
                 .foregroundStyle(model.livePhoneState == "RINGING" ? .orange : .primary)
@@ -183,12 +189,12 @@ struct DashboardView: View {
             HStack {
                 Button("1 · 检测音频接口") { model.runPhoneAudioProbe(.info) }
                 Button("2 · 测试通话下行") { confirmDownlink = true }
-                    .disabled(model.livePhoneState != "OFFHOOK")
                 Button("3 · 测试通话上行音") { confirmUplink = true }
-                    .disabled(model.livePhoneState != "OFFHOOK")
             }
             .buttonStyle(.bordered)
             .disabled(model.audioProbeBusy || model.adbInstalling || !model.embeddedAudioProbeAvailable)
+            Text("已解除 Mac 状态同步限制：即使显示 IDLE 或未连接，也可在真实电话接通后点击测试。Android 会再次检查通话状态。")
+                .font(.caption).foregroundStyle(.secondary)
             if model.audioProbeBusy {
                 ProgressView("手机音频检测进行中……").controlSize(.small)
             }
@@ -301,7 +307,7 @@ struct DashboardView: View {
             Text("已验证来电状态同步；双向电话音频仍需在 vivo S9e 上实测。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.2.1 (8)").font(.caption.monospaced())
+            Text("0.2.2 (9)").font(.caption.monospaced())
         }
     }
 

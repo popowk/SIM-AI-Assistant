@@ -18,6 +18,7 @@ final class AssistantModel: ObservableObject {
     @Published var liveSyncEnabled = UserDefaults.standard.object(forKey: "SIMAI_LIVE_SYNC") as? Bool ?? true
     @Published var liveBridgeStatus = "正在检查 ADB 连接"
     @Published var livePhoneState = "未连接"
+    @Published var liveBridgeLastSync: Date?
     @Published var liveCallEvents: [String] = []
     @Published var audioProbeBusy = false
     @Published var audioProbeStatus = "尚未测试真实电话音频"
@@ -31,8 +32,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.2.1"
-    let buildNumber = "8"
+    let version = "0.2.2"
+    let buildNumber = "9"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -41,6 +42,7 @@ final class AssistantModel: ObservableObject {
     private var bridgeLink: ADBBridgeLink?
     private var bridgeBusy = false
     private var bridgeCursor = PhoneBridgeCursor()
+    private var bridgeGeneration = 0
     private var bridgeRetryAfter = Date.distantPast
     private var bridgeConsecutiveFailures = 0
     private(set) var sessionID = UUID().uuidString
@@ -107,7 +109,7 @@ final class AssistantModel: ObservableObject {
     // never from Mac Bluetooth and never from a cellular audio channel.
     private func startLiveSyncTimer() {
         guard bridgeTimer == nil else { return }
-        bridgeTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
+        bridgeTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.pollLiveBridge() }
         }
         pollLiveBridge()
@@ -142,6 +144,7 @@ final class AssistantModel: ObservableObject {
             }
         }
         bridgeLink = nil
+        bridgeGeneration += 1
         // Preserve cursor on temporary USB disconnect to avoid replaying old call events.
     }
 
@@ -152,8 +155,7 @@ final class AssistantModel: ObservableObject {
 
     private func noteBridgeFailure(code: String, domain: String) {
         bridgeConsecutiveFailures += 1
-        let attempt = min(bridgeConsecutiveFailures, 5)
-        let delay = min(60, 4 * (1 << (attempt - 1)))
+        let delay = Int(BridgeRetryPolicy.delay(after: bridgeConsecutiveFailures))
         bridgeRetryAfter = Date().addingTimeInterval(TimeInterval(delay))
         liveBridgeStatus = "连接中断，将在约 \(delay) 秒后重试（可手动重新连接）"
         // One warning per outage, then sparse checkpoints. Avoid dozens of
@@ -170,6 +172,7 @@ final class AssistantModel: ObservableObject {
               Date() >= bridgeRetryAfter else { return }
         bridgeBusy = true
         if let link = bridgeLink {
+            let generation = bridgeGeneration
             // Android retains at most 64 events. Fetch the bounded history so a freshly
             // restarted Android session is not missed when its sequence starts from 1.
             // PhoneBridgeCursor filters all duplicate events on the Mac.
@@ -179,13 +182,18 @@ final class AssistantModel: ObservableObject {
                 var request = URLRequest(url: URL(
                     string: "http://127.0.0.1:\(link.localPort)/events?since=\(since)")!)
                 request.httpMethod = "GET"
-                request.timeoutInterval = 3.0
+                request.timeoutInterval = 6.0
                 request.setValue(link.token, forHTTPHeaderField: "X-SIMAI-Token")
                 request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
                 do {
                     let (data, response) = try await URLSession.shared.data(for: request)
-                    guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-                        throw NSError(domain: "SIMAI.ADBBridge", code: 403)
+                    guard self.liveSyncEnabled, generation == self.bridgeGeneration else {
+                        self.bridgeBusy = false
+                        return
+                    }
+                    let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    guard status == 200 else {
+                        throw NSError(domain: "SIMAI.ADBBridge.HTTP", code: status)
                     }
                     let snapshot = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: data)
                     guard snapshot.schema == 1, snapshot.running,
@@ -209,6 +217,7 @@ final class AssistantModel: ObservableObject {
                                            "source": "USB_ADB"])
                     }
                     self.livePhoneState = snapshot.state
+                    self.liveBridgeLastSync = Date()
                     if self.bridgeConsecutiveFailures > 0 {
                         self.log(.info, .call, "ADB 电话状态同步已恢复",
                                  details: ["failedAttempts": "\(self.bridgeConsecutiveFailures)"])
@@ -216,6 +225,10 @@ final class AssistantModel: ObservableObject {
                     self.resetBridgeRetry()
                     self.liveBridgeStatus = "已连接 · ADB 自动同步"
                 } catch {
+                    guard self.liveSyncEnabled, generation == self.bridgeGeneration else {
+                        self.bridgeBusy = false
+                        return
+                    }
                     let nsError = error as NSError
                     self.noteBridgeFailure(code: "\(nsError.code)", domain: nsError.domain)
                     self.livePhoneState = "未连接"
@@ -227,12 +240,21 @@ final class AssistantModel: ObservableObject {
             }
         } else {
             let path = selectedADBPath
+            let generation = bridgeGeneration
             Task { [weak self] in
                 let result = await Task.detached(priority: .utility) {
                     ADBInspector.openBridge(at: path)
                 }.value
                 guard let self else { return }
                 self.bridgeBusy = false
+                guard self.liveSyncEnabled, generation == self.bridgeGeneration else {
+                    if let link = result.link {
+                        Task.detached(priority: .utility) {
+                            ADBInspector.closeBridge(at: path, link: link)
+                        }
+                    }
+                    return
+                }
                 if let link = result.link {
                     self.bridgeLink = link
                     // Keep the previous Android session and sequence across ADB port changes.
@@ -260,10 +282,9 @@ final class AssistantModel: ObservableObject {
     /// triggered by separate, informed consent dialogs and a connected call.
     func runPhoneAudioProbe(_ action: AndroidAudioProbeAction) {
         guard !audioProbeBusy && !adbInstalling else { return }
-        if action != .info && livePhoneState != "OFFHOOK" {
-            alertText = "必须先由双方同意并接通一通真实测试电话，且 Mac 状态为 OFFHOOK。未执行测试。"
-            return
-        }
+        // Mac call-state notifications are best-effort and may arrive late when
+        // the ADB event tunnel reconnects. Do not gate a real-call test on them.
+        // Android's requireInCall() is the authoritative safety check.
         guard let path = Bundle.main.resourceURL?.appendingPathComponent("SIMAI-Audio-Probe.jar"),
               FileManager.default.fileExists(atPath: path.path) else {
             alertText = "此 Mac 安装包没有包含音频兼容性助手。请下载最新完整版本。"
@@ -279,7 +300,8 @@ final class AssistantModel: ObservableObject {
             audioProbeRemoteConfirmed = false
         }
         log(.info, .audio, "用户主动启动 Android 电话音频测试",
-            details: ["action": action.rawValue, "stage": "begin"])
+            details: ["action": action.rawValue, "stage": "begin",
+                      "macCallState": livePhoneState])
         Task.detached(priority: .userInitiated) { [weak self] in
             let report = ADBInspector.runAudioProbe(at: adb, jar: path, action: action)
             await MainActor.run {
@@ -414,6 +436,7 @@ final class AssistantModel: ObservableObject {
                 return
             }
             closeLiveBridge()
+            resetBridgeRetry()
             selectedADBPath = url.path
             UserDefaults.standard.set(url.path, forKey: "SIMAI_ADB_PATH")
             log(.info, .system, "用户手动设置 ADB 路径（路径不写入诊断日志）")
@@ -424,6 +447,7 @@ final class AssistantModel: ObservableObject {
 
     func resetADBSelection() {
         closeLiveBridge()
+        resetBridgeRetry()
         selectedADBPath = ""
         UserDefaults.standard.removeObject(forKey: "SIMAI_ADB_PATH")
         log(.info, .system, "ADB 切换为自动路径检测")

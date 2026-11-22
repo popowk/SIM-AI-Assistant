@@ -29,7 +29,7 @@ private struct MenuBarCommands: View {
         Divider()
         Button("刷新 Mac 音频设备") { model.refresh() }
         Divider()
-        Text("v0.2.1 · 电话音频兼容性实测")
+        Text("v0.2.2 · 电话音频兼容性实测")
         Button("退出 SIM AI Assistant") { NSApp.terminate(nil) }
     }
 }

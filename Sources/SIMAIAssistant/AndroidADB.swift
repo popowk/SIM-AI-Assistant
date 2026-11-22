@@ -1,5 +1,6 @@
 #if os(macOS)
 import Foundation
+import SIMAICore
 
 struct ADBInspection {
     let installed: Bool
@@ -156,6 +157,10 @@ enum ADBInspector {
 
 
     /// Requires exactly one authorized device and a running, user-started companion service.
+    /// Reopens a previously authorized wireless ADB transport when it drops out
+    /// of `adb devices`. The endpoint is the IP:port reported by ADB, not a
+    /// phone serial, and is never included in logs or exported diagnostics.
+    /// A revoked authorization or disabled Wi-Fi debugging still needs user action.
     static func openBridge(at selected: String?) -> ADBBridgeResult {
         guard let adb = executable(at: selected) else {
             return .init(link: nil, message: "ADB 不可用；请重新选择可执行文件")
@@ -163,13 +168,30 @@ enum ADBInspector {
         let devices: [(serial: String, state: String)]
         switch run(adb, args: ["devices"], timeout: 12) {
         case .completed(0, let output): devices = parseDevices(output)
-        default: return .init(link: nil, message: "ADB 无法列出授权手机")
+        default: return .init(link: nil, message: "ADB 无法列出授权手机，将自动重试")
         }
-        let authorized = devices.filter { $0.state == "device" }
+        var authorized = devices.filter { $0.state == "device" }
+        if authorized.isEmpty,
+           let saved = UserDefaults.standard.string(forKey: "SIMAI_LAST_AUTHORIZED_WIFI_ADB"),
+           BridgeRetryPolicy.validWirelessEndpoint(saved) {
+            // Never use a general adb kill-server/reconnect command: it would
+            // disrupt unrelated development devices. Reconnect this one endpoint.
+            _ = run(adb, args: ["connect", saved], timeout: 8)
+            if case .completed(0, let refreshed) = run(adb, args: ["devices"], timeout: 12) {
+                authorized = parseDevices(refreshed).filter { $0.state == "device" }
+            }
+        }
         guard authorized.count == 1 else {
-            return .init(link: nil, message: "自动同步要求恰好 1 台已授权的 Android 手机")
+            return .init(link: nil, message: authorized.count > 1
+                ? "检测到多台已授权设备；为避免误连，请仅保留一台"
+                : "未发现已授权手机；将自动重试。若手机重启或无线调试关闭，请重新启用/授权")
         }
         let serial = authorized[0].serial
+        if BridgeRetryPolicy.validWirelessEndpoint(serial) {
+            // Store only a previously authorized network endpoint to allow
+            // automatic ADB reconnection after Mac app restarts.
+            UserDefaults.standard.set(serial, forKey: "SIMAI_LAST_AUTHORIZED_WIFI_ADB")
+        }
         let token: String
         switch run(adb, args: ["-s", serial, "shell", "run-as",
                                "com.popowk.simai.companion", "cat", "files/bridge-token"], timeout: 8) {
@@ -178,22 +200,22 @@ enum ADBInspector {
             guard value.count == 64, value.unicodeScalars.allSatisfy({
                 ("0"..."9").contains(String($0)) || ("a"..."f").contains(String($0))
             }) else {
-                return .init(link: nil, message: "手机端通信凭证无效，请更新伴侣 APK 并启动电话监听")
+                return .init(link: nil, message: "手机端通信凭证无效，请启动伴侣电话监听")
             }
             token = value
         default:
-            return .init(link: nil, message: "手机端桥接尚未启动；请打开新 APK、授权后点击「开始监听电话状态」")
+            return .init(link: nil, message: "手机监听服务未启动或 ADB 无法读取凭证；将继续自动尝试")
         }
         switch run(adb, args: ["-s", serial, "forward", "tcp:0", "tcp:18764"], timeout: 8) {
         case .completed(0, let output):
             let value = output.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let port = Int(value), (1024...65535).contains(port) else {
-                return .init(link: nil, message: "ADB 未返回有效的本机转发端口")
+                return .init(link: nil, message: "ADB 未返回有效的转发端口；将自动重试")
             }
             return .init(link: ADBBridgeLink(serial: serial, token: token, localPort: port),
-                         message: "USB 通道已建立；正在等待手机状态事件")
+                         message: "ADB 状态转发已建立，正在接收手机事件")
         default:
-            return .init(link: nil, message: "ADB 端口转发失败，请保持 USB 连接并检查手机授权")
+            return .init(link: nil, message: "ADB 端口转发失败，将自动重试；检查手机无线调试是否开启")
         }
     }
 
