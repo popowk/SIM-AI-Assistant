@@ -41,6 +41,13 @@ final class AssistantModel: ObservableObject {
     @Published var chatGPTVoiceRouteEnabled = false
     @Published var chatGPTVoiceRouteStatus = "尚未开启（仅将电话下行送入 ChatGPT）"
     @Published var chatGPTVoiceRouteDropped = 0
+    @Published var selectedVoiceMonitorOutputID = ""
+    @Published var aiReplyMonitorEnabled = false
+    @Published var aiReplyToPhoneEnabled = false
+    @Published var aiReplyReturnStatus = "尚未启动 GPT 回复监听"
+    @Published var aiReplyReceivedFrames = 0
+    @Published var aiReplyMonitorDropped = 0
+    @Published var aiReplyUplinkUnderflow = 0
     @Published var liveVoiceRxFrames = 0
     @Published var liveVoiceTxFrames = 0
     @Published var liveVoiceDropFrames = 0
@@ -56,8 +63,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.0"
-    let buildNumber = "17"
+    let version = "0.4.1"
+    let buildNumber = "18"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -514,6 +521,12 @@ final class AssistantModel: ObservableObject {
         chatGPTVoiceRouteEnabled = false
         chatGPTVoiceRouteStatus = "尚未开启（需要先建立电话音频）"
         chatGPTVoiceRouteDropped = 0
+        aiReplyMonitorEnabled = false
+        aiReplyToPhoneEnabled = false
+        aiReplyReturnStatus = "连接电话音频后可开启 GPT 回复监听"
+        aiReplyReceivedFrames = 0
+        aiReplyMonitorDropped = 0
+        aiReplyUplinkUnderflow = 0
         liveVoiceRxFrames = 0
         liveVoiceTxFrames = 0
         liveVoiceDropFrames = 0
@@ -524,7 +537,7 @@ final class AssistantModel: ObservableObject {
         liveVoiceHandshakeAttempts = 0
         log(.info, .audio, "用户确认开始实时电话音频预览",
             details: ["mode": "manual", "mic": "muted", "maxDurationSeconds": "180"])
-        let stream = PhoneAudioStream { [weak self] update in
+        let stream = PhoneAudioStream(physicalMonitorOutput: UInt32(selectedVoiceMonitorOutputID)) { [weak self] update in
             Task { @MainActor in
                 guard let self, self.voiceSessionID == id else { return }
                 switch update {
@@ -549,12 +562,19 @@ final class AssistantModel: ObservableObject {
                     self.liveVoiceUplinkLateFrames = txLate
                     self.liveVoiceMicBufferedMs = micBufferedMs
                     self.chatGPTVoiceRouteDropped = voiceRouteDropped
+                case .aiReturnMetrics(let captured, let monitorDropped, let uplinkUnderflow):
+                    self.aiReplyReceivedFrames = captured
+                    self.aiReplyMonitorDropped = monitorDropped
+                    self.aiReplyUplinkUnderflow = uplinkUnderflow
                 case .finished(let reason):
                     self.liveVoiceStarting = false
                     self.liveVoiceActive = false
                     self.liveVoiceMicrophoneEnabled = false
                     self.chatGPTVoiceRouteEnabled = false
                     self.chatGPTVoiceRouteStatus = "电话已结束，虚拟麦克风已停止"
+                    self.aiReplyMonitorEnabled = false
+                    self.aiReplyToPhoneEnabled = false
+                    self.aiReplyReturnStatus = "电话音频已结束，GPT 回复路由已释放"
                     self.liveVoiceStatus = "实时语音已停止（\(reason)）"
                     self.voiceStream = nil
                     // Resume anonymous call-state synchronization without
@@ -570,6 +590,9 @@ final class AssistantModel: ObservableObject {
                             "uplinkLateFrames": "\(self.liveVoiceUplinkLateFrames)",
                             "micBufferedMs": "\(self.liveVoiceMicBufferedMs)",
                             "voiceRouteDropped": "\(self.chatGPTVoiceRouteDropped)",
+                            "aiReturnCaptured": "\(self.aiReplyReceivedFrames)",
+                            "aiReturnMonitorDropped": "\(self.aiReplyMonitorDropped)",
+                            "aiReturnUplinkUnderflow": "\(self.aiReplyUplinkUnderflow)",
                             "handshakeAttempts": "\(self.liveVoiceHandshakeAttempts)"])
                 }
             }
@@ -600,10 +623,72 @@ final class AssistantModel: ObservableObject {
         }
     }
 
+    /// ChatGPT must output to BlackHole 16ch. Mac speakers/headphones are
+    /// chosen separately and never replaced by a virtual device.
+    func setAIReplyMonitor(_ enabled: Bool) {
+        guard liveVoiceActive, let voiceStream else { return }
+        if enabled {
+            guard let physicalID = UInt32(selectedVoiceMonitorOutputID) else {
+                aiReplyReturnStatus = "请先选择真实耳机/扬声器作为监听设备"
+                return
+            }
+            do {
+                try voiceStream.setAIReplyMonitoring(true, physicalOutputID: physicalID)
+                aiReplyMonitorEnabled = true
+                aiReplyToPhoneEnabled = false
+                aiReplyReturnStatus = "监听已开启：GPT 输出 BlackHole 16ch → Mac 选定耳机，电话回传仍关闭"
+                log(.info, .audio, "用户主动开启独立 GPT 回复监听",
+                    details: ["route": "BLACKHOLE16_TO_PHYSICAL", "phoneForward": "off"])
+            } catch {
+                aiReplyMonitorEnabled = false
+                aiReplyToPhoneEnabled = false
+                aiReplyReturnStatus = "监听启动失败，请核对 BlackHole 16ch 和输出设备；失败细节请导出诊断"
+                let ns = error as NSError
+                log(.warn, .audio, "GPT 回复监听初始化失败",
+                    details: ["category": "AI_RETURN_MONITOR", "errorDomain": ns.domain,
+                              "errorCode": "\(ns.code)"])
+            }
+        } else {
+            do { try voiceStream.setAIReplyMonitoring(false) } catch {}
+            aiReplyMonitorEnabled = false
+            aiReplyToPhoneEnabled = false
+            aiReplyReturnStatus = "已关闭 GPT 回复监听及电话回传"
+            log(.info, .audio, "用户关闭 GPT 回复监听与电话回传",
+                details: ["route": "AI_RETURN_OFF"])
+        }
+    }
+
+    /// Second distinct opt-in required before any captured AI audio can
+    /// enter the PSTN. Disabling restores silence rather than re-enabling mic.
+    func setAIReplyToPhone(_ enabled: Bool) {
+        guard liveVoiceActive, let voiceStream else { return }
+        do {
+            try voiceStream.setAIReplyToPhone(enabled)
+            aiReplyToPhoneEnabled = enabled
+            if enabled {
+                liveVoiceMicrophoneEnabled = false
+            }
+            aiReplyReturnStatus = enabled
+                ? "GPT 回复已人工授权发送到电话；Mac 麦克风已静音，可立即关闭回传"
+                : "GPT 回复仅供 Mac 耳机监听，电话回传关闭"
+            log(.info, .audio, enabled
+                ? "用户主动授权 GPT 音频回传运营商电话"
+                : "用户立即关闭 GPT 音频回传运营商电话",
+                details: ["phoneForward": enabled ? "on" : "off"])
+        } catch {
+            aiReplyToPhoneEnabled = false
+            aiReplyReturnStatus = "GPT 电话回传未启动，请先开启监听并确认音频路由"
+            log(.warn, .audio, "GPT 电话回传未启动",
+                details: ["category": "AI_RETURN_TO_PHONE"])
+        }
+    }
+
     func stopLiveVoice() {
         guard liveVoiceStarting || liveVoiceActive else { return }
         liveVoiceMicrophoneEnabled = false
         chatGPTVoiceRouteEnabled = false
+        aiReplyMonitorEnabled = false
+        aiReplyToPhoneEnabled = false
         liveVoiceStatus = "正在停止并释放电话音频通道……"
         voiceStream?.stop()
     }
