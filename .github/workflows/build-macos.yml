@@ -70,7 +70,7 @@ jobs:
             if [[ -n "$field" ]]; then signing_fields=$((signing_fields + 1)); fi
           done
           if [[ "$signing_fields" == 4 ]]; then
-            KEYSTORE_PATH="$(mktemp "$RUNNER_TEMP/simai-android-XXXXXX.jks")"
+            KEYSTORE_PATH="$(mktemp "$RUNNER_TEMP/simai-android-XXXXXXXX")"
             trap 'rm -f "$KEYSTORE_PATH"' EXIT
             chmod 600 "$KEYSTORE_PATH"
             printf '%s' "$SIMAI_ANDROID_KEYSTORE_B64" | base64 -D > "$KEYSTORE_PATH"
@@ -133,7 +133,7 @@ jobs:
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest --target "$(git rev-parse HEAD)" \
               --title "SIM AI Assistant · 最新测试版" --prerelease \
-              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.6 增加 GitHub Secrets 固定 Android 调试 APK 签名支持、签名状态标记及安全升级检查；未配置密钥仍为临时调试签名，不能保证无损覆盖。"
+              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.6 增加 GitHub Secrets 固定 Android 调试 APK 签名支持、签名状态标记及安全升级提示；未配置密钥仍为临时调试签名，不能保证无损覆盖。"
           fi
           gh release upload dev-latest \
             dist/SIM-AI-Assistant-v0.4.6-macos-arm64.zip \
