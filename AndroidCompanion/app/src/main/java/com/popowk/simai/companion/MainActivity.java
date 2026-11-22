@@ -24,6 +24,10 @@ import android.widget.TextView;
 public final class MainActivity extends Activity {
     private static final int PHONE_PERMISSION_REQUEST = 1021;
     private static final int SMS_PERMISSION_REQUEST = 1022;
+    private static final String ONBOARDING_PREFS = "simai_initial_setup";
+    private static final String KEY_WIZARD_SHOWN = "permissions_wizard_shown";
+    private static final String KEY_MONITOR_DESIRED = "phone_state_monitor_desired";
+    private boolean wizardInProgress = false;
     private TextView state;
     private TextView log;
     private TextView permission;
@@ -57,8 +61,7 @@ public final class MainActivity extends Activity {
         column.addView(permission);
         Button grant = new Button(this);
         grant.setText("授权电话状态读取");
-        grant.setOnClickListener(v -> requestPermissions(
-                new String[]{Manifest.permission.READ_PHONE_STATE}, PHONE_PERMISSION_REQUEST));
+        grant.setOnClickListener(v -> requestPhonePermissionAndAutoStart());
         column.addView(grant);
 
         state = new TextView(this);
@@ -67,33 +70,24 @@ public final class MainActivity extends Activity {
         Button start = new Button(this);
         start.setText("开始监听电话状态");
         start.setOnClickListener(v -> {
-            if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[]{Manifest.permission.READ_PHONE_STATE}, PHONE_PERMISSION_REQUEST);
-                return;
-            }
-            Intent service = new Intent(this, CallMonitorService.class);
-            try {
-                if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
-                else startService(service);
-            } catch (Exception exception) {
-                CallMonitorService.note("无法启动监听：" + exception.getClass().getSimpleName());
-            }
-            refresh();
+            setMonitorDesired(true);
+            requestPhonePermissionAndAutoStart();
         });
         column.addView(start);
 
         Button stop = new Button(this);
         stop.setText("停止监听");
         stop.setOnClickListener(v -> {
+            setMonitorDesired(false);
             stopService(new Intent(this, CallMonitorService.class));
             refresh();
         });
         column.addView(stop);
 
         CheckBox stayAwake = new CheckBox(this);
-        stayAwake.setText("锁屏运行增强（可选，增加耗电）");
+        stayAwake.setText("锁屏运行增强（新安装默认开启，增加耗电）");
         stayAwake.setChecked(getSharedPreferences(CallMonitorService.PREFS, MODE_PRIVATE)
-                .getBoolean(CallMonitorService.KEEP_AWAKE, false));
+                .getBoolean(CallMonitorService.KEEP_AWAKE, true));
         stayAwake.setOnCheckedChangeListener((buttonView, enabled) -> {
             getSharedPreferences(CallMonitorService.PREFS, MODE_PRIVATE).edit()
                     .putBoolean(CallMonitorService.KEEP_AWAKE, enabled).apply();
@@ -109,7 +103,7 @@ public final class MainActivity extends Activity {
         column.addView(stayAwake);
 
         TextView stayAwakeHelp = new TextView(this);
-        stayAwakeHelp.setText("锁屏运行增强只维持电话状态监听进程的 CPU 唤醒锁（服务运行时），不点亮屏幕，也不能绕过系统对无线 ADB/Doze 的限制。长期启用会增加电量消耗。建议先在 vivo 系统设置中将本应用设为允许后台运行/自启动。");
+        stayAwakeHelp.setText("新安装默认开启锁屏增强，并保留手动关闭的选择。只维持电话状态监听服务的 CPU 唤醒锁（服务运行时），不点亮屏幕，不能绕过系统对无线 ADB/Doze 的限制。长期启用会增加电量消耗；可到 vivo 设置允许后台运行/自启动。");
         column.addView(stayAwakeHelp);
         Button batterySettings = new Button(this);
         batterySettings.setText("打开本应用系统设置 · 检查电池/后台权限");
@@ -210,17 +204,92 @@ public final class MainActivity extends Activity {
         smsStatus = new TextView(this);
         column.addView(smsStatus);
         TextView smsFootnote = new TextView(this);
-        smsFootnote.setText("安全提醒：飞书群成员均可能看到短信全文与验证码。建议启用机器人签名校验。即使开关为开启，未授权短信权限或 Webhook 为空时都不会向外发送。应用不读取历史短信、不保存正文、不写入诊断 ZIP；Android 系统对部分短信和省电后台策略可能有限制。\n");
+        smsFootnote.setText("安全提醒：飞书群成员可能看到完整验证码。请使用私有群并开启签名。开关默认开启，但短信系统权限和有效 Webhook 缺一不可。Android 对包含其他应用 SMS Retriever 哈希的验证码可能不发送普通 SMS_RECEIVED 广播，此类短信无法保证自动读取。应用不读取历史收件箱、不保存正文，也不写入诊断 ZIP。\n");
         column.addView(smsFootnote);
 
         TextView caution = new TextView(this);
-        caution.setText("\n拨打测试：用另一部手机拨打本机联通 SIM，检查 RINGING → OFFHOOK → IDLE。\n后台省电限制可能中止监听服务。USB 或无线 ADB 授权后，Mac 会读取匿名来电状态。锁屏运行增强需要用户明确勾选；不保证无线 ADB 锁屏后始终可用。\n");
+        caution.setText("\n拨打测试：用另一部手机拨打本机联通 SIM，检查 RINGING → OFFHOOK → IDLE。\n授权电话状态后会自动启动监听服务，手动点「停止监听」则尊重该选择。后台省电限制可能中止服务；默认启用锁屏运行增强也不能保证无线 ADB 锁屏后始终可用。\n");
         column.addView(caution);
         log = new TextView(this);
         log.setTextIsSelectable(true);
         column.addView(log);
 
         setContentView(scroller);
+        // ADB's installer launches this activity after an install or explicit
+        // clean reinstall. Offer one transparent permission wizard, then
+        // start the monitor after Android actually grants the phone permission.
+        handler.post(() -> {
+            if (monitorDesired() &&
+                    checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
+                            == PackageManager.PERMISSION_GRANTED) startPhoneMonitorIfAllowed();
+            offerFirstRunSetup();
+        });
+    }
+
+    private boolean monitorDesired() {
+        return getSharedPreferences(ONBOARDING_PREFS, MODE_PRIVATE)
+                .getBoolean(KEY_MONITOR_DESIRED, true);
+    }
+
+    private void setMonitorDesired(boolean desired) {
+        getSharedPreferences(ONBOARDING_PREFS, MODE_PRIVATE).edit()
+                .putBoolean(KEY_MONITOR_DESIRED, desired).apply();
+    }
+
+    private void startPhoneMonitorIfAllowed() {
+        if (!monitorDesired() || CallMonitorService.running ||
+                checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
+                        != PackageManager.PERMISSION_GRANTED) return;
+        try {
+            Intent service = new Intent(this, CallMonitorService.class);
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
+            else startService(service);
+        } catch (Exception exception) {
+            CallMonitorService.note("自动启动监听失败：" + exception.getClass().getSimpleName());
+        }
+        refresh();
+    }
+
+    private void requestPhonePermissionAndAutoStart() {
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
+                == PackageManager.PERMISSION_GRANTED) {
+            startPhoneMonitorIfAllowed();
+            if (wizardInProgress) requestSMSPermissionIfNeeded();
+        } else {
+            requestPermissions(new String[]{Manifest.permission.READ_PHONE_STATE},
+                    PHONE_PERMISSION_REQUEST);
+        }
+    }
+
+    private void requestSMSPermissionIfNeeded() {
+        if (!wizardInProgress) return;
+        if (checkSelfPermission(Manifest.permission.RECEIVE_SMS)
+                == PackageManager.PERMISSION_GRANTED) {
+            wizardInProgress = false;
+            refresh();
+            return;
+        }
+        requestPermissions(new String[]{Manifest.permission.RECEIVE_SMS},
+                SMS_PERMISSION_REQUEST);
+    }
+
+    private void offerFirstRunSetup() {
+        android.content.SharedPreferences setup =
+                getSharedPreferences(ONBOARDING_PREFS, MODE_PRIVATE);
+        if (setup.getBoolean(KEY_WIZARD_SHOWN, false)) return;
+        setup.edit().putBoolean(KEY_WIZARD_SHOWN, true).apply();
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("安装完成 · 自动初始化")
+                .setMessage("应用将默认启用锁屏运行增强和自动短信通知。下一步会由 Android 依次请求「电话状态」与「接收短信」权限；授予电话权限后将自动启动电话状态监听。\n\n短信转发仅在收到系统 SMS 广播、已获得短信权限、且你配置了飞书机器人时发生；包含验证码的全文会发送给你指定的飞书群。部分定向验证码不会向本应用广播。是否现在开始系统授权？")
+                .setPositiveButton("开始授权并启动", (dialog, which) -> {
+                    wizardInProgress = true;
+                    requestPhonePermissionAndAutoStart();
+                })
+                .setNegativeButton("稍后手动授权", (dialog, which) -> {
+                    wizardInProgress = false;
+                    refresh();
+                })
+                .show();
     }
 
     private void refresh() {
@@ -234,6 +303,8 @@ public final class MainActivity extends Activity {
             smsStatus.setText("短信权限：" + (smsGranted ? "已授权" : "未授权") +
                     " · 自动转发：" + (SmsWebhookForwarder.isEnabled(this) ? "开启" : "关闭") +
                     " · 飞书地址：" + (SmsWebhookForwarder.hasConfiguration(this) ? "已配置" : "未配置") +
+                    "\n收到普通短信广播：" + SmsWebhookForwarder.receivedBroadcastCount(this) +
+                    " 次（最近：" + SmsWebhookForwarder.lastBroadcastDescription(this) + "）" +
                     "\n最近发送结果：" + SmsWebhookForwarder.status(this));
         }
         log.setText("最近事件（不保存号码）：\n" +
@@ -242,7 +313,18 @@ public final class MainActivity extends Activity {
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions,
                                                      int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == SMS_PERMISSION_REQUEST) {
+        if (requestCode == PHONE_PERMISSION_REQUEST) {
+            boolean granted = checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
+                    == PackageManager.PERMISSION_GRANTED;
+            if (granted) {
+                startPhoneMonitorIfAllowed();
+            } else {
+                Toast.makeText(this, "系统未授权电话状态；可在应用设置中手动开启",
+                        Toast.LENGTH_LONG).show();
+            }
+            if (wizardInProgress) requestSMSPermissionIfNeeded();
+        } else if (requestCode == SMS_PERMISSION_REQUEST) {
+            wizardInProgress = false;
             boolean granted = checkSelfPermission(Manifest.permission.RECEIVE_SMS)
                     == PackageManager.PERMISSION_GRANTED;
             Toast.makeText(this, granted
