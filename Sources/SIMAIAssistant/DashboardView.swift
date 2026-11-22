@@ -345,7 +345,7 @@ struct DashboardView: View {
             Text("V0.1 仅提供诊断、模拟测试与人工 Voice 启动；真实 HFP/电话控制待设备验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.1.4 (5)").font(.caption.monospaced()).foregroundStyle(.secondary)
+            Text("0.1.5 (6)").font(.caption.monospaced()).foregroundStyle(.secondary)
         }
     }
 

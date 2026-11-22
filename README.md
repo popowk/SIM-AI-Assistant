@@ -1,4 +1,4 @@
-# SIM AI Assistant — macOS V0.1.4 (测试工程)
+# SIM AI Assistant — macOS V0.1.5 (测试工程)
 
 macOS 菜单栏工具：为 Apple Silicon Mac + vivo S9e + 中国联通 SIM 的后续电话辅助实验提供**可运行的 UI、诊断能力和测试基线**。当前版本**不具备真实运营商电话接听、挂断、监听或 HFP/SCO 双向音频桥接能力**。
 
@@ -84,6 +84,14 @@ Mac V0.1.4 开启「USB 来电状态自动同步」后，在**唯一已授权安
 
 诊断中心「保留范围」新增「**全部日志（含今天）**」，将预览并确认清理该 Mac 应用所有 `events-YYYYMMDD.jsonl` 文件，包括今天；同时清空程序的当前历史列表。与此前的清理最近 1/7/14 天操作并存。全部清理后不会立即向 JSONL 写入一条新的「已清理」记录。操作不可撤销、**不影响 macOS 系统统一日志 OSLog、其他应用日志、Android 手机上保留的内存事件，以及用户曾导出的 ZIP 文件**；未来新事件仍会创建新日志文件。
 
+## V0.1.5 · 实机诊断修复
+
+来自 2026-11-22 实机诊断包：USB ADB 同步 **IDLE → RINGING → OFFHOOK → IDLE 全部成功**。但 21:23:24 桥接自动重连后重复上报事件 1–3，导致同一通来电被重复展示。Mac V0.1.5 保留 Android 会话及最后事件序号，仅在手机服务产生全新 session 时重新从序号 1 读取；同一 session 恢复连接不重复展示。每次只读取 Android 端最多 64 条匿名事件，因此手机服务真正重启时也不会因旧序号遗漏初始事件。增加两个回归测试验证这两个场景。
+
+首次 APK 安装失败、第二次成功，但旧日志只记录布尔结果；Mac 新版会额外记录**已脱敏的预设安装状态文字**以便定位，不记录手机序列号。USB 连接中断时增加错误域与代码，方便判断 ADB/HTTP 断连原因。
+
+**Android APK 未改动（仍为 V0.2.0）。** 如果你已成功安装并允许电话监听，不必重新安装手机 APK，只更新 Mac V0.1.5 即可。没有接管 HFP，也不会影响 Mac 蓝牙外设。
+
 ## GitHub Actions 自动编译与下载
 
 将本仓库 push 到 `main` 后，`.github/workflows/build-macos.yml` 会用 GitHub 提供的 macOS 机器执行测试、交叉编译 **Apple Silicon arm64**、临时签名并打包。可在 **Actions → macOS Build → 最新成功任务 → Artifacts** 下载，也会在 **Releases → Dev Latest** 更新测试发行包。推送 `v*` tag 可创建该版本的 Release。
@@ -101,7 +109,7 @@ bash Scripts/build-macos.sh
 open "dist/SIM AI Assistant.app"
 ```
 
-脚本将执行 `swift test`、`swift build -c release`，组装 `.app`，做本机临时签名并生成 `dist/SIM-AI-Assistant-v0.1.4-macos-arm64.zip`。**临时签名并不等于 Apple 正式公证；不提供面向公众分发的已签名安装包。**
+脚本将执行 `swift test`、`swift build -c release`，组装 `.app`，做本机临时签名并生成 `dist/SIM-AI-Assistant-v0.1.5-macos-arm64.zip`。**临时签名并不等于 Apple 正式公证；不提供面向公众分发的已签名安装包。**
 
 若只做编译检查：
 

@@ -33,8 +33,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.1.4"
-    let buildNumber = "5"
+    let version = "0.1.5"
+    let buildNumber = "6"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -47,8 +47,7 @@ final class AssistantModel: ObservableObject {
     private var bridgeTimer: Timer?
     private var bridgeLink: ADBBridgeLink?
     private var bridgeBusy = false
-    private var bridgeSession = ""
-    private var bridgeSequence = 0
+    private var bridgeCursor = PhoneBridgeCursor()
     private(set) var sessionID = UUID().uuidString
     private(set) var lastError: DiagnosticEvent?
 
@@ -226,15 +225,17 @@ final class AssistantModel: ObservableObject {
             }
         }
         bridgeLink = nil
-        bridgeSession = ""
-        bridgeSequence = 0
+        // Preserve cursor on temporary USB disconnect to avoid replaying old call events.
     }
 
     private func pollLiveBridge() {
         guard liveSyncEnabled, !adbInstalling, !bridgeBusy else { return }
         bridgeBusy = true
         if let link = bridgeLink {
-            let since = bridgeSequence
+            // Android retains at most 64 events. Fetch the bounded history so a freshly
+            // restarted Android session is not missed when its sequence starts from 1.
+            // PhoneBridgeCursor filters all duplicate events on the Mac.
+            let since = 0
             Task { [weak self] in
                 guard let self else { return }
                 var request = URLRequest(url: URL(
@@ -253,14 +254,14 @@ final class AssistantModel: ObservableObject {
                           ["IDLE", "RINGING", "OFFHOOK"].contains(snapshot.state) else {
                         throw NSError(domain: "SIMAI.ADBBridge", code: 422)
                     }
-                    if self.bridgeSession != snapshot.session {
-                        self.bridgeSession = snapshot.session
-                        self.bridgeSequence = 0
+                    let priorSession = self.bridgeCursor.session
+                    let received = self.bridgeCursor.consume(snapshot)
+                    if priorSession != self.bridgeCursor.session {
                         self.liveCallEvents.removeAll()
                         self.log(.info, .call, "Android 电话状态桥接会话已建立",
-                                 details: ["bridgeSchema": "1"])
+                                 details: ["bridgeSchema": "1", "newSession": "true"])
                     }
-                    for event in snapshot.newEvents(after: self.bridgeSequence) {
+                    for event in received {
                         let displayTime = Date(timeIntervalSince1970: Double(event.at) / 1000)
                             .formatted(date: .omitted, time: .standard)
                         self.liveCallEvents.insert("\(displayTime) · \(event.state)", at: 0)
@@ -268,14 +269,14 @@ final class AssistantModel: ObservableObject {
                         self.log(.info, .call, "收到 Android 实时电话状态",
                                  details: ["state": event.state, "sequence": "\(event.seq)",
                                            "source": "USB_ADB"])
-                        self.bridgeSequence = max(self.bridgeSequence, event.seq)
                     }
-                    // A bounded Android history may skip earlier events; keep the cursor moving.
-                    self.bridgeSequence = max(self.bridgeSequence, snapshot.seq)
                     self.livePhoneState = snapshot.state
                     self.liveBridgeStatus = "已连接 · USB ADB 自动同步"
                 } catch {
                     self.liveBridgeStatus = "连接中断，准备自动重连（请确认手机监听已开启）"
+                    let nsError = error as NSError
+                    self.log(.warn, .call, "USB 电话状态桥接连接中断，准备重连",
+                             details: ["errorDomain": nsError.domain, "errorCode": "\(nsError.code)"])
                     self.livePhoneState = "未连接"
                     self.closeLiveBridge()
                 }
@@ -291,8 +292,7 @@ final class AssistantModel: ObservableObject {
                 self.bridgeBusy = false
                 if let link = result.link {
                     self.bridgeLink = link
-                    self.bridgeSession = ""
-                    self.bridgeSequence = 0
+                    // Keep the previous Android session and sequence across ADB port changes.
                     self.liveBridgeStatus = result.message
                     self.log(.info, .call, "ADB USB 端口转发连接建立（未读取设备序列号）")
                     self.pollLiveBridge()
@@ -426,7 +426,8 @@ final class AssistantModel: ObservableObject {
                 self.apkInstallStatus = outcome.status
                 self.log(outcome.succeeded ? .info : .warn, .system,
                     outcome.succeeded ? "Android APK 安装成功" : "Android APK 安装失败",
-                    details: ["success": "\(outcome.succeeded)"])
+                    details: ["success": "\(outcome.succeeded)",
+                              "reason": outcome.status])
                 self.alertText = outcome.status
                 self.inspectADB()
                 self.pollLiveBridge()

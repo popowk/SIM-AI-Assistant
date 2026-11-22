@@ -98,8 +98,8 @@ jobs:
         with:
           name: SIM-AI-Assistant-macOS-arm64
           path: |
-            dist/SIM-AI-Assistant-v0.1.4-macos-arm64.zip
-            dist/SIM-AI-Assistant-v0.1.4-macos-arm64.zip.sha256
+            dist/SIM-AI-Assistant-v0.1.5-macos-arm64.zip
+            dist/SIM-AI-Assistant-v0.1.5-macos-arm64.zip.sha256
             dist/SIMAI-Companion-v0.2.0-debug.apk
             dist/SIMAI-Companion-v0.2.0-debug.apk.sha256
           if-no-files-found: error
@@ -114,11 +114,11 @@ jobs:
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest --target "$(git rev-parse HEAD)" \
               --title "SIM AI Assistant · 最新测试版" --prerelease \
-              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。当前 V0.1.4 支持匿名电话状态 USB ADB 同步；仍不支持电话音频桥接。"
+              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。当前 V0.1.5 修复 USB 重连重复同步；仍不支持电话音频桥接。"
           fi
           gh release upload dev-latest \
-            dist/SIM-AI-Assistant-v0.1.4-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.1.4-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.1.5-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.1.5-macos-arm64.zip.sha256 \
             dist/SIMAI-Companion-v0.2.0-debug.apk \
             dist/SIMAI-Companion-v0.2.0-debug.apk.sha256 --clobber
 
@@ -129,8 +129,8 @@ jobs:
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/SIM-AI-Assistant-v0.1.4-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.1.4-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.1.5-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.1.5-macos-arm64.zip.sha256 \
             dist/SIMAI-Companion-v0.2.0-debug.apk \
             dist/SIMAI-Companion-v0.2.0-debug.apk.sha256 \
             --title "SIM AI Assistant $GITHUB_REF_NAME" --prerelease \

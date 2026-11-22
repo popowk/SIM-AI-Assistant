@@ -119,6 +119,46 @@ final class SIMAICoreTests: XCTestCase {
         XCTAssertEqual(decoded.newEvents(after: 3).count, 0)
     }
 
+
+    func testBridgeCursorDoesNotReplayEventsAfterUSBReconnect() throws {
+        let first = """
+        {"schema":1,"session":"same-android-session","running":true,"state":"OFFHOOK","seq":3,
+         "events":[{"seq":1,"state":"IDLE","at":1000},
+                   {"seq":2,"state":"RINGING","at":2000},
+                   {"seq":3,"state":"OFFHOOK","at":3000}]}
+        """
+        let second = """
+        {"schema":1,"session":"same-android-session","running":true,"state":"IDLE","seq":4,
+         "events":[{"seq":1,"state":"IDLE","at":1000},
+                   {"seq":2,"state":"RINGING","at":2000},
+                   {"seq":3,"state":"OFFHOOK","at":3000},
+                   {"seq":4,"state":"IDLE","at":4000}]}
+        """
+        let decoder = JSONDecoder()
+        var cursor = PhoneBridgeCursor()
+        let a = try decoder.decode(PhoneBridgeSnapshot.self, from: Data(first.utf8))
+        let b = try decoder.decode(PhoneBridgeSnapshot.self, from: Data(second.utf8))
+        XCTAssertEqual(cursor.consume(a).map(\.state), ["IDLE", "RINGING", "OFFHOOK"])
+        XCTAssertEqual(cursor.lastSequence, 3)
+        // Mimic ADB reconnect while Android monitor service/session stays alive.
+        XCTAssertEqual(cursor.consume(b).map(\.state), ["IDLE"])
+        XCTAssertEqual(cursor.consume(b).count, 0)
+        XCTAssertEqual(cursor.lastSequence, 4)
+    }
+
+    func testBridgeCursorResetsOnlyWhenPhoneStartsNewServiceSession() throws {
+        let decoder = JSONDecoder()
+        let old = try decoder.decode(PhoneBridgeSnapshot.self,
+            from: Data(#"{"schema":1,"session":"old","running":true,"state":"OFFHOOK","seq":2,"events":[{"seq":1,"state":"RINGING","at":1000},{"seq":2,"state":"OFFHOOK","at":2000}]}"#.utf8))
+        let fresh = try decoder.decode(PhoneBridgeSnapshot.self,
+            from: Data(#"{"schema":1,"session":"new","running":true,"state":"IDLE","seq":1,"events":[{"seq":1,"state":"IDLE","at":3000}]}"#.utf8))
+        var cursor = PhoneBridgeCursor()
+        XCTAssertEqual(cursor.consume(old).count, 2)
+        XCTAssertEqual(cursor.consume(fresh).map(\.state), ["IDLE"])
+        XCTAssertEqual(cursor.session, "new")
+        XCTAssertEqual(cursor.lastSequence, 1)
+    }
+
     func testZIPContainsOnlyScrubbedDeviceNames() throws {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)

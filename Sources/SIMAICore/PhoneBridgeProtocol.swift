@@ -26,3 +26,24 @@ public struct PhoneBridgeSnapshot: Codable, Equatable {
             .sorted { $0.seq < $1.seq }
     }
 }
+
+
+/// Maintains exactly-once delivery across reconnects to the same Android session.
+/// The cursor resets ONLY when the Android monitor service starts a genuinely new session.
+public struct PhoneBridgeCursor {
+    public private(set) var session: String = ""
+    public private(set) var lastSequence: Int = 0
+
+    public init() {}
+
+    public mutating func consume(_ snapshot: PhoneBridgeSnapshot) -> [PhoneBridgeEvent] {
+        guard snapshot.schema == 1, !snapshot.session.isEmpty else { return [] }
+        if session != snapshot.session {
+            session = snapshot.session
+            lastSequence = 0
+        }
+        let fresh = snapshot.newEvents(after: lastSequence)
+        lastSequence = max(lastSequence, snapshot.seq)
+        return fresh
+    }
+}
