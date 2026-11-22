@@ -1,5 +1,13 @@
 # 变更记录
 
+## 0.4.3 — 2026-11-23
+
+- Mac 端新增飞书 Webhook 地址和可选签名输入、默认开启的自动短信转发开关、登录钥匙串安全保存、保存并同步及重新同步按钮；没有手机连接时允许本地保存且不误报已同步。
+- Android Companion V0.3.1 新增带原有 X-SIMAI-Token 的本机 POST /sms/config 接口和隐私安全状态；仅接受飞书官方 HTTPS 地址，拒绝未经认证写入。配置存于 Android App 私有首选项，短信仍由手机在 Mac 离线时独立发送。
+- Mac V0.4.3 Build 20 内置新版 Companion APK，UI 显示 SMS 授权/转发状态；不把 Webhook、签名、短信正文或验证码写入日志、GitHub、导出 ZIP 或 ADB 命令。
+- 原有电话状态和 GPT Voice 双向音频保留；手机尚需实机验证权限、ADB 同步和真实短信投递。
+
+
 ## 0.4.2 — 2026-11-23
 
 - Android Companion V0.3.0（versionCode 5）新增入站 SMS_RECEIVED 广播接收器，默认开启转发开关，但必须先由用户在手机申请 RECEIVE_SMS 运行时权限并配置飞书官方 HTTPS Webhook，才会自动发送；Mac/ADB 不需要在线。
