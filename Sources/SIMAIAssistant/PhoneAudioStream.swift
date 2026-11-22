@@ -219,7 +219,9 @@ private final class LiveAIReplyCapture {
             throw LiveAudioFailure.reason("AI_RETURN_FORMAT_UNSUPPORTED")
         }
         converter.channelMap = [0]
-        phoneQueue.setCaptureEnabled(true)
+        // Do not even buffer a caller-facing PCM frame until separately
+        // authorized; monitoring uses its own independent queue.
+        phoneQueue.setCaptureEnabled(false)
         monitorQueue.setCaptureEnabled(true)
         // Only this named virtual device is tapped. If it is set as the
         // macOS system output, other applications may ALSO feed this device.
@@ -285,6 +287,11 @@ private final class LiveAIReplyCapture {
         }
     }
 
+    func setPhoneForwarding(_ enabled: Bool) {
+        // Clears old speech on every on/off transition. No pre-consent
+        // buffered audio can leak when the user enables forwarding later.
+        phoneQueue.setCaptureEnabled(enabled)
+    }
     func nextPhoneFrame() -> [UInt8] { phoneQueue.nextFrame() }
 
     func statistics() -> (captured: Int, monitorDropped: Int, uplinkUnderflow: Int, peakRMS: Double) {
@@ -445,8 +452,15 @@ final class PhoneAudioStream {
             microphone.stop()
         }
         gate.lock()
-        aiReplyToPhone = enabled
+        let capture = aiReplyCapture
+        if !enabled { aiReplyToPhone = false }
         gate.unlock()
+        capture?.setPhoneForwarding(enabled)
+        if enabled {
+            gate.lock()
+            if aiReplyCapture === capture && !closed { aiReplyToPhone = true }
+            gate.unlock()
+        }
     }
 
     func stop() {
