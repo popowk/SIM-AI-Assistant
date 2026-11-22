@@ -4,6 +4,20 @@ import XCTest
 
 final class SIMAICoreTests: XCTestCase {
 
+    func testLiveAudioHandshakeDistinguishesErrors() {
+        XCTAssertEqual(PhoneAudioProtocol.handshakeStatus("OK"), "OK")
+        XCTAssertEqual(PhoneAudioProtocol.handshakeStatus("ERR NOT_IN_CALL"),
+                       "ANDROID_NOT_IN_CALL")
+        XCTAssertEqual(PhoneAudioProtocol.handshakeStatus("ERR INIT_UPLINK_INVOKE_PERMISSION"),
+                       "ANDROID_INIT_UPLINK_INVOKE_PERMISSION")
+        XCTAssertEqual(PhoneAudioProtocol.handshakeStatus(nil),
+                       "AUDIO_HANDSHAKE_NO_RESPONSE")
+        XCTAssertEqual(PhoneAudioProtocol.handshakeStatus("ERR token=abc123"),
+                       "AUDIO_HANDSHAKE_UNEXPECTED")
+        XCTAssertEqual(PhoneAudioProtocol.handshakeStatus("stacktrace private-info"),
+                       "AUDIO_HANDSHAKE_UNEXPECTED")
+    }
+
     func testBridgeRetryBackoffIsBounded() {
         XCTAssertEqual(BridgeRetryPolicy.delay(after: 0), 2)
         XCTAssertEqual(BridgeRetryPolicy.delay(after: 1), 2)

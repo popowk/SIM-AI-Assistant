@@ -1,4 +1,4 @@
-# SIM AI Assistant · V0.3.0（Android 13 电话音频兼容性诊断）
+# SIM AI Assistant · V0.3.1（Android 13 电话音频兼容性诊断）
 
 **设备目标**：vivo S9e / Android 13 / 中国联通实体 SIM + Apple Silicon Mac / macOS 26.6.2。
 **源代码**：https://github.com/popowk/SIM-AI-Assistant
@@ -10,6 +10,30 @@
 - Android → Mac：私有通信令牌、本机端口转发、匿名电话状态同步和去重、断线重连。此前 vivo S9e 的真实来电日志已验证此项。
 - Mac 本地音频设备检查、麦克风电平、扬声器试听和设备恢复。
 - 诊断 ZIP、匿名事件日志、1/7/14 天清理与「清空全部（含今天）」。
+
+## V0.3.1 · 实时音频启动失败诊断和 ADB 推送重试（2026-11-22）
+
+### 基于实际故障包
+
+用户上传的 `SIM-AI-Diagnostics-20261122-233507(1).zip` 明确来自 **Mac V0.3.0 Build 12**。实机仍可以成功进行传统短时测试：上行 `TONE_SENT_UNCONFIRMED`，随后用户人工确认对方听到；下行 `VOICE_DOWNLINK` 读取 35,840 个样本、峰值 0.2485、RMS 0.02446。但**持续实时音频一次因 `AUDIO_HELPER_PUSH` 失败，一次因 `AUDIO_HANDSHAKE_FAILED_OR_NO_CALL` 失败，收发帧均为零**。原日志丢弃了 Android 在握手阶段返回的具体错误，因此不能据此认定是上下行同时打开被系统拒绝。
+
+### V0.3.1 修复内容
+
+- 音频 Helper ADB 推送加入**一次有限重试**（第一次最长 12 秒，第二次最长 20 秒），区分 `AUDIO_HELPER_PUSH_TIMEOUT` 与 `AUDIO_HELPER_PUSH_FAILED`。不重启全局 ADB，不卸载任何手机应用，不跳过设备授权。
+- Android AudioStreamServer 在握手期间对音轨格式、`VOICE_DOWNLINK` 创建/启动、`getCallUplinkInjectionAudioTrack` 调用及播放等阶段进行分类。向本机回环连接回复 `ERR INIT_<STAGE>_<CATEGORY>`，不返回 Android 堆栈、通话内容或设备身份。
+- Mac 解析**严格白名单**的单行错误码，例如 `ANDROID_NOT_IN_CALL`、`ANDROID_INIT_UPLINK_INVOKE_PERMISSION`、`AUDIO_HANDSHAKE_NO_RESPONSE`，并写入已存在的脱敏 JSONL 诊断记录。原本笼统的握手失败被细分。
+- 新增握手错误码解析和敏感文本拒绝的单元测试。
+- 双向实时音频仍处于**实验性原型**，并未验证 Mac 连续听清对方的完整人声。原有 Android Companion **V0.2.2** 不变，无需重装手机 APK。
+
+### 再次实测
+
+1. 退出旧 Mac 软件并安装 V0.3.1；保留已授权的 Android Companion 和 ADB。
+2. 先接通经双方同意的真实电话，并保持通话不中断。
+3. 点击「开始实时通话音频」，等待 Mac 显示「实时播放电话下行」或明确的 Android 握手错误。
+4. 只有 Mac 已经能清晰听到对方讲话后，再佩戴耳机并手动开启麦克风，让对方确认听到完整人声。
+5. 失败时导出诊断 ZIP。特别关注 `reason` 字段，如 `ANDROID_INIT_UPLINK_INVOKE_PERMISSION`、`ANDROID_NOT_IN_CALL`、`AUDIO_HANDSHAKE_NO_RESPONSE`、`AUDIO_HELPER_PUSH_TIMEOUT`。
+
+即使编译通过，也不能承诺 vivo S9e 同时采集/注入真实通话声音已经成功。下一步依据具体阶段调整声音路由或协议，而非重复盲目安装 Shizuku。
 
 ## V0.3.0 · Android 13 运营商通话双向实时 PCM 原型（2026-11-22）
 

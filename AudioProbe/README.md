@@ -18,3 +18,8 @@ This uses the *architectural approach* described by PhoneBridge (ADB + app_proce
 ## V0.3.0 audio-stream mode (experimental)
 
 `app_process / dev.popowk.simai.probe.Main serve <64hex-secret>` creates a one-session (max 180s) Android 13 audio server at `127.0.0.1:18765`. The Mac uses a separate user-authorized ADB TCP forward and sends `SIMAI_AUDIO_1 <secret>\n`. If the phone is in real call audio mode, the server answers `OK\n` and exchanges simultaneous raw PCM16 mono LE 16 kHz, in exact 640-byte/20ms frames. Android's AudioRecord source is VOICE_DOWNLINK; its AudioTrack comes from AudioManager's getCallUplinkInjectionAudioTrack. The Mac's uplink starts as *silence*, and microphone use requires another explicit consent. Caller and helper audio is only in volatile memory. No raw PCM/secret/number in logs, no external IP listener, and no automatic call answering. If one direction closes, the entire preview session stops. OEM support, latency and intelligibility must be verified on the actual handset.
+
+
+## V0.3.1 helper start diagnostics
+
+A short handshake error is now returned from the local PCM stream socket when possible. Responses are `OK`, `ERR NOT_IN_CALL`, `ERR AUTH` or `ERR INIT_<PHASE>_<ERROR_CATEGORY>` (uppercase ASCII only). No exception text, stack trace, PCM data, caller identity or session secret is included. Mac strictly validates code syntax before writing diagnostics. If the helper exits before opening the socket, the Mac reports `AUDIO_PORT_TIMEOUT` / `AUDIO_HANDSHAKE_NO_RESPONSE`. Pushing the temporary Dex helper is retried once on transient ADB issues. No auto-answer or persistent audio recording.

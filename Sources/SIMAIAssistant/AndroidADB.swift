@@ -339,10 +339,24 @@ enum ADBInspector {
         guard authorized.count == 1 else { return fail("ADB_DEVICE_COUNT") }
         let serial = authorized[0].serial
         let remote = "/data/local/tmp/simai-audio-probe.jar"
-        switch run(adb, args: ["-s", serial, "push", jar.path, remote], timeout: 20) {
-        case .completed(0, _): break
-        default: return fail("AUDIO_HELPER_PUSH")
+        var pushed = false
+        var pushFailure = "AUDIO_HELPER_PUSH_FAILED"
+        // A locked handset can briefly stall the ADB transport even when
+        // authorization is retained. Retry once with bounded timeouts.
+        for attempt in 0..<2 {
+            switch run(adb, args: ["-s", serial, "push", jar.path, remote],
+                       timeout: attempt == 0 ? 12 : 20) {
+            case .completed(0, _):
+                pushed = true
+            case .timedOut:
+                pushFailure = "AUDIO_HELPER_PUSH_TIMEOUT"
+            default:
+                pushFailure = "AUDIO_HELPER_PUSH_FAILED"
+            }
+            if pushed { break }
+            if attempt == 0 { Thread.sleep(forTimeInterval: 0.7) }
         }
+        guard pushed else { return fail(pushFailure) }
         switch run(adb, args: ["-s", serial, "forward", "tcp:0", "tcp:18765"], timeout: 10) {
         case .completed(0, let output):
             guard let port = Int(output.trimmingCharacters(in: .whitespacesAndNewlines)),

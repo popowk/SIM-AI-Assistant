@@ -277,8 +277,9 @@ final class PhoneAudioStream {
 
         let hello = Array("SIMAI_AUDIO_1 \(target.secret)\n".utf8)
         guard Self.sendAll(fd, hello) else { reason = "AUDIO_HANDSHAKE_WRITE"; return }
-        guard let ack = Self.readLine(fd), ack == "OK" else {
-            reason = "AUDIO_HANDSHAKE_FAILED_OR_NO_CALL"
+        let handshake = PhoneAudioProtocol.handshakeStatus(Self.readLine(fd))
+        guard handshake == "OK" else {
+            reason = handshake
             return
         }
 

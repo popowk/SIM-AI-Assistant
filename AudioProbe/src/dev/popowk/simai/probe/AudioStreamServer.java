@@ -47,26 +47,33 @@ final class AudioStreamServer {
                     output.write("ERR AUTH\n".getBytes(StandardCharsets.US_ASCII));
                     return;
                 }
+                String phase = "CALL_MODE";
+                boolean acknowledged = false;
+                try {
                 if (!inRealCall()) {
                     output.write("ERR NOT_IN_CALL\n".getBytes(StandardCharsets.US_ASCII));
                     return;
                 }
 
+                phase = "FORMAT_INPUT";
                 AudioFormat inputFormat = new AudioFormat.Builder()
                         .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                         .setSampleRate(RATE)
                         .setChannelMask(AudioFormat.CHANNEL_IN_MONO).build();
+                phase = "FORMAT_OUTPUT";
                 AudioFormat outputFormat = new AudioFormat.Builder()
                         .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                         .setSampleRate(RATE)
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build();
 
+                phase = "DOWNLINK_BUFFER";
                 int min = AudioRecord.getMinBufferSize(RATE,
                         AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
                 if (min <= 0) {
                     output.write("ERR DOWNLINK_BUFFER\n".getBytes(StandardCharsets.US_ASCII));
                     return;
                 }
+                phase = "DOWNLINK_CREATE";
                 AudioRecord record = new AudioRecord.Builder()
                         .setContext(ProbeRuntime.context())
                         .setAudioSource(MediaRecorder.AudioSource.VOICE_DOWNLINK)
@@ -79,10 +86,13 @@ final class AudioStreamServer {
                         output.write("ERR DOWNLINK_INIT\n".getBytes(StandardCharsets.US_ASCII));
                         return;
                     }
+                    phase = "UPLINK_MANAGER";
                     AudioManager manager = ProbeRuntime.context()
                             .getSystemService(AudioManager.class);
+                    phase = "UPLINK_METHOD";
                     Method injection = AudioManager.class.getMethod(
                             "getCallUplinkInjectionAudioTrack", AudioFormat.class);
+                    phase = "UPLINK_INVOKE";
                     Object stream = injection.invoke(manager, outputFormat);
                     if (!(stream instanceof AudioTrack)) {
                         output.write("ERR UPLINK_TRACK\n".getBytes(StandardCharsets.US_ASCII));
@@ -94,14 +104,18 @@ final class AudioStreamServer {
                         return;
                     }
 
+                    phase = "DOWNLINK_START";
                     record.startRecording();
+                    phase = "UPLINK_PLAY";
                     track.play();
                     if (record.getRecordingState() != AudioRecord.RECORDSTATE_RECORDING) {
                         output.write("ERR DOWNLINK_START\n".getBytes(StandardCharsets.US_ASCII));
                         return;
                     }
+                    phase = "HANDSHAKE_ACK";
                     output.write("OK\n".getBytes(StandardCharsets.US_ASCII));
                     output.flush();
+                    acknowledged = true;
 
                     final AudioTrack injectionTrack = track;
                     AtomicBoolean running = new AtomicBoolean(true);
@@ -163,8 +177,31 @@ final class AudioStreamServer {
                         track.release();
                     }
                 }
+                } catch (Throwable failure) {
+                    if (!acknowledged) {
+                        // Only a fixed stage and exception category cross the
+                        // socket; never include OS exception text or call data.
+                        String code = "INIT_" + phase + "_" + failureCategory(failure);
+                        try {
+                            output.write(("ERR " + code + "\n").getBytes(StandardCharsets.US_ASCII));
+                            output.flush();
+                        } catch (Exception ignored) { }
+                    }
+                }
             }
         }
+    }
+
+    private static String failureCategory(Throwable throwable) {
+        Throwable cause = throwable;
+        for (int i = 0; i < 4 && cause.getCause() != null; i++)
+            cause = cause.getCause();
+        if (cause instanceof SecurityException) return "PERMISSION";
+        if (cause instanceof NoSuchMethodException) return "API_MISSING";
+        if (cause instanceof IllegalStateException) return "ILLEGAL_STATE";
+        if (cause instanceof IllegalArgumentException) return "ARGUMENT";
+        if (cause instanceof java.io.IOException) return "IO_ERROR";
+        return "ANDROID_EXCEPTION";
     }
 
     private static String readHeader(InputStream stream) throws Exception {

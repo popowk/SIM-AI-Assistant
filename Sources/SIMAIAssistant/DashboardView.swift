@@ -101,7 +101,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("真实双向电话音频预览 · V0.3.0")
+                Text("真实双向电话音频预览 · V0.3.1")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -254,7 +254,7 @@ struct DashboardView: View {
     }
 
     private var liveVoicePanel: some View {
-        panel("第二阶段 · 实时双向语音桥接（V0.3.0 预览）", symbol: "waveform") {
+        panel("第二阶段 · 实时双向语音桥接（V0.3.1 诊断预览）", symbol: "waveform") {
             Text("手动启动 · 16 kHz 单声道 PCM · 每帧 20 ms · 单次最多 3 分钟。音频通过独立 ADB 转发通道，不使用电话状态 HTTP 服务。")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
@@ -378,7 +378,7 @@ struct DashboardView: View {
             Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.3.0 (12)").font(.caption.monospaced())
+            Text("0.3.1 (13)").font(.caption.monospaced())
         }
     }
 
