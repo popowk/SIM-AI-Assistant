@@ -38,6 +38,9 @@ final class AssistantModel: ObservableObject {
     @Published var liveVoiceStarting = false
     @Published var liveVoiceActive = false
     @Published var liveVoiceMicrophoneEnabled = false
+    @Published var chatGPTVoiceRouteEnabled = false
+    @Published var chatGPTVoiceRouteStatus = "尚未开启（仅将电话下行送入 ChatGPT）"
+    @Published var chatGPTVoiceRouteDropped = 0
     @Published var liveVoiceRxFrames = 0
     @Published var liveVoiceTxFrames = 0
     @Published var liveVoiceDropFrames = 0
@@ -53,8 +56,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.3.4"
-    let buildNumber = "16"
+    let version = "0.4.0"
+    let buildNumber = "17"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -508,6 +511,9 @@ final class AssistantModel: ObservableObject {
         liveVoiceStarting = true
         liveVoiceActive = false
         liveVoiceMicrophoneEnabled = false
+        chatGPTVoiceRouteEnabled = false
+        chatGPTVoiceRouteStatus = "尚未开启（需要先建立电话音频）"
+        chatGPTVoiceRouteDropped = 0
         liveVoiceRxFrames = 0
         liveVoiceTxFrames = 0
         liveVoiceDropFrames = 0
@@ -534,7 +540,7 @@ final class AssistantModel: ObservableObject {
                         details: ["sampleRate": "16000", "channels": "1", "frameMs": "20"])
                 case .metrics(let received, let sent, let dropped,
                               let micUnderflows, let micOverflows,
-                              let txLate, let micBufferedMs):
+                              let txLate, let micBufferedMs, let voiceRouteDropped):
                     self.liveVoiceRxFrames = received
                     self.liveVoiceTxFrames = sent
                     self.liveVoiceDropFrames = dropped
@@ -542,10 +548,13 @@ final class AssistantModel: ObservableObject {
                     self.liveVoiceMicOverflows = micOverflows
                     self.liveVoiceUplinkLateFrames = txLate
                     self.liveVoiceMicBufferedMs = micBufferedMs
+                    self.chatGPTVoiceRouteDropped = voiceRouteDropped
                 case .finished(let reason):
                     self.liveVoiceStarting = false
                     self.liveVoiceActive = false
                     self.liveVoiceMicrophoneEnabled = false
+                    self.chatGPTVoiceRouteEnabled = false
+                    self.chatGPTVoiceRouteStatus = "电话已结束，虚拟麦克风已停止"
                     self.liveVoiceStatus = "实时语音已停止（\(reason)）"
                     self.voiceStream = nil
                     // Resume anonymous call-state synchronization without
@@ -560,6 +569,7 @@ final class AssistantModel: ObservableObject {
                             "micOverflows": "\(self.liveVoiceMicOverflows)",
                             "uplinkLateFrames": "\(self.liveVoiceUplinkLateFrames)",
                             "micBufferedMs": "\(self.liveVoiceMicBufferedMs)",
+                            "voiceRouteDropped": "\(self.chatGPTVoiceRouteDropped)",
                             "handshakeAttempts": "\(self.liveVoiceHandshakeAttempts)"])
                 }
             }
@@ -568,9 +578,32 @@ final class AssistantModel: ObservableObject {
         stream.start(adb: selectedADBPath, jar: jar)
     }
 
+    /// Local, opt-in PCM routing to BlackHole 2ch, without any ChatGPT API.
+    /// ChatGPT output remains on Mac; no automated voice replies to caller.
+    func setChatGPTVoiceRoute(_ enabled: Bool) {
+        guard liveVoiceActive, let voiceStream else { return }
+        do {
+            try voiceStream.setChatGPTInputRouting(enabled)
+            chatGPTVoiceRouteEnabled = enabled
+            chatGPTVoiceRouteStatus = enabled
+                ? "电话下行已输出至 BlackHole 2ch；请在 ChatGPT Voice 中选择此麦克风"
+                : "已断开 BlackHole 虚拟麦克风"
+            log(.info, .audio, enabled
+                ? "用户主动将电话下行送入 ChatGPT 虚拟麦克风"
+                : "用户主动断开 ChatGPT 虚拟麦克风",
+                details: ["route": enabled ? "PHONE_TO_BLACKHOLE" : "OFF"])
+        } catch {
+            chatGPTVoiceRouteEnabled = false
+            chatGPTVoiceRouteStatus = "路由失败：请检查 BlackHole 2ch 安装及音频设备权限"
+            log(.warn, .audio, "ChatGPT 虚拟麦克风路由初始化失败",
+                details: ["route": "PHONE_TO_BLACKHOLE", "status": "ROUTE_UNAVAILABLE"])
+        }
+    }
+
     func stopLiveVoice() {
         guard liveVoiceStarting || liveVoiceActive else { return }
         liveVoiceMicrophoneEnabled = false
+        chatGPTVoiceRouteEnabled = false
         liveVoiceStatus = "正在停止并释放电话音频通道……"
         voiceStream?.stop()
     }
