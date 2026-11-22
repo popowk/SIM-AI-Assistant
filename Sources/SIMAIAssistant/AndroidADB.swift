@@ -180,8 +180,8 @@ enum ADBInspector {
             if case .completed(0, _) = launch { launched = true } else { launched = false }
             return .init(succeeded: true,
                 status: launched
-                    ? "APK 安装/覆盖成功，已尝试打开手机端伴侣 App。请在手机上授予电话状态权限。"
-                    : "APK 安装/覆盖成功；自动启动失败，请在手机桌面手动打开 SIM AI Companion。")
+                    ? "APK 安装/覆盖成功，已自动打开手机端引导；确认系统权限弹窗后，电话监听将自行启动。"
+                    : "APK 已安装，但手机未自动打开；请手动打开 SIM AI Companion 完成系统授权引导。")
         case .completed(_, let output) where output.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE"):
             return .init(succeeded: false,
                 status: "覆盖失败：新旧 APK 的签名不一致。没有卸载旧版本，也没有清除数据；请配置固定签名后重新构建。")
