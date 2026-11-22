@@ -22,6 +22,10 @@ final class AssistantModel: ObservableObject {
     @Published var adbChecking = false
     @Published var adbInstalling = false
     @Published var apkInstallStatus = "尚未安装伴侣 APK"
+    @Published var liveSyncEnabled = UserDefaults.standard.object(forKey: "SIMAI_LIVE_SYNC") as? Bool ?? true
+    @Published var liveBridgeStatus = "正在检查 USB 连接"
+    @Published var livePhoneState = "未连接"
+    @Published var liveCallEvents: [String] = []
     @Published var selectedADBPath = UserDefaults.standard.string(forKey: "SIMAI_ADB_PATH") ?? ""
     @Published var cleanupPreviewText = ""
     @Published var isAudioTestRunning = false
@@ -29,8 +33,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.1.3"
-    let buildNumber = "4"
+    let version = "0.1.4"
+    let buildNumber = "5"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -40,6 +44,11 @@ final class AssistantModel: ObservableObject {
     private var phoneObservationStartedAt: Date?
     private var phoneLastFingerprint = ""
     private var phoneObservationChanges = 0
+    private var bridgeTimer: Timer?
+    private var bridgeLink: ADBBridgeLink?
+    private var bridgeBusy = false
+    private var bridgeSession = ""
+    private var bridgeSequence = 0
     private(set) var sessionID = UUID().uuidString
     private(set) var lastError: DiagnosticEvent?
 
@@ -56,6 +65,7 @@ final class AssistantModel: ObservableObject {
         events = (try? logs.readRecent(limit: 100)) ?? []
         log(.info, .system, "程序启动，诊断日志已初始化")
         refresh()
+        startLiveSyncTimer()
     }
 
     var system: SystemSnapshot {
@@ -178,11 +188,130 @@ final class AssistantModel: ObservableObject {
     }
 
 
+
+    // Phone events are received from the user-authorized Android APK over USB ADB,
+    // never from Mac Bluetooth and never from a cellular audio channel.
+    private func startLiveSyncTimer() {
+        guard bridgeTimer == nil else { return }
+        bridgeTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.pollLiveBridge() }
+        }
+        pollLiveBridge()
+    }
+
+    func setLiveSyncEnabled(_ value: Bool) {
+        liveSyncEnabled = value
+        UserDefaults.standard.set(value, forKey: "SIMAI_LIVE_SYNC")
+        if value {
+            liveBridgeStatus = "正在连接手机"
+            pollLiveBridge()
+        } else {
+            closeLiveBridge()
+            liveBridgeStatus = "已关闭自动同步"
+            livePhoneState = "未连接"
+        }
+    }
+
+    func reconnectLiveBridge() {
+        closeLiveBridge()
+        liveBridgeStatus = "正在重连……"
+        if liveSyncEnabled { pollLiveBridge() }
+    }
+
+    private func closeLiveBridge() {
+        if let link = bridgeLink {
+            let selected = selectedADBPath
+            Task.detached(priority: .utility) {
+                ADBInspector.closeBridge(at: selected, link: link)
+            }
+        }
+        bridgeLink = nil
+        bridgeSession = ""
+        bridgeSequence = 0
+    }
+
+    private func pollLiveBridge() {
+        guard liveSyncEnabled, !adbInstalling, !bridgeBusy else { return }
+        bridgeBusy = true
+        if let link = bridgeLink {
+            let since = bridgeSequence
+            Task { [weak self] in
+                guard let self else { return }
+                var request = URLRequest(url: URL(
+                    string: "http://127.0.0.1:\(link.localPort)/events?since=\(since)")!)
+                request.httpMethod = "GET"
+                request.timeoutInterval = 3.0
+                request.setValue(link.token, forHTTPHeaderField: "X-SIMAI-Token")
+                request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+                do {
+                    let (data, response) = try await URLSession.shared.data(for: request)
+                    guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                        throw NSError(domain: "SIMAI.ADBBridge", code: 403)
+                    }
+                    let snapshot = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: data)
+                    guard snapshot.schema == 1, snapshot.running,
+                          ["IDLE", "RINGING", "OFFHOOK"].contains(snapshot.state) else {
+                        throw NSError(domain: "SIMAI.ADBBridge", code: 422)
+                    }
+                    if self.bridgeSession != snapshot.session {
+                        self.bridgeSession = snapshot.session
+                        self.bridgeSequence = 0
+                        self.liveCallEvents.removeAll()
+                        self.log(.info, .call, "Android 电话状态桥接会话已建立",
+                                 details: ["bridgeSchema": "1"])
+                    }
+                    for event in snapshot.newEvents(after: self.bridgeSequence) {
+                        let displayTime = Date(timeIntervalSince1970: Double(event.at) / 1000)
+                            .formatted(date: .omitted, time: .standard)
+                        self.liveCallEvents.insert("\(displayTime) · \(event.state)", at: 0)
+                        self.liveCallEvents = Array(self.liveCallEvents.prefix(16))
+                        self.log(.info, .call, "收到 Android 实时电话状态",
+                                 details: ["state": event.state, "sequence": "\(event.seq)",
+                                           "source": "USB_ADB"])
+                        self.bridgeSequence = max(self.bridgeSequence, event.seq)
+                    }
+                    // A bounded Android history may skip earlier events; keep the cursor moving.
+                    self.bridgeSequence = max(self.bridgeSequence, snapshot.seq)
+                    self.livePhoneState = snapshot.state
+                    self.liveBridgeStatus = "已连接 · USB ADB 自动同步"
+                } catch {
+                    self.liveBridgeStatus = "连接中断，准备自动重连（请确认手机监听已开启）"
+                    self.livePhoneState = "未连接"
+                    self.closeLiveBridge()
+                }
+                self.bridgeBusy = false
+            }
+        } else {
+            let path = selectedADBPath
+            Task { [weak self] in
+                let result = await Task.detached(priority: .utility) {
+                    ADBInspector.openBridge(at: path)
+                }.value
+                guard let self else { return }
+                self.bridgeBusy = false
+                if let link = result.link {
+                    self.bridgeLink = link
+                    self.bridgeSession = ""
+                    self.bridgeSequence = 0
+                    self.liveBridgeStatus = result.message
+                    self.log(.info, .call, "ADB USB 端口转发连接建立（未读取设备序列号）")
+                    self.pollLiveBridge()
+                } else if self.liveBridgeStatus != result.message {
+                    self.liveBridgeStatus = result.message
+                }
+            }
+        }
+    }
+
     func prepareLogCleanup(days: Int) -> Bool {
         do {
-            let preview = try logs.previewCleanup(olderThanDays: days)
+            let preview = try (days == 0
+                ? logs.previewAllLogs()
+                : logs.previewCleanup(olderThanDays: days))
             let size = ByteCountFormatter.string(fromByteCount: preview.totalBytes, countStyle: .file)
-            cleanupPreviewText = "将删除 \(preview.fileCount) 个旧日志文件，共 \(size)。今天及最近 \(days) 天的日志保留。"
+            cleanupPreviewText = days == 0
+                ? "将删除全部 \(preview.fileCount) 个应用日志文件（包括今天），共 \(size)。"
+                : "将删除 \(preview.fileCount) 个旧日志文件，共 \(size)。今天及最近 \(days) 天的日志保留。"
             return true
         } catch {
             alertText = "无法计算旧日志清理范围：\((error as NSError).localizedDescription)"
@@ -192,15 +321,23 @@ final class AssistantModel: ObservableObject {
 
     func cleanOldLogs(days: Int) {
         do {
-            let deleted = try logs.cleanup(olderThanDays: days)
+            let deleted = try (days == 0
+                ? logs.clearAllLogs()
+                : logs.cleanup(olderThanDays: days))
             events = (try? logs.readRecent(limit: 150)) ?? []
             lastError = events.first(where: { $0.level == .error })
-            cleanupPreviewText = "已清理 \(deleted.fileCount) 个旧日志文件"
-            log(.info, .diagnostic, "用户手动清理旧日志（保留当前及最近若干天）",
-                details: ["retentionDays": "\(days)",
-                          "removedFiles": "\(deleted.fileCount)",
-                          "removedBytes": "\(deleted.totalBytes)"])
-            alertText = "已清理 \(deleted.fileCount) 个旧日志文件；当前及最近 \(days) 天的日志保留。系统 OSLog 不受此操作影响。"
+            cleanupPreviewText = "已清理 \(deleted.fileCount) 个应用日志文件"
+            if days == 0 {
+                // Do not immediately recreate an events-*.jsonl file after a clear-all.
+                logger.info("用户主动清空本应用全部本地 JSONL 日志（系统 OSLog 不可由应用删除）")
+                alertText = "已清空本应用全部 \(deleted.fileCount) 个 JSONL 日志文件（含今天）。macOS 系统 OSLog 不在清理范围。"
+            } else {
+                log(.info, .diagnostic, "用户手动清理旧日志",
+                    details: ["retentionDays": "\(days)",
+                              "removedFiles": "\(deleted.fileCount)",
+                              "removedBytes": "\(deleted.totalBytes)"])
+                alertText = "已清理 \(deleted.fileCount) 个旧日志文件；最近 \(days) 天仍保留。"
+            }
         } catch {
             log(.error, .diagnostic, "手动清理旧日志失败",
                 details: ["errorCode": "\((error as NSError).code)"])
@@ -250,18 +387,22 @@ final class AssistantModel: ObservableObject {
                 alertText = "所选文件必须是可执行的 adb，请选择 platform-tools/adb。"
                 return
             }
+            closeLiveBridge()
             selectedADBPath = url.path
             UserDefaults.standard.set(url.path, forKey: "SIMAI_ADB_PATH")
             log(.info, .system, "用户手动设置 ADB 路径（路径不写入诊断日志）")
             inspectADB()
+            pollLiveBridge()
         }
     }
 
     func resetADBSelection() {
+        closeLiveBridge()
         selectedADBPath = ""
         UserDefaults.standard.removeObject(forKey: "SIMAI_ADB_PATH")
         log(.info, .system, "ADB 切换为自动路径检测")
         inspectADB()
+        pollLiveBridge()
     }
 
     func installAndroidCompanion() {
@@ -271,11 +412,12 @@ final class AssistantModel: ObservableObject {
             alertText = "当前 App 未包含 Android 伴侣 APK；请下载 GitHub 最新完整测试包。"
             return
         }
+        closeLiveBridge()
         adbInstalling = true
         apkInstallStatus = "正在通过 ADB 安装/覆盖手机应用……"
         let adb = selectedADBPath
         log(.info, .system, "用户确认开始安装或覆盖 Android 伴侣 APK",
-            details: ["version": "0.1.0"])
+            details: ["version": "0.2.0"])
         Task.detached(priority: .userInitiated) { [weak self] in
             let outcome = ADBInspector.install(at: adb, apk: resource)
             await MainActor.run {
@@ -287,6 +429,36 @@ final class AssistantModel: ObservableObject {
                     details: ["success": "\(outcome.succeeded)"])
                 self.alertText = outcome.status
                 self.inspectADB()
+                self.pollLiveBridge()
+            }
+        }
+    }
+
+
+    /// Separate opt-in action because uninstall permanently removes companion app data.
+    func reinstallAndroidCompanionAfterConfirmation() {
+        guard !adbInstalling else { return }
+        guard let apk = Bundle.main.resourceURL?.appendingPathComponent("SIMAI-Companion.apk"),
+              FileManager.default.fileExists(atPath: apk.path) else {
+            alertText = "未找到内置 APK"
+            return
+        }
+        closeLiveBridge()
+        adbInstalling = true
+        apkInstallStatus = "已确认清空旧版伴侣数据，正在重新安装……"
+        let adbPath = selectedADBPath
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let outcome = ADBInspector.reinstallAfterSignatureChange(at: adbPath, apk: apk)
+            await MainActor.run {
+                guard let self else { return }
+                self.adbInstalling = false
+                self.apkInstallStatus = outcome.status
+                self.alertText = outcome.status
+                self.log(outcome.succeeded ? .info : .warn, .system,
+                         "用户确认的 Android 伴侣重装操作结束",
+                         details: ["success": "\(outcome.succeeded)"])
+                self.inspectADB()
+                self.pollLiveBridge()
             }
         }
     }

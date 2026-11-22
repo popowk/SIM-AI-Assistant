@@ -38,7 +38,7 @@ public final class MainActivity extends Activity {
         scroller.addView(column);
 
         TextView title = new TextView(this);
-        title.setText("SIM AI Companion · V0.1.0");
+        title.setText("SIM AI Companion · V0.2.0");
         title.setTextSize(22f);
         column.addView(title);
         TextView description = new TextView(this);
@@ -83,7 +83,7 @@ public final class MainActivity extends Activity {
         column.addView(stop);
 
         TextView caution = new TextView(this);
-        caution.setText("\n拨打测试：用另一部手机拨打本机联通 SIM，检查 RINGING → OFFHOOK → IDLE。\n后台省电限制可能中止监听服务。当前 APK 尚不与 Mac 同步通话状态。\n");
+        caution.setText("\n拨打测试：用另一部手机拨打本机联通 SIM，检查 RINGING → OFFHOOK → IDLE。\n后台省电限制可能中止监听服务。USB ADB 连接后会自动向 Mac 同步匿名来电状态（需 Mac V0.1.4）。\n");
         column.addView(caution);
         log = new TextView(this);
         log.setTextIsSelectable(true);

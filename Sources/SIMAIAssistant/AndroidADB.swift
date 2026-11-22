@@ -14,6 +14,17 @@ struct ADBInstallOutcome {
     let status: String
 }
 
+struct ADBBridgeLink {
+    let serial: String        // Only in memory, never logged or exported.
+    let token: String         // Private app token, never logged or exported.
+    let localPort: Int
+}
+
+struct ADBBridgeResult {
+    let link: ADBBridgeLink?
+    let message: String
+}
+
 enum ADBInspector {
     private enum CommandResult {
         case completed(Int32, String)
@@ -128,6 +139,84 @@ enum ADBInspector {
                 status: "安装等待超过 150 秒。请在手机上检查是否已显示安装结果；程序不会重试或卸载。")
         case .launchFailed:
             return .init(succeeded: false, status: "ADB 安装命令无法启动")
+        }
+    }
+
+
+    /// Requires exactly one authorized device and a running, user-started companion service.
+    static func openBridge(at selected: String?) -> ADBBridgeResult {
+        guard let adb = executable(at: selected) else {
+            return .init(link: nil, message: "ADB 不可用；请重新选择可执行文件")
+        }
+        let devices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 12) {
+        case .completed(0, let output): devices = parseDevices(output)
+        default: return .init(link: nil, message: "ADB 无法列出授权手机")
+        }
+        let authorized = devices.filter { $0.state == "device" }
+        guard authorized.count == 1 else {
+            return .init(link: nil, message: "自动同步要求恰好 1 台已授权的 Android 手机")
+        }
+        let serial = authorized[0].serial
+        let token: String
+        switch run(adb, args: ["-s", serial, "shell", "run-as",
+                               "com.popowk.simai.companion", "cat", "files/bridge-token"], timeout: 8) {
+        case .completed(0, let output):
+            let value = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard value.count == 64, value.unicodeScalars.allSatisfy({
+                ("0"..."9").contains(String($0)) || ("a"..."f").contains(String($0))
+            }) else {
+                return .init(link: nil, message: "手机端通信凭证无效，请更新伴侣 APK 并启动电话监听")
+            }
+            token = value
+        default:
+            return .init(link: nil, message: "手机端桥接尚未启动；请打开新 APK、授权后点击「开始监听电话状态」")
+        }
+        switch run(adb, args: ["-s", serial, "forward", "tcp:0", "tcp:18764"], timeout: 8) {
+        case .completed(0, let output):
+            let value = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let port = Int(value), (1024...65535).contains(port) else {
+                return .init(link: nil, message: "ADB 未返回有效的本机转发端口")
+            }
+            return .init(link: ADBBridgeLink(serial: serial, token: token, localPort: port),
+                         message: "USB 通道已建立；正在等待手机状态事件")
+        default:
+            return .init(link: nil, message: "ADB 端口转发失败，请保持 USB 连接并检查手机授权")
+        }
+    }
+
+    static func closeBridge(at selected: String?, link: ADBBridgeLink) {
+        guard let adb = executable(at: selected) else { return }
+        _ = run(adb, args: ["-s", link.serial, "forward", "--remove",
+                           "tcp:\(link.localPort)"], timeout: 5)
+    }
+
+    /// Explicit one-time recovery for Android debug signing changes.
+    /// This NEVER runs as a fallback from normal install, only after separate UI confirmation.
+    static func reinstallAfterSignatureChange(at selected: String?, apk: URL) -> ADBInstallOutcome {
+        guard let adb = executable(at: selected) else {
+            return .init(succeeded: false, status: "ADB 不可用")
+        }
+        guard FileManager.default.fileExists(atPath: apk.path),
+              apk.pathExtension.lowercased() == "apk" else {
+            return .init(succeeded: false, status: "内置 APK 不存在")
+        }
+        let devices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 12) {
+        case .completed(0, let output): devices = parseDevices(output)
+        default: return .init(succeeded: false, status: "无法读取 ADB 设备列表")
+        }
+        let authorized = devices.filter { $0.state == "device" }
+        guard authorized.count == 1 else {
+            return .init(succeeded: false, status: "重装要求恰好 1 台已授权手机")
+        }
+        let serial = authorized[0].serial
+        switch run(adb, args: ["-s", serial, "uninstall",
+                               "com.popowk.simai.companion"], timeout: 30) {
+        case .completed(0, let output) where output.contains("Success"):
+            return install(at: selected, apk: apk)
+        default:
+            return .init(succeeded: false, status: "卸载旧测试版失败；未继续安装。请检查手机提示。")
         }
     }
 

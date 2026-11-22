@@ -29,6 +29,7 @@ public final class CallMonitorService extends Service {
     public static volatile String lastState = "未启动";
     private static final List<String> history = new ArrayList<>();
     private TelephonyManager telephonyManager;
+    private PhoneEventBridge bridge;
     private TelephonyCallback telephonyCallback;
     private PhoneStateListener legacyListener;
 
@@ -66,6 +67,8 @@ public final class CallMonitorService extends Service {
         startForeground(90, notification);
         if (!running) {
             try {
+                bridge = new PhoneEventBridge(this);
+                bridge.start();
                 telephonyManager = (TelephonyManager) getSystemService(TELEPHONY_SERVICE);
                 if (telephonyManager == null) throw new IllegalStateException("TelephonyManager unavailable");
                 if (Build.VERSION.SDK_INT >= 31) {
@@ -87,6 +90,7 @@ public final class CallMonitorService extends Service {
             } catch (Exception error) {
                 note("监听启动失败：" + error.getClass().getSimpleName());
                 lastState = "监听初始化失败";
+                if (bridge != null) { bridge.stop(); bridge = null; }
                 stopSelf();
             }
         }
@@ -104,6 +108,7 @@ public final class CallMonitorService extends Service {
         if (!next.equals(lastState)) {
             lastState = next;
             note("电话状态：" + next);
+            if (bridge != null) bridge.recordState(next);
         }
     }
 
@@ -112,6 +117,7 @@ public final class CallMonitorService extends Service {
     }
 
     @Override public void onDestroy() {
+        if (bridge != null) { bridge.stop(); bridge = null; }
         if (telephonyManager != null) {
             try {
                 if (Build.VERSION.SDK_INT >= 31 && telephonyCallback != null)

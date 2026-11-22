@@ -1,4 +1,4 @@
-# SIM AI Assistant — macOS V0.1.3 (测试工程)
+# SIM AI Assistant — macOS V0.1.4 (测试工程)
 
 macOS 菜单栏工具：为 Apple Silicon Mac + vivo S9e + 中国联通 SIM 的后续电话辅助实验提供**可运行的 UI、诊断能力和测试基线**。当前版本**不具备真实运营商电话接听、挂断、监听或 HFP/SCO 双向音频桥接能力**。
 
@@ -12,6 +12,8 @@ macOS 菜单栏工具：为 Apple Silicon Mac + vivo S9e + 中国联通 SIM 的�
 | 麦克风测试 | 代码已完成，待 Mac 实测 | 用户主动授权后监测约 1.5 秒 RMS 电平，不保存音频 |
 | 本机回环 | 代码已完成，待 Mac 实测 | **用户确认已连接耳机**后运行 2 秒、5% 音量的麦克风→扬声器本地回环；不是电话音频回环 |
 | 扬声器测试 | 代码已完成，待 Mac 实测 | macOS 提示音。并非两端通话回环 |
+| Android → Mac 来电状态同步 | V0.1.4 新增（待 vivo 实机验证） | USB ADB 动态转发 + 私有令牌、匿名事件序号去重、断线重连 |
+| 全部日志清理（含今天） | 已实现（待 Mac 实测） | 仅清除本应用 JSONL，不触及 macOS OSLog 或其他应用 |
 | Android APK 一键安装 / 覆盖 | Mac 端代码和测试版 APK 源码已完成，待实机测试 | 用户确认后只向唯一授权设备执行 adb install -r；签名不一致时不卸载 |
 | Android ADB 连接自检 | 代码已完成，待 vivo USB 实测 | 仅统计 adb 已授权/未授权/离线设备，不读取序列号与电话内容 |
 | 旧日志清理 | 已实现、待 Mac 实测 | 手动选择保留 1/7/14 天，预览文件数和大小，确认后仅删除本 App 的历史 JSONL 文件 |
@@ -68,6 +70,20 @@ macOS 菜单栏工具：为 Apple Silicon Mac + vivo S9e + 中国联通 SIM 的�
 
 若本机编译 Mac App 未设置 `ANDROID_COMPANION_APK_PATH` 环境变量，则 App 不会内置 APK，「安装/覆盖」按钮将禁用；在 GitHub 自动构建版本中则包含 APK。
 
+## V0.1.4 · Android → Mac 实时来电事件同步
+
+原 V0.1.3 的手机应用只在手机上显示状态，因此 Mac 没有收到事件；现已新增双端通信层。手机服务在**用户主动授权并点击开始监听后**，在 127.0.0.1:18764 开启一个只读 HTTP 事件服务。事件只包含状态 `IDLE / RINGING / OFFHOOK`、递增序号和时间戳；不包含来电号码、设备序列号、通话内容或录音。使用随机生成、保存在 APK 私有数据中的令牌校验请求，其他手机应用无权直接读取令牌。
+
+Mac V0.1.4 开启「USB 来电状态自动同步」后，在**唯一已授权安卓设备**上使用 `adb -s <device> shell run-as com.popowk.simai.companion cat files/bridge-token` 获取应用私有测试令牌，并执行 `adb -s <device> forward tcp:0 tcp:18764` 建立临时随机本地端口转发。Mac 仅向 `http://127.0.0.1:<随机端口>/events?since=...` 发出本地 HTTP 请求，默认约 4 秒轮询，断开会自动尝试重连；收到事件后更新诊断中心及本地匿名日志。每个进程会话 ID + 事件序号防止重复显示。
+
+为使 `adb shell run-as` 成功，**该版仅支持 GitHub Actions 生成的 debug APK**；后续正式发布版会改用独立配对鉴权流程。不会开放公网、不会接管蓝牙/HFP，不通过 OpenAI API，也不会读取运营商电话音频。流量只经用户已授权的 USB ADB 连接。
+
+**更新旧 APK 时可能遇到签名不同**：不同 CI 运行生成的 debug 签名可能变化，导致正常 `install -r` 失败。Mac 新增**单独确认**的「清空旧版伴侣数据并重装」按钮；仅在需要时手动操作，操作将删除该 APK 自身旧数据、重新请求电话权限，**不会删除手机通讯录和通话记录**。不会自动卸载。后续应配置持久私有签名密钥，实现无损覆盖。
+
+## V0.1.4 · 清理全部本地日志（含今天）
+
+诊断中心「保留范围」新增「**全部日志（含今天）**」，将预览并确认清理该 Mac 应用所有 `events-YYYYMMDD.jsonl` 文件，包括今天；同时清空程序的当前历史列表。与此前的清理最近 1/7/14 天操作并存。全部清理后不会立即向 JSONL 写入一条新的「已清理」记录。操作不可撤销、**不影响 macOS 系统统一日志 OSLog、其他应用日志、Android 手机上保留的内存事件，以及用户曾导出的 ZIP 文件**；未来新事件仍会创建新日志文件。
+
 ## GitHub Actions 自动编译与下载
 
 将本仓库 push 到 `main` 后，`.github/workflows/build-macos.yml` 会用 GitHub 提供的 macOS 机器执行测试、交叉编译 **Apple Silicon arm64**、临时签名并打包。可在 **Actions → macOS Build → 最新成功任务 → Artifacts** 下载，也会在 **Releases → Dev Latest** 更新测试发行包。推送 `v*` tag 可创建该版本的 Release。
@@ -85,7 +101,7 @@ bash Scripts/build-macos.sh
 open "dist/SIM AI Assistant.app"
 ```
 
-脚本将执行 `swift test`、`swift build -c release`，组装 `.app`，做本机临时签名并生成 `dist/SIM-AI-Assistant-v0.1.3-macos-arm64.zip`。**临时签名并不等于 Apple 正式公证；不提供面向公众分发的已签名安装包。**
+脚本将执行 `swift test`、`swift build -c release`，组装 `.app`，做本机临时签名并生成 `dist/SIM-AI-Assistant-v0.1.4-macos-arm64.zip`。**临时签名并不等于 Apple 正式公证；不提供面向公众分发的已签名安装包。**
 
 若只做编译检查：
 

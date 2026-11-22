@@ -86,6 +86,39 @@ final class SIMAICoreTests: XCTestCase {
         XCTAssertThrowsError(try store.cleanup(olderThanDays: -1))
     }
 
+    func testClearAllAppLogsIncludesTodayButPreservesUnrelatedFiles() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = try LogStore(directory: folder)
+        let older = folder.appendingPathComponent("events-20261101.jsonl")
+        let today = folder.appendingPathComponent("events-20261122.jsonl")
+        let unrelated = folder.appendingPathComponent("readme.txt")
+        for file in [older, today, unrelated] {
+            try "hello".write(to: file, atomically: true, encoding: .utf8)
+        }
+        XCTAssertEqual(try store.previewAllLogs().fileCount, 2)
+        let removed = try store.clearAllLogs()
+        XCTAssertEqual(removed.fileCount, 2)
+        XCTAssertEqual(removed.totalBytes, 10)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: older.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: today.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
+        XCTAssertEqual(try store.readRecent().count, 0)
+    }
+
+    func testPhoneBridgeProtocolFiltersDuplicateAndUnknownEvents() throws {
+        let body = """
+        {"schema":1,"session":"abc","running":true,"state":"RINGING","seq":4,
+         "events":[{"seq":1,"state":"IDLE","at":1763812000000},
+                   {"seq":3,"state":"RINGING","at":1763812001000},
+                   {"seq":4,"state":"IGNORED","at":1763812002000}]}
+        """
+        let decoded = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: Data(body.utf8))
+        XCTAssertEqual(decoded.session, "abc")
+        XCTAssertEqual(decoded.newEvents(after: 1).map(\.state), ["RINGING"])
+        XCTAssertEqual(decoded.newEvents(after: 3).count, 0)
+    }
+
     func testZIPContainsOnlyScrubbedDeviceNames() throws {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)

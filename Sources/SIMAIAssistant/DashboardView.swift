@@ -10,6 +10,7 @@ struct DashboardView: View {
     @State private var cleanupDays = 7
     @State private var confirmLogCleanup = false
     @State private var confirmAPKInstall = false
+    @State private var confirmAPKReset = false
 
     var body: some View {
         ScrollView {
@@ -39,9 +40,9 @@ struct DashboardView: View {
         } message: {
             Text("本机回环会把麦克风的声音以 5% 音量输出到扬声器，2 秒后自动停止。未连接耳机时可能发生啸叫；此测试不涉及真实电话 HFP/SCO。")
         }
-        .confirmationDialog("确认清理旧日志？", isPresented: $confirmLogCleanup,
+        .confirmationDialog("确认清理本应用日志？", isPresented: $confirmLogCleanup,
                             titleVisibility: .visible) {
-            Button("删除旧日志", role: .destructive) { model.cleanOldLogs(days: cleanupDays) }
+            Button(cleanupDays == 0 ? "清空全部日志" : "删除旧日志", role: .destructive) { model.cleanOldLogs(days: cleanupDays) }
             Button("取消", role: .cancel) { }
         } message: {
             Text(model.cleanupPreviewText + "\n操作不可撤销，仅影响 SIM AI Assistant 的历史 JSONL 日志，不清除系统 OSLog。")
@@ -52,6 +53,15 @@ struct DashboardView: View {
             Button("取消", role: .cancel) { }
         } message: {
             Text("使用所选 ADB，通过 USB 安装内置的测试 APK（adb install -r），仅作用于唯一已授权的 Android 设备。不会卸载旧应用；签名不一致时会失败并保留旧数据。")
+        }
+        .confirmationDialog("要删除旧版 Android 伴侣 App 的全部数据并重装吗？",
+                            isPresented: $confirmAPKReset, titleVisibility: .visible) {
+            Button("清空旧版伴侣数据并重装", role: .destructive) {
+                model.reinstallAndroidCompanionAfterConfirmation()
+            }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("仅针对 SIM AI Companion。此操作会通过 ADB 卸载该 APK（删除其私有数据、权限、手机端历史事件），随后安装新 APK。请仅在提示签名不一致时使用；绝不自动执行。")
         }
         .sheet(isPresented: $previewExport) {
             ExportPreviewView()
@@ -87,7 +97,7 @@ struct DashboardView: View {
                 symbol: "waveform")
             statusPill(title: "Voice", value: model.voiceMarkedActive ? "用户标记已启动" : "待手动启动",
                 symbol: "mic")
-            statusPill(title: "实体电话", value: "HFP 未验证", symbol: "phone.down")
+            statusPill(title: "安卓来电", value: model.livePhoneState, symbol: "phone.arrow.down.left")
         }
     }
 
@@ -166,7 +176,7 @@ struct DashboardView: View {
             }
             Text(model.adbStatus).font(.caption).foregroundStyle(.secondary)
             Divider()
-            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.1.0" : "当前构建未包含")")
+            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.2.0" : "当前构建未包含")")
                 .font(.caption)
             Button {
                 confirmAPKInstall = true
@@ -177,7 +187,29 @@ struct DashboardView: View {
             .disabled(model.adbInstalling || !model.embeddedAPKAvailable)
             .buttonStyle(.borderedProminent)
             Text(model.apkInstallStatus).font(.caption).foregroundStyle(.secondary)
-            Text("安装仅在你确认后执行；会要求手机已经授权 USB 调试。签名不匹配时不会卸载旧 App。电话状态由手机上的伴侣 App 授权与监听，Mac 目前尚未读取实时来电。")
+            Button("签名不一致？清空旧版伴侣数据后重装") { confirmAPKReset = true }
+                .disabled(model.adbInstalling || !model.embeddedAPKAvailable)
+                .font(.caption)
+                .foregroundStyle(.orange)
+            Divider()
+            Toggle("USB 来电状态自动同步", isOn: Binding(
+                get: { model.liveSyncEnabled },
+                set: { model.setLiveSyncEnabled($0) }
+            ))
+            HStack {
+                Text("连接：\(model.liveBridgeStatus)")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("重新连接") { model.reconnectLiveBridge() }
+                    .disabled(!model.liveSyncEnabled)
+            }
+            Text("实时电话状态：\(model.livePhoneState)")
+                .font(.headline)
+                .foregroundStyle(model.livePhoneState == "RINGING" ? .orange : .primary)
+            ForEach(model.liveCallEvents.prefix(8), id: \.self) { item in
+                Text(item).font(.caption.monospaced()).foregroundStyle(.secondary)
+            }
+            Text("通过 USB ADB 本地转发接收匿名电话事件，不用 HFP，不采集号码和通话音频。确保手机 APK 已启动电话监听。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -266,14 +298,15 @@ struct DashboardView: View {
                     Text("最近 1 天").tag(1)
                     Text("最近 7 天").tag(7)
                     Text("最近 14 天").tag(14)
+                    Text("全部日志（含今天）").tag(0)
                 }
                 .frame(width: 185)
-                Button("清理旧日志") {
+                Button(cleanupDays == 0 ? "清空全部日志" : "清理旧日志") {
                     if model.prepareLogCleanup(days: cleanupDays) {
                         confirmLogCleanup = true
                     }
                 }
-                Text("保留今天及所选天数的本地日志；系统 OSLog 不在清理范围内。")
+                Text(cleanupDays == 0 ? "删除本应用所有 JSONL 日志（包括今天）；不删除 macOS 系统 OSLog。" : "保留今天及所选天数的本地日志；系统 OSLog 不在清理范围内。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
@@ -312,7 +345,7 @@ struct DashboardView: View {
             Text("V0.1 仅提供诊断、模拟测试与人工 Voice 启动；真实 HFP/电话控制待设备验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.1.3 (4)").font(.caption.monospaced()).foregroundStyle(.secondary)
+            Text("0.1.4 (5)").font(.caption.monospaced()).foregroundStyle(.secondary)
         }
     }
 

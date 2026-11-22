@@ -109,6 +109,33 @@ public final class LogStore {
         return summary
     }
 
+
+    /// Wipes ALL of this application's local JSONL diagnostic days, including today.
+    /// Does not and cannot remove entries from macOS unified OSLog.
+    public func previewAllLogs() throws -> LogCleanupSummary {
+        lock.lock(); defer { lock.unlock() }
+        return try summarize(try managedEventFiles())
+    }
+
+    public func clearAllLogs() throws -> LogCleanupSummary {
+        lock.lock(); defer { lock.unlock() }
+        let files = try managedEventFiles()
+        let summary = try summarize(files)
+        for file in files {
+            try manager.removeItem(at: file)
+        }
+        return summary
+    }
+
+    private func managedEventFiles() throws -> [URL] {
+        try logFiles().filter { file in
+            let stem = file.deletingPathExtension().lastPathComponent
+            guard stem.hasPrefix("events-") else { return false }
+            let day = stem.dropFirst("events-".count)
+            return day.count == 8 && day.allSatisfy { $0.isASCII && $0.isNumber }
+        }
+    }
+
     private func summarize(_ files: [URL]) throws -> LogCleanupSummary {
         var bytes: Int64 = 0
         for file in files {
