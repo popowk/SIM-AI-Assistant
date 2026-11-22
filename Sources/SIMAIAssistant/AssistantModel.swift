@@ -18,13 +18,16 @@ final class AssistantModel: ObservableObject {
     @Published var observingPhone = false
     @Published var phoneObservationStatus = "尚未开始"
     @Published var phoneObservationElapsed = 0
+    @Published var adbStatus = "未检测 ADB"
+    @Published var adbChecking = false
+    @Published var cleanupPreviewText = ""
     @Published var isAudioTestRunning = false
     @Published var alertText: String?
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.1.1"
-    let buildNumber = "2"
+    let version = "0.1.2"
+    let buildNumber = "3"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -95,9 +98,9 @@ final class AssistantModel: ObservableObject {
         if !bluetooth.scanSucceeded {
             log(.warn, .bluetooth, "无法取得蓝牙已配对列表", code: .bluetoothUnavailable)
         } else if !bluetooth.devices.contains(where: \.targetCandidate) {
-            log(.warn, .bluetooth, "已配对设备中未识别到 vivo S9e 候选设备", code: .bluetoothNotPaired)
+            log(.info, .bluetooth, "蓝牙设备名未匹配 vivo S9e；ADB/APK 方案不依赖蓝牙配对")
         } else {
-            log(.warn, .bluetooth, "已配对不代表 HFP 或 SCO 验证成功", code: .bluetoothHFPUnverified)
+            log(.info, .bluetooth, "已发现 vivo 蓝牙配对候选；本项目不接管 HFP 蓝牙控制器")
         }
         if audio.microphonePermission == "已拒绝" {
             log(.warn, .audio, "麦克风权限被拒绝", code: .microphoneDenied)
@@ -169,6 +172,56 @@ final class AssistantModel: ObservableObject {
             "\($0.id):\($0.sampleRate ?? 0):\($0.isDefaultInput):\($0.isDefaultOutput)"
         }.sorted().joined(separator: "|")
         return bonds + "||" + sound
+    }
+
+
+    func prepareLogCleanup(days: Int) -> Bool {
+        do {
+            let preview = try logs.previewCleanup(olderThanDays: days)
+            let size = ByteCountFormatter.string(fromByteCount: preview.totalBytes, countStyle: .file)
+            cleanupPreviewText = "将删除 \(preview.fileCount) 个旧日志文件，共 \(size)。今天及最近 \(days) 天的日志保留。"
+            return true
+        } catch {
+            alertText = "无法计算旧日志清理范围：\((error as NSError).localizedDescription)"
+            return false
+        }
+    }
+
+    func cleanOldLogs(days: Int) {
+        do {
+            let deleted = try logs.cleanup(olderThanDays: days)
+            events = (try? logs.readRecent(limit: 150)) ?? []
+            lastError = events.first(where: { $0.level == .error })
+            cleanupPreviewText = "已清理 \(deleted.fileCount) 个旧日志文件"
+            log(.info, .diagnostic, "用户手动清理旧日志（保留当前及最近若干天）",
+                details: ["retentionDays": "\(days)",
+                          "removedFiles": "\(deleted.fileCount)",
+                          "removedBytes": "\(deleted.totalBytes)"])
+            alertText = "已清理 \(deleted.fileCount) 个旧日志文件；当前及最近 \(days) 天的日志保留。系统 OSLog 不受此操作影响。"
+        } catch {
+            log(.error, .diagnostic, "手动清理旧日志失败",
+                details: ["errorCode": "\((error as NSError).code)"])
+            alertText = "清理旧日志失败，请检查日志文件夹权限。"
+        }
+    }
+
+    func inspectADB() {
+        guard !adbChecking else { return }
+        adbChecking = true
+        adbStatus = "检测 ADB 中……"
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result = ADBInspector.inspect()
+            await MainActor.run {
+                guard let self else { return }
+                self.adbChecking = false
+                self.adbStatus = result.status
+                self.log(.info, .system, "Android ADB 自检完成（不读取设备序列号和电话音频）",
+                    details: ["adbInstalled": "\(result.installed)",
+                              "authorizedCount": "\(result.authorized)",
+                              "unauthorizedCount": "\(result.unauthorized)",
+                              "offlineCount": "\(result.offline)"])
+            }
+        }
     }
 
     func simulateCall() {

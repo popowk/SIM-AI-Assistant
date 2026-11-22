@@ -1,11 +1,14 @@
 #if os(macOS)
 import SwiftUI
+import AppKit
 import SIMAICore
 
 struct DashboardView: View {
     @EnvironmentObject private var model: AssistantModel
     @State private var previewExport = false
     @State private var confirmLoopback = false
+    @State private var cleanupDays = 7
+    @State private var confirmLogCleanup = false
 
     var body: some View {
         ScrollView {
@@ -15,6 +18,7 @@ struct DashboardView: View {
                 HStack(alignment: .top, spacing: 16) {
                     VStack(spacing: 16) {
                         bluetoothPanel
+                        adbPanel
                         callPanel
                     }
                     VStack(spacing: 16) {
@@ -33,6 +37,13 @@ struct DashboardView: View {
             Button("已连接耳机，开始测试") { model.runLocalLoopback() }
         } message: {
             Text("本机回环会把麦克风的声音以 5% 音量输出到扬声器，2 秒后自动停止。未连接耳机时可能发生啸叫；此测试不涉及真实电话 HFP/SCO。")
+        }
+        .confirmationDialog("确认清理旧日志？", isPresented: $confirmLogCleanup,
+                            titleVisibility: .visible) {
+            Button("删除旧日志", role: .destructive) { model.cleanOldLogs(days: cleanupDays) }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text(model.cleanupPreviewText + "\n操作不可撤销，仅影响 SIM AI Assistant 的历史 JSONL 日志，不清除系统 OSLog。")
         }
         .sheet(isPresented: $previewExport) {
             ExportPreviewView()
@@ -122,6 +133,26 @@ struct DashboardView: View {
         }
     }
 
+
+    private var adbPanel: some View {
+        panel("Android · ADB 连接自检", symbol: "cable.connector") {
+            Text(model.adbStatus)
+                .font(.subheadline).foregroundStyle(.secondary)
+            HStack {
+                Button("检测 USB / ADB") { model.inspectADB() }
+                    .disabled(model.adbChecking)
+                Button("下载官方 Platform-Tools") {
+                    if let url = URL(string: "https://developer.android.com/tools/releases/platform-tools") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+            .buttonStyle(.bordered)
+            Text("仅统计已授权/未授权/离线设备数量，不读取序列号、号码或音频。ADB 连接不改变 Mac 蓝牙设置。来电事件需后续 Android 伴侣 APK。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     private var callPanel: some View {
         panel("来电模拟器", symbol: "phone.arrow.down.left") {
             HStack {
@@ -200,6 +231,22 @@ struct DashboardView: View {
                 Button("一键导出诊断包") { previewExport = true }
                     .buttonStyle(.borderedProminent)
             }
+
+            HStack {
+                Picker("保留范围", selection: $cleanupDays) {
+                    Text("最近 1 天").tag(1)
+                    Text("最近 7 天").tag(7)
+                    Text("最近 14 天").tag(14)
+                }
+                .frame(width: 185)
+                Button("清理旧日志") {
+                    if model.prepareLogCleanup(days: cleanupDays) {
+                        confirmLogCleanup = true
+                    }
+                }
+                Text("保留今天及所选天数的本地日志；系统 OSLog 不在清理范围内。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             HStack {
                 Text("故障模拟：").font(.caption)
                 ForEach(TestFault.allCases) { fault in
@@ -236,7 +283,7 @@ struct DashboardView: View {
             Text("V0.1 仅提供诊断、模拟测试与人工 Voice 启动；真实 HFP/电话控制待设备验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.1.1 (2)").font(.caption.monospaced()).foregroundStyle(.secondary)
+            Text("0.1.2 (3)").font(.caption.monospaced()).foregroundStyle(.secondary)
         }
     }
 

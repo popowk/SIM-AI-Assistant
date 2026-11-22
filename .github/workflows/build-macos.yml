@@ -64,8 +64,8 @@ jobs:
         with:
           name: SIM-AI-Assistant-macOS-arm64
           path: |
-            dist/SIM-AI-Assistant-v0.1.1-macos-arm64.zip
-            dist/SIM-AI-Assistant-v0.1.1-macos-arm64.zip.sha256
+            dist/SIM-AI-Assistant-v0.1.2-macos-arm64.zip
+            dist/SIM-AI-Assistant-v0.1.2-macos-arm64.zip.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -78,9 +78,9 @@ jobs:
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest --target "$(git rev-parse HEAD)" \
               --title "SIM AI Assistant · 最新测试版" --prerelease \
-              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。当前 V0.1 不支持真实运营商电话自动接听。"
+              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。当前 V0.1.2 提供 ADB 自检与日志清理，不支持真实通话音频桥接。"
           fi
-          gh release upload dev-latest dist/SIM-AI-Assistant-v0.1.1-macos-arm64.zip dist/SIM-AI-Assistant-v0.1.1-macos-arm64.zip.sha256 --clobber
+          gh release upload dev-latest dist/SIM-AI-Assistant-v0.1.2-macos-arm64.zip dist/SIM-AI-Assistant-v0.1.2-macos-arm64.zip.sha256 --clobber
 
       - name: Publish versioned prerelease on tag
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -89,7 +89,7 @@ jobs:
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/SIM-AI-Assistant-v0.1.1-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.1.1-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.1.2-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.1.2-macos-arm64.zip.sha256 \
             --title "SIM AI Assistant $GITHUB_REF_NAME" --prerelease \
             --notes "macOS Apple Silicon arm64 测试版，未公证；请查看 README 和校验 SHA256。"

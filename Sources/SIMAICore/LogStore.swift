@@ -1,6 +1,21 @@
 import Foundation
 
 /// All disk events are sanitized before they are written. OSLog is a secondary sink in the UI target.
+
+public enum LogCleanupError: Error {
+    case invalidRetentionDays
+}
+
+public struct LogCleanupSummary: Equatable {
+    public let fileCount: Int
+    public let totalBytes: Int64
+
+    public init(fileCount: Int, totalBytes: Int64) {
+        self.fileCount = fileCount
+        self.totalBytes = totalBytes
+    }
+}
+
 public final class LogStore {
     public let directory: URL
     private let manager: FileManager
@@ -71,6 +86,49 @@ public final class LogStore {
             }
         }
         return result
+    }
+
+
+    /// Only removes events-YYYYMMDD.jsonl files strictly older than the cutoff UTC day.
+    /// Today and the requested retention window are always preserved.
+    public func previewCleanup(olderThanDays days: Int, referenceDate: Date = Date()) throws -> LogCleanupSummary {
+        guard (1...3650).contains(days) else { throw LogCleanupError.invalidRetentionDays }
+        lock.lock(); defer { lock.unlock() }
+        let files = try cleanupCandidates(days: days, referenceDate: referenceDate)
+        return try summarize(files)
+    }
+
+    public func cleanup(olderThanDays days: Int, referenceDate: Date = Date()) throws -> LogCleanupSummary {
+        guard (1...3650).contains(days) else { throw LogCleanupError.invalidRetentionDays }
+        lock.lock(); defer { lock.unlock() }
+        let files = try cleanupCandidates(days: days, referenceDate: referenceDate)
+        let summary = try summarize(files)
+        for file in files {
+            try manager.removeItem(at: file)
+        }
+        return summary
+    }
+
+    private func summarize(_ files: [URL]) throws -> LogCleanupSummary {
+        var bytes: Int64 = 0
+        for file in files {
+            let attributes = try manager.attributesOfItem(atPath: file.path)
+            bytes += (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        }
+        return LogCleanupSummary(fileCount: files.count, totalBytes: bytes)
+    }
+
+    private func cleanupCandidates(days: Int, referenceDate: Date) throws -> [URL] {
+        // Log filenames are UTC calendar days. Deliberately keep the cutoff day too,
+        // avoiding deletion of a currently-written file and incomplete calendar days.
+        let cutoff = Self.dayFormatter.string(from:
+            referenceDate.addingTimeInterval(-Double(days) * 86_400))
+        return try logFiles().filter { file in
+            let stem = file.deletingPathExtension().lastPathComponent
+            guard stem.hasPrefix("events-") else { return false }
+            let day = String(stem.dropFirst("events-".count))
+            return day.count == 8 && day.allSatisfy { $0.isASCII && $0.isNumber } && day < cutoff
+        }
     }
 
     public func prune(referenceDate: Date = Date()) throws {

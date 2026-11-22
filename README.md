@@ -1,4 +1,4 @@
-# SIM AI Assistant — macOS V0.1.1 (测试工程)
+# SIM AI Assistant — macOS V0.1.2 (测试工程)
 
 macOS 菜单栏工具：为 Apple Silicon Mac + vivo S9e + 中国联通 SIM 的后续电话辅助实验提供**可运行的 UI、诊断能力和测试基线**。当前版本**不具备真实运营商电话接听、挂断、监听或 HFP/SCO 双向音频桥接能力**。
 
@@ -12,6 +12,8 @@ macOS 菜单栏工具：为 Apple Silicon Mac + vivo S9e + 中国联通 SIM 的�
 | 麦克风测试 | 代码已完成，待 Mac 实测 | 用户主动授权后监测约 1.5 秒 RMS 电平，不保存音频 |
 | 本机回环 | 代码已完成，待 Mac 实测 | **用户确认已连接耳机**后运行 2 秒、5% 音量的麦克风→扬声器本地回环；不是电话音频回环 |
 | 扬声器测试 | 代码已完成，待 Mac 实测 | macOS 提示音。并非两端通话回环 |
+| Android ADB 连接自检 | 代码已完成，待 vivo USB 实测 | 仅统计 adb 已授权/未授权/离线设备，不读取序列号与电话内容 |
+| 旧日志清理 | 已实现、待 Mac 实测 | 手动选择保留 1/7/14 天，预览文件数和大小，确认后仅删除本 App 的历史 JSONL 文件 |
 | 模拟来电 | 已完成，跨平台测试通过 | 来电→模拟接听→模拟挂断；**不访问真实电话** |
 | ChatGPT Plus Voice | 手动入口 | 打开 https://chatgpt.com/，用户自行登录并点击 Voice；不读取凭据 |
 | 日志 | 核心测试通过 | 分级 JSONL + macOS OSLog；14 天 / 50 MB 轮转、独立诊断 ID |
@@ -31,6 +33,26 @@ macOS 菜单栏工具：为 Apple Silicon Mac + vivo S9e + 中国联通 SIM 的�
 
 该模式不记录手机号、录音、设备名称或敏感设备 UID，不接管电话。变化不等于 HFP 成功；无变化也不能证明不兼容。用户必须主动点击开始与导出。
 
+## V0.1.2 · 手动清理旧日志
+
+诊断中心新增「保留范围」与「清理旧日志」按钮，可选择保留最近 1、7 或 14 天。点击后会先显示将删除的文件数量和估算大小，确认后只删除本 App 用户目录下命名为 `events-YYYYMMDD.jsonl` 的历史文件。当天与保留范围内的日志不会删除；其他应用文件、历史下载的诊断 ZIP 和 macOS 系统 OSLog 均不会改动。删除操作不可撤销。自动轮转（14 天 / 50 MB）仍然存在。
+
+新增 2 项核心测试：只删除日期范围内的本应用日志、拒绝非法保留天数。
+
+## V0.1.2 · Android ADB 自检（不占用蓝牙）
+
+菜单栏的诊断中心新增「Android · ADB 连接自检」。这一步仅执行用户电脑上现有 Android Platform-Tools 的 `adb devices` 命令，统计已授权、未授权、离线设备数量；**不读取或记录手机序列号、IMEI、电话号码、通话录音，也不启动蓝牙 HFP 驱动**。
+
+1. 在 vivo S9e 的开发者选项中启用 USB 调试（仅使用自己的手机）。
+2. 使用**支持数据传输**的 USB 线连接 Mac。
+3. 如果未安装 ADB，使用 App 内的「下载官方 Platform-Tools」入口安装来自 Android Developers 的工具。
+4. 手机上出现「允许 USB 调试」提示后核对电脑并确认，在 App 点击「检测 USB / ADB」。
+5. App 会显示「ADB 已授权 X 台」或「未授权／离线」，并写入匿名诊断日志。
+
+**功能边界：** ADB 自检只能确认授权和连接。V0.2 计划在手机端开发用户主动授权的 APK，用 `TelephonyCallback.CallStateListener`（旧 Android 系统采用兼容接口）获取 `IDLE/RINGING/OFFHOOK` 等电话状态，经 USB ADB 的 localhost 转发安全传给 Mac。来电号码不默认采集、存储或传输。接听操作仅在用户授权与系统允许时实现，且有人工确认或明确规则；不替换系统默认拨号器，不使用 root。
+
+普通第三方 APK **不能直接捕获联通运营商电话双向声音**。Android 的 `VOICE_CALL` 录音源需要系统级 `CAPTURE_AUDIO_OUTPUT` 权限，USB ADB 并不会绕过该限制。若以后需要自动语音通话，必须单独验证可用的音频硬件/系统级通道，不承诺仅凭 APK 与 BlackHole 即可实现。
+
 ## GitHub Actions 自动编译与下载
 
 将本仓库 push 到 `main` 后，`.github/workflows/build-macos.yml` 会用 GitHub 提供的 macOS 机器执行测试、交叉编译 **Apple Silicon arm64**、临时签名并打包。可在 **Actions → macOS Build → 最新成功任务 → Artifacts** 下载，也会在 **Releases → Dev Latest** 更新测试发行包。推送 `v*` tag 可创建该版本的 Release。
@@ -48,7 +70,7 @@ bash Scripts/build-macos.sh
 open "dist/SIM AI Assistant.app"
 ```
 
-脚本将执行 `swift test`、`swift build -c release`，组装 `.app`，做本机临时签名并生成 `dist/SIM-AI-Assistant-v0.1.1-macos-arm64.zip`。**临时签名并不等于 Apple 正式公证；不提供面向公众分发的已签名安装包。**
+脚本将执行 `swift test`、`swift build -c release`，组装 `.app`，做本机临时签名并生成 `dist/SIM-AI-Assistant-v0.1.2-macos-arm64.zip`。**临时签名并不等于 Apple 正式公证；不提供面向公众分发的已签名安装包。**
 
 若只做编译检查：
 

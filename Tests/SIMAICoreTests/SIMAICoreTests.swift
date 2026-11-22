@@ -54,6 +54,38 @@ final class SIMAICoreTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))
     }
 
+
+    func testCleanupDeletesOnlyOldEventFilesAndPreservesOtherFiles() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try LogStore(directory: directory)
+        let old = directory.appendingPathComponent("events-20260101.jsonl")
+        let recent = directory.appendingPathComponent("events-20261120.jsonl")
+        let today = directory.appendingPathComponent("events-20261122.jsonl")
+        let unrelated = directory.appendingPathComponent("unrelated.txt")
+        for url in [old, recent, today, unrelated] {
+            try "test-data".write(to: url, atomically: true, encoding: .utf8)
+        }
+        let now = ISO8601DateFormatter().date(from: "2026-11-22T12:00:00Z")!
+        let preview = try store.previewCleanup(olderThanDays: 7, referenceDate: now)
+        XCTAssertEqual(preview.fileCount, 1)
+        XCTAssertEqual(preview.totalBytes, 9)
+        let removed = try store.cleanup(olderThanDays: 7, referenceDate: now)
+        XCTAssertEqual(removed, preview)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recent.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: today.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
+    }
+
+    func testCleanupRejectsInvalidRetentionDays() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try LogStore(directory: directory)
+        XCTAssertThrowsError(try store.previewCleanup(olderThanDays: 0))
+        XCTAssertThrowsError(try store.cleanup(olderThanDays: -1))
+    }
+
     func testZIPContainsOnlyScrubbedDeviceNames() throws {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
