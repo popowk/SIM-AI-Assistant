@@ -37,7 +37,7 @@ public final class CallMonitorService extends Service {
     private final Runnable renewLock = new Runnable() {
         @Override public void run() {
             if (!running || !getSharedPreferences(PREFS, MODE_PRIVATE)
-                    .getBoolean(KEEP_AWAKE, false)) return;
+                    .getBoolean(KEEP_AWAKE, true)) return;
             if (lock != null) {
                 lock.acquire(WAKELOCK_TIMEOUT);
                 wakeHandler.postDelayed(this, WAKELOCK_RENEWAL);
@@ -124,7 +124,7 @@ public final class CallMonitorService extends Service {
     private void applyKeepAwakeSetting() {
         wakeHandler.removeCallbacks(renewLock);
         boolean requested = getSharedPreferences(PREFS, MODE_PRIVATE)
-                .getBoolean(KEEP_AWAKE, false);
+                .getBoolean(KEEP_AWAKE, true);
         if (!requested) {
             releaseWakeLock();
             return;
