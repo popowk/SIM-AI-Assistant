@@ -59,9 +59,9 @@ jobs:
         run: |
           gradle -p AndroidCompanion :app:assembleDebug --no-daemon
           mkdir -p dist
-          cp AndroidCompanion/app/build/outputs/apk/debug/app-debug.apk dist/SIMAI-Companion-v0.3.2-debug.apk
-          test -s dist/SIMAI-Companion-v0.3.2-debug.apk
-          shasum -a 256 dist/SIMAI-Companion-v0.3.2-debug.apk > dist/SIMAI-Companion-v0.3.2-debug.apk.sha256
+          cp AndroidCompanion/app/build/outputs/apk/debug/app-debug.apk dist/SIMAI-Companion-v0.3.3-debug.apk
+          test -s dist/SIMAI-Companion-v0.3.3-debug.apk
+          shasum -a 256 dist/SIMAI-Companion-v0.3.3-debug.apk > dist/SIMAI-Companion-v0.3.3-debug.apk.sha256
 
 
       - name: Build Android 13 audio capability helper
@@ -70,7 +70,7 @@ jobs:
       - name: Run tests and build arm64 app
         env:
           TARGET_TRIPLE: arm64-apple-macosx13.0
-          ANDROID_COMPANION_APK_PATH: ${{ github.workspace }}/dist/SIMAI-Companion-v0.3.2-debug.apk
+          ANDROID_COMPANION_APK_PATH: ${{ github.workspace }}/dist/SIMAI-Companion-v0.3.3-debug.apk
           ANDROID_AUDIO_PROBE_JAR_PATH: ${{ github.workspace }}/dist/SIMAI-Audio-Probe.jar
         run: bash Scripts/build-macos.sh
 
@@ -79,11 +79,11 @@ jobs:
         with:
           name: SIM-AI-Assistant-macOS-arm64
           path: |
-            dist/SIM-AI-Assistant-v0.4.4-macos-arm64.zip
-            dist/SIM-AI-Assistant-v0.4.4-macos-arm64.zip.sha256
+            dist/SIM-AI-Assistant-v0.4.5-macos-arm64.zip
+            dist/SIM-AI-Assistant-v0.4.5-macos-arm64.zip.sha256
             dist/SIMAI-Audio-Probe.jar
-            dist/SIMAI-Companion-v0.3.2-debug.apk
-            dist/SIMAI-Companion-v0.3.2-debug.apk.sha256
+            dist/SIMAI-Companion-v0.3.3-debug.apk
+            dist/SIMAI-Companion-v0.3.3-debug.apk.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -103,14 +103,14 @@ jobs:
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest --target "$(git rev-parse HEAD)" \
               --title "SIM AI Assistant · 最新测试版" --prerelease \
-              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.4 修复短信飞书配置同步无需电话状态监听：Mac 钥匙串保管凭证，经唯一已授权 ADB 以 stdin 写入手机 Companion V0.3.2 私有目录，收到新短信前自动导入。"
+              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.5 手机首次打开提供权限引导，获准后自动启动电话状态监听，锁屏增强和短信转发新装默认开启；Mac 安装/清装成功后自动恢复飞书配置。新增无敏感内容的 SMS 广播接收计数，验证码短信仍受 Android 定向投递限制。"
           fi
           gh release upload dev-latest \
-            dist/SIM-AI-Assistant-v0.4.4-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.4-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.5-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.5-macos-arm64.zip.sha256 \
             dist/SIMAI-Audio-Probe.jar \
-            dist/SIMAI-Companion-v0.3.2-debug.apk \
-            dist/SIMAI-Companion-v0.3.2-debug.apk.sha256 --clobber
+            dist/SIMAI-Companion-v0.3.3-debug.apk \
+            dist/SIMAI-Companion-v0.3.3-debug.apk.sha256 --clobber
 
       - name: Publish versioned prerelease on tag
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -119,10 +119,10 @@ jobs:
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/SIM-AI-Assistant-v0.4.4-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.4-macos-arm64.zip.sha256 \
-            dist/SIMAI-Companion-v0.3.2-debug.apk \
-            dist/SIMAI-Companion-v0.3.2-debug.apk.sha256 \
+            dist/SIM-AI-Assistant-v0.4.5-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.5-macos-arm64.zip.sha256 \
+            dist/SIMAI-Companion-v0.3.3-debug.apk \
+            dist/SIMAI-Companion-v0.3.3-debug.apk.sha256 \
             dist/SIMAI-Audio-Probe.jar \
             --title "SIM AI Assistant $GITHUB_REF_NAME" --prerelease \
             --notes "macOS Apple Silicon arm64 测试版，未公证；请查看 README 和校验 SHA256。"
