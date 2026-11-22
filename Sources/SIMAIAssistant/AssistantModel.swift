@@ -303,80 +303,48 @@ final class AssistantModel: ObservableObject {
             return
         }
         feishuSyncBusy = true
-        feishuSyncStatus = "正在使用已授权的 ADB 通道同步到手机……"
-        let knownLink = bridgeLink
+        feishuSyncStatus = "正在检查唯一已授权手机，并通过 ADB 安全下发配置……"
         let path = selectedADBPath
         Task { [weak self] in
+            let result = await Task.detached(priority: .utility) {
+                ADBInspector.syncFeishuSettings(at: path, settings: saved)
+            }.value
             guard let self else { return }
-            let link: ADBBridgeLink?
-            let temporary: Bool
-            if let knownLink {
-                link = knownLink
-                temporary = false
+            self.feishuSyncBusy = false
+            if result.succeeded {
+                self.feishuSyncStatus = "配置已写入手机私有目录；打开 Companion 或收到下一条短信时自动导入。短信权限仍需手机授权。"
+                self.log(.info, .system, "飞书设置已安全下发到唯一已授权手机",
+                         details: ["syncStage": result.code])
             } else {
-                // A manual sync can establish its own authenticated forward,
-                // even when automatic call-state polling is disabled.
-                let attempt = await Task.detached(priority: .utility) {
-                    ADBInspector.openBridge(at: path)
-                }.value
-                link = attempt.link
-                temporary = true
-            }
-            guard let link else {
-                self.feishuSyncBusy = false
-                self.feishuSyncStatus = "Mac 已保存；同步失败：请确认唯一已授权手机、伴侣 App 电话状态监听已启动"
-                self.log(.warn, .system, "飞书设置未同步：ADB 桥接暂不可用")
-                return
-            }
-            defer {
-                if temporary {
-                    let disposable = link
-                    Task.detached(priority: .utility) {
-                        ADBInspector.closeBridge(at: path, link: disposable)
-                    }
+                let guidance: String
+                switch result.code {
+                case "ADB_MISSING":
+                    guidance = "Mac 未发现 ADB，请在上方选择 adb 可执行文件"
+                case "ADB_UNAUTHORIZED":
+                    guidance = "手机 USB 调试尚未授权，请解锁手机并允许此 Mac"
+                case "ADB_NO_AUTHORIZED_PHONE":
+                    guidance = "未找到已授权手机，请检查 USB 或无线 ADB"
+                case "ADB_MULTIPLE_AUTHORIZED_PHONES":
+                    guidance = "连接了多台已授权手机；为防止配置发错设备，请只保留一台"
+                case "ANDROID_COMPANION_UPDATE_REQUIRED":
+                    guidance = "手机 Companion 版本太旧，请安装 V0.3.2 后重新同步"
+                case "ANDROID_COMPANION_NOT_FOUND":
+                    guidance = "手机上未发现 Companion，请先安装新版 Android APK"
+                case "ANDROID_COMPANION_VERSION_UNKNOWN":
+                    guidance = "无法确认手机 Companion 版本，请重新连接后检测"
+                case "ADB_CONFIG_RUN_AS_FAILED":
+                    guidance = "手机拒绝应用私有目录写入；确认新版 Companion 为调试包、ADB Shell 可用"
+                case "ADB_DEVICES_TIMEOUT", "ANDROID_PACKAGE_QUERY_TIMEOUT",
+                     "ADB_CONFIG_WRITE_TIMEOUT":
+                    guidance = "ADB 响应超时；手机解锁后重试并检查锁屏省电限制"
+                case "ADB_CONFIG_STDIN_FAILED", "ADB_CONFIG_PROCESS_LAUNCH":
+                    guidance = "ADB 安全写入进程失败；检查 Mac 的 ADB 和文件权限"
+                default:
+                    guidance = "同步失败，请导出脱敏诊断包查看错误类别"
                 }
-                self.feishuSyncBusy = false
-            }
-            do {
-                let payload = try JSONSerialization.data(withJSONObject: [
-                    "webhook": saved.webhook,
-                    "secret": saved.signingSecret,
-                    "enabled": saved.enabled
-                ])
-                guard let url = URL(string: "http://127.0.0.1:\(link.localPort)/sms/config")
-                else { throw NSError(domain: "SIMAI.Feishu", code: 2) }
-                var request = URLRequest(url: url)
-                request.httpMethod = "POST"
-                request.httpBody = payload
-                request.timeoutInterval = 8
-                request.cachePolicy = .reloadIgnoringLocalCacheData
-                request.setValue("application/json; charset=utf-8",
-                                 forHTTPHeaderField: "Content-Type")
-                request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
-                request.setValue(link.token, forHTTPHeaderField: "X-SIMAI-Token")
-                let session = URLSession(configuration: .ephemeral)
-                defer { session.invalidateAndCancel() }
-                let (data, response) = try await session.data(for: request)
-                guard (response as? HTTPURLResponse)?.statusCode == 200,
-                      let status = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      status["ok"] as? Bool == true,
-                      status["configured"] as? Bool == true else {
-                    self.feishuSyncStatus = "已保存 Mac，但手机拒绝设置：检查 Companion 是否为最新版"
-                    self.log(.warn, .system, "飞书设置同步被手机拒绝（不含任何凭证）")
-                    return
-                }
-                let permission = status["smsPermissionGranted"] as? Bool ?? false
-                let enabled = status["enabled"] as? Bool ?? false
-                self.feishuSyncStatus = permission
-                    ? (enabled ? "已同步手机，短信权限已授权，自动转发开启"
-                               : "已同步手机，短信自动转发已关闭")
-                    : "已同步手机，但手机尚未授权接收短信；请在 Companion 内手动授权"
-                self.log(.info, .system, "飞书短信设置已同步到已授权手机",
-                         details: ["permissionGranted": "\(permission)",
-                                   "forwardEnabled": "\(enabled)"])
-            } catch {
-                self.feishuSyncStatus = "已安全保存 Mac，手机同步未成功；请检查 ADB、手机监听服务后重试"
-                self.log(.warn, .system, "飞书设置同步失败（不记录地址、密钥或请求内容）")
+                self.feishuSyncStatus = "Mac 已保存；手机未同步：\(guidance)"
+                self.log(.warn, .system, "飞书设置未能下发手机",
+                         details: ["reason": result.code])
             }
         }
     }
