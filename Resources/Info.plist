@@ -9,13 +9,11 @@
     <key>CFBundleName</key><string>SIM AI Assistant</string>
     <key>CFBundleDisplayName</key><string>SIM AI Assistant</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1.5</string>
-    <key>CFBundleVersion</key><string>6</string>
+    <key>CFBundleShortVersionString</key><string>0.2.0</string>
+    <key>CFBundleVersion</key><string>7</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
     <key>NSMicrophoneUsageDescription</key><string>仅在您点击“麦克风电平测试”后使用麦克风测量电平，不录制或保存音频。</string>
-    <key>NSBluetoothAlwaysUsageDescription</key><string>查询系统已配对的蓝牙设备并诊断 vivo 手机配对状态，不会自动接听电话或更改蓝牙连接。</string>
-    <key>NSBluetoothPeripheralUsageDescription</key><string>查询蓝牙设备配对与连接状态。</string>
     <key>NSAppTransportSecurity</key>
     <dict><key>NSAllowsLocalNetworking</key><true/></dict>
     <key>NSHighResolutionCapable</key><true/>

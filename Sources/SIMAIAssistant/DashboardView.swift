@@ -6,7 +6,8 @@ import SIMAICore
 struct DashboardView: View {
     @EnvironmentObject private var model: AssistantModel
     @State private var previewExport = false
-    @State private var confirmLoopback = false
+    @State private var confirmDownlink = false
+    @State private var confirmUplink = false
     @State private var cleanupDays = 7
     @State private var confirmLogCleanup = false
     @State private var confirmAPKInstall = false
@@ -17,28 +18,30 @@ struct DashboardView: View {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 statusBar
-                HStack(alignment: .top, spacing: 16) {
-                    VStack(spacing: 16) {
-                        bluetoothPanel
-                        adbPanel
-                        callPanel
-                    }
-                    VStack(spacing: 16) {
-                        audioPanel
-                        voicePanel
-                    }
-                }
+                adbPanel
+                phoneAudioPanel
+                audioPanel
                 diagnosticPanel
                 footer
             }
             .padding(22)
         }
         .frame(minWidth: 740, minHeight: 540)
-        .alert("请先连接耳机", isPresented: $confirmLoopback) {
-            Button("取消", role: .cancel) { }
-            Button("已连接耳机，开始测试") { model.runLocalLoopback() }
+        .confirmationDialog("测试通话下行音频？", isPresented: $confirmDownlink, titleVisibility: .visible) {
+            Button("已取得同意，开始 2 秒下行电平测试") {
+                model.runPhoneAudioProbe(.downlink)
+            }
+            Button("取消", role: .cancel) {}
         } message: {
-            Text("本机回环会把麦克风的声音以 5% 音量输出到扬声器，2 秒后自动停止。未连接耳机时可能发生啸叫；此测试不涉及真实电话 HFP/SCO。")
+            Text("请先与同意参与测试的另一方接通真实电话，让对方持续说话。本测试只测量电话下行 PCM 峰值与 RMS，不录音、不传输语音，也不证明已分离出对方声音。")
+        }
+        .confirmationDialog("向真实电话发送低音量测试音？", isPresented: $confirmUplink, titleVisibility: .visible) {
+            Button("双方已同意，发送约 1 秒测试音") {
+                model.runPhoneAudioProbe(.uplink)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("必须是双方同意的测试电话，先接通并确认对方知晓即将听到两声测试音。程序会尝试向通话上行写入短促测试音；成功写入不代表对方一定听见。不会自动接听、不会保存声音。")
         }
         .confirmationDialog("确认清理本应用日志？", isPresented: $confirmLogCleanup,
                             titleVisibility: .visible) {
@@ -81,7 +84,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("macOS 原生电话辅助与诊断 · V0.1.1 测试版")
+                Text("真实电话音频兼容性诊断 · V0.2.0")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -91,13 +94,11 @@ struct DashboardView: View {
 
     private var statusBar: some View {
         HStack(spacing: 12) {
-            statusPill(title: "蓝牙", value: model.bluetooth.scanSucceeded ? "可枚举" : "待检查",
-                symbol: "antenna.radiowaves.left.and.right")
-            statusPill(title: "音频", value: model.audio.devices.isEmpty ? "未发现" : "\(model.audio.devices.count) 个设备",
-                symbol: "waveform")
-            statusPill(title: "Voice", value: model.voiceMarkedActive ? "用户标记已启动" : "待手动启动",
-                symbol: "mic")
-            statusPill(title: "安卓来电", value: model.livePhoneState, symbol: "phone.arrow.down.left")
+            statusPill(title: "电话状态", value: model.livePhoneState, symbol: "phone.arrow.down.left")
+            statusPill(title: "手机连接", value: model.liveSyncEnabled ? "ADB 自动同步" : "已暂停",
+                       symbol: "network")
+            statusPill(title: "Mac 音频", value: "\(model.audio.devices.count) 个设备",
+                       symbol: "waveform")
         }
     }
 
@@ -110,47 +111,6 @@ struct DashboardView: View {
         .padding(12)
         .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
     }
-
-    private var bluetoothPanel: some View {
-        panel("蓝牙设备自检", symbol: "dot.radiowaves.left.and.right") {
-            Text("已配对：\(model.bluetooth.devices.count) 台 · 已连接：\(model.bluetooth.devices.filter(\.connected).count) 台")
-            if model.bluetooth.devices.isEmpty {
-                Text("未列出已配对的经典蓝牙设备，请先在 macOS 蓝牙设置中配对 vivo S9e。")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(model.bluetooth.devices) { device in
-                    HStack {
-                        Text(device.displayName).lineLimit(1)
-                        Spacer()
-                        Text(device.connected ? "已连接" : "未连接")
-                            .foregroundStyle(device.connected ? Color.green : Color.secondary)
-                    }
-                    .font(.caption)
-                }
-            }
-            Text("注意：配对或显示已连接，并不等于支持电话 HFP/SCO。")
-                .font(.caption).foregroundStyle(.orange)
-            Divider()
-            Text("真实来电观察 · 60 秒").font(.subheadline.bold())
-            Text("开始后使用另一部电话拨打 vivo S9e。本功能只观察设备状态，不接听、不录音。")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Button("开始观察") { model.startPhoneObservation() }
-                    .disabled(model.observingPhone)
-                Button("手机已响铃（标记）") { model.markPhoneRinging() }
-                    .disabled(!model.observingPhone)
-                Button("停止") { model.stopPhoneObservation() }
-                    .disabled(!model.observingPhone)
-            }.buttonStyle(.bordered)
-            Text(model.phoneObservationStatus).font(.caption).foregroundStyle(.secondary)
-            if model.observingPhone {
-                Text("已观察 \(model.phoneObservationElapsed)/60 秒")
-                    .font(.caption.monospacedDigit())
-            }
-
-        }
-    }
-
 
     private var adbPanel: some View {
         panel("Android · ADB / APK 管理", symbol: "cable.connector") {
@@ -166,7 +126,7 @@ struct DashboardView: View {
             }
             .buttonStyle(.bordered)
             HStack {
-                Button("检测 USB / ADB") { model.inspectADB() }
+                Button("检测 ADB 设备") { model.inspectADB() }
                     .disabled(model.adbChecking || model.adbInstalling)
                 Button("官方 Platform-Tools") {
                     if let url = URL(string: "https://developer.android.com/tools/releases/platform-tools") {
@@ -192,7 +152,7 @@ struct DashboardView: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
             Divider()
-            Toggle("USB 来电状态自动同步", isOn: Binding(
+            Toggle("ADB 来电状态自动同步", isOn: Binding(
                 get: { model.liveSyncEnabled },
                 set: { model.setLiveSyncEnabled($0) }
             ))
@@ -209,29 +169,51 @@ struct DashboardView: View {
             ForEach(model.liveCallEvents.prefix(8), id: \.self) { item in
                 Text(item).font(.caption.monospaced()).foregroundStyle(.secondary)
             }
-            Text("通过 USB ADB 本地转发接收匿名电话事件，不用 HFP，不采集号码和通话音频。确保手机 APK 已启动电话监听。")
+            Text("通过已授权的 USB 或无线 ADB 读取匿名来电事件；不使用 HFP。请确保手机 APK 已启动电话监听。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
 
-    private var callPanel: some View {
-        panel("来电模拟器", symbol: "phone.arrow.down.left") {
+    private var phoneAudioPanel: some View {
+        panel("第一阶段 · 联通真实通话音频兼容性", symbol: "waveform.badge.mic") {
+            Text("仅测试 Android 13 shell 音频能力，不录音、不中转声音、不启用 GPT 或自动接听。")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("音频 Helper：\(model.embeddedAudioProbeAvailable ? "已内置" : "未内置")")
+                .font(.caption)
             HStack {
-                Text("状态：\(model.call.state.rawValue)").fontWeight(.medium)
-                Spacer()
-                Text("SIMULATION").font(.caption2.monospaced()).foregroundStyle(.secondary)
-            }
-            HStack {
-                Button("模拟来电") { model.simulateCall() }
-                    .disabled(model.call.state == .ringing || model.call.state == .connected)
-                Button("模拟接听") { model.answerSimulated() }
-                    .disabled(model.call.state != .ringing)
-                Button("模拟挂断") { model.hangupSimulated() }
-                    .disabled(model.call.state != .ringing && model.call.state != .connected)
+                Button("1 · 检测音频接口") { model.runPhoneAudioProbe(.info) }
+                Button("2 · 测试通话下行") { confirmDownlink = true }
+                    .disabled(model.livePhoneState != "OFFHOOK")
+                Button("3 · 测试通话上行音") { confirmUplink = true }
+                    .disabled(model.livePhoneState != "OFFHOOK")
             }
             .buttonStyle(.bordered)
-            Text("当前只测试状态机，不会接听、拨打或挂断联通 SIM 的真实来电。")
-                .font(.caption).foregroundStyle(.secondary)
+            .disabled(model.audioProbeBusy || model.adbInstalling || !model.embeddedAudioProbeAvailable)
+            if model.audioProbeBusy {
+                ProgressView("手机音频检测进行中……").controlSize(.small)
+            }
+            Text(model.audioProbeStatus)
+                .font(.subheadline.weight(.medium))
+            if model.audioProbeToneSent {
+                HStack {
+                    Button("对方已确认听到测试音") { model.confirmRemoteHeardTone() }
+                        .disabled(model.audioProbeRemoteConfirmed)
+                    Text(model.audioProbeRemoteConfirmed ? "已记录人工确认" : "等待实际通话对方确认")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if !model.audioProbeFacts.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(model.audioProbeFacts, id: \.self) { fact in
+                        Text(fact).font(.caption.monospaced())
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.black.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+            }
+            Text("下行非零 PCM ≠ 已证明对方声音可用；上行 AudioTrack 写入成功 ≠ 已确认对方听见。请在双方同意的真实电话中逐项验证，所有结果均写入匿名诊断日志。")
+                .font(.caption).foregroundStyle(.orange)
         }
     }
 
@@ -254,30 +236,11 @@ struct DashboardView: View {
                 Button("麦克风电平测试") { model.runMicrophoneTest() }
                     .disabled(model.isAudioTestRunning)
                 Button("扬声器试听") { model.playSpeakerBeep() }
-                Button("本机回环（需耳机）") { confirmLoopback = true }
-                    .disabled(model.isAudioTestRunning)
             }
             Text(model.probeStatus).font(.caption).foregroundStyle(.secondary)
-            Text(model.loopbackStatus).font(.caption).foregroundStyle(.secondary)
             Button("恢复启动时默认音频设备") { model.restoreAudio() }
                 .font(.caption)
-            Text("本机回环、电平与试听均不代表电话双向音频已通过。音频测试不会保存声音。")
-                .font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private var voicePanel: some View {
-        panel("ChatGPT Plus Voice · 人工辅助", symbol: "bubble.left.and.waveform.bubble.right") {
-            Text("打开官方网页后，请在浏览器内手动点击 Voice 图标，并授权麦克风。")
-                .font(.subheadline)
-            Button { model.openChatGPT() } label: {
-                Label("打开 chatgpt.com", systemImage: "globe")
-            }
-            Toggle("我已手动启动 Voice", isOn: Binding(
-                get: { model.voiceMarkedActive },
-                set: { model.setVoiceMarkedActive($0) }
-            ))
-            Text("不读取 ChatGPT 凭据，不调用 OpenAI API，不自动接入语音或路由真实电话音频。")
+            Text("此处仅检测 Mac 本地音频设备，与手机的联通电话音频分开。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -309,13 +272,6 @@ struct DashboardView: View {
                 Text(cleanupDays == 0 ? "删除本应用所有 JSONL 日志（包括今天）；不删除 macOS 系统 OSLog。" : "保留今天及所选天数的本地日志；系统 OSLog 不在清理范围内。")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            HStack {
-                Text("故障模拟：").font(.caption)
-                ForEach(TestFault.allCases) { fault in
-                    Button(fault.rawValue) { model.inject(fault) }
-                        .font(.caption)
-                }
-            }
             Text("当前会话：\(model.sessionID)")
                 .font(.caption2.monospaced()).foregroundStyle(.secondary)
                 .textSelection(.enabled)
@@ -342,10 +298,10 @@ struct DashboardView: View {
 
     private var footer: some View {
         HStack {
-            Text("V0.1 仅提供诊断、模拟测试与人工 Voice 启动；真实 HFP/电话控制待设备验证。")
+            Text("已验证来电状态同步；双向电话音频仍需在 vivo S9e 上实测。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.1.5 (6)").font(.caption.monospaced()).foregroundStyle(.secondary)
+            Text("0.2.0 (7)").font(.caption.monospaced())
         }
     }
 
@@ -370,9 +326,9 @@ private struct ExportPreviewView: View {
             Text("脱敏诊断包预览").font(.title3.bold())
             Text("将打包以下文件（不会自动上传或包含录音）。设备名称与标识符在导出文件中使用序号替代。")
                 .foregroundStyle(.secondary)
-            Text("app-info.json · system-info.json · bluetooth-status.json · audio-devices.json · events.jsonl · errors.log · reproduce.txt · crash-reports/README.txt")
+            Text("app-info.json · system-info.json · audio-devices.json · events.jsonl · errors.log · reproduce.txt · crash-reports/README.txt")
                 .font(.caption.monospaced()).textSelection(.enabled)
-            Text("设备预览：蓝牙 \(model.bluetooth.devices.count) 台，音频 \(model.audio.devices.count) 台；真实设备名不写入 ZIP。")
+            Text("设备预览：Mac 音频设备 \(model.audio.devices.count) 台，真实设备名不写入 ZIP。")
                 .font(.caption)
             Text("近几条日志预览").font(.subheadline.bold())
             ScrollView {

@@ -20,34 +20,6 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Import initial source (one-time bootstrap)
-        if: ${{ github.ref == 'refs/heads/main' && hashFiles('bootstrap/source.tar.xz.base64') != '' }}
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import base64
-          import io
-          import lzma
-          import pathlib
-          import tarfile
-          source = pathlib.Path("bootstrap/source.tar.xz.base64")
-          raw = lzma.decompress(base64.b64decode(source.read_text().strip()))
-          with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
-              entries = archive.getmembers()
-              for entry in entries:
-                  p = pathlib.PurePosixPath(entry.name)
-                  if p.is_absolute() or ".." in p.parts or entry.issym() or entry.islnk():
-                      raise RuntimeError("Unsafe archive path")
-              archive.extractall(".", members=entries)
-          source.unlink()
-          source.parent.rmdir()
-          PY
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "feat: import SIM AI Assistant V0.1 sources"
-          git push origin HEAD:main
-
       - name: Show toolchain
         run: |
           xcodebuild -version
@@ -87,10 +59,14 @@ jobs:
           shasum -a 256 dist/SIMAI-Companion-v0.2.0-debug.apk > dist/SIMAI-Companion-v0.2.0-debug.apk.sha256
 
 
+      - name: Build Android 13 audio capability helper
+        run: bash Scripts/build-audio-probe.sh
+
       - name: Run tests and build arm64 app
         env:
           TARGET_TRIPLE: arm64-apple-macosx13.0
           ANDROID_COMPANION_APK_PATH: ${{ github.workspace }}/dist/SIMAI-Companion-v0.2.0-debug.apk
+          ANDROID_AUDIO_PROBE_JAR_PATH: ${{ github.workspace }}/dist/SIMAI-Audio-Probe.jar
         run: bash Scripts/build-macos.sh
 
       - name: Upload downloadable macOS app
@@ -98,8 +74,9 @@ jobs:
         with:
           name: SIM-AI-Assistant-macOS-arm64
           path: |
-            dist/SIM-AI-Assistant-v0.1.5-macos-arm64.zip
-            dist/SIM-AI-Assistant-v0.1.5-macos-arm64.zip.sha256
+            dist/SIM-AI-Assistant-v0.2.0-macos-arm64.zip
+            dist/SIM-AI-Assistant-v0.2.0-macos-arm64.zip.sha256
+            dist/SIMAI-Audio-Probe.jar
             dist/SIMAI-Companion-v0.2.0-debug.apk
             dist/SIMAI-Companion-v0.2.0-debug.apk.sha256
           if-no-files-found: error
@@ -114,11 +91,12 @@ jobs:
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest --target "$(git rev-parse HEAD)" \
               --title "SIM AI Assistant · 最新测试版" --prerelease \
-              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。当前 V0.1.5 修复 USB 重连重复同步；仍不支持电话音频桥接。"
+              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.2.0 新增 Android 13 双向音频兼容性诊断，旧版模拟界面已清理。"
           fi
           gh release upload dev-latest \
-            dist/SIM-AI-Assistant-v0.1.5-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.1.5-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.2.0-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.2.0-macos-arm64.zip.sha256 \
+            dist/SIMAI-Audio-Probe.jar \
             dist/SIMAI-Companion-v0.2.0-debug.apk \
             dist/SIMAI-Companion-v0.2.0-debug.apk.sha256 --clobber
 
@@ -129,9 +107,10 @@ jobs:
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/SIM-AI-Assistant-v0.1.5-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.1.5-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.2.0-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.2.0-macos-arm64.zip.sha256 \
             dist/SIMAI-Companion-v0.2.0-debug.apk \
             dist/SIMAI-Companion-v0.2.0-debug.apk.sha256 \
+            dist/SIMAI-Audio-Probe.jar \
             --title "SIM AI Assistant $GITHUB_REF_NAME" --prerelease \
             --notes "macOS Apple Silicon arm64 测试版，未公证；请查看 README 和校验 SHA256。"

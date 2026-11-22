@@ -2,17 +2,16 @@ import Foundation
 
 public struct ExportContext {
     public let system: SystemSnapshot
-    public let bluetooth: BluetoothSnapshot
     public let audio: AudioSnapshot
     public let sessionID: String
     public let recentError: DiagnosticEvent?
-    public let callState: SimulatedCallState
+    public let callState: String
     public let userReproductionNotes: String
 
-    public init(system: SystemSnapshot, bluetooth: BluetoothSnapshot, audio: AudioSnapshot,
-                sessionID: String, recentError: DiagnosticEvent?, callState: SimulatedCallState,
+    public init(system: SystemSnapshot, audio: AudioSnapshot,
+                sessionID: String, recentError: DiagnosticEvent?, callState: String,
                 userReproductionNotes: String = "") {
-        self.system = system; self.bluetooth = bluetooth; self.audio = audio
+        self.system = system; self.audio = audio
         self.sessionID = sessionID; self.recentError = recentError
         self.callState = callState; self.userReproductionNotes = userReproductionNotes
     }
@@ -49,7 +48,6 @@ public final class DiagnosticsExporter {
 
         try writeJSON(["appVersion": context.system.appVersion, "build": context.system.build], name: "app-info.json", root: root)
         try writeJSON(context.system, name: "system-info.json", root: root)
-        try writeJSON(context.bluetooth.exportSafe(), name: "bluetooth-status.json", root: root)
         try writeJSON(context.audio.exportSafe(), name: "audio-devices.json", root: root)
         try logs.readAllSafeLines().write(to: root.appendingPathComponent("events.jsonl"), atomically: true, encoding: .utf8)
         let errors = try logs.readRecent(limit: 5_000).filter { $0.level == .error }
@@ -57,7 +55,7 @@ public final class DiagnosticsExporter {
         try errorsText.write(to: root.appendingPathComponent("errors.log"), atomically: true, encoding: .utf8)
         let crash = root.appendingPathComponent("crash-reports", isDirectory: true)
         try fileManager.createDirectory(at: crash, withIntermediateDirectories: true)
-        try "出于隐私保护，V0.1 不自动采集 macOS 全量崩溃报告。发生崩溃时请在 Console.app 中导出本应用的崩溃日志并自行检查后分享。\n"
+        try "出于隐私保护，V0.2 不自动采集 macOS 全量崩溃报告。发生崩溃时请在 Console.app 中导出本应用的崩溃日志并自行检查后分享。\n"
             .write(to: crash.appendingPathComponent("README.txt"), atomically: true, encoding: .utf8)
 
         let error = context.recentError?.sanitized()
@@ -69,7 +67,7 @@ public final class DiagnosticsExporter {
         故障模块：\(error?.module.rawValue ?? "待确认")
         错误代码：\(error?.code ?? "无")
         关联诊断 ID：\(PrivacyRedactor.clean(context.sessionID))
-        模拟通话状态：\(context.callState.rawValue)
+        实机电话状态：\(context.callState)
 
         操作流程（可补充）：
         \(notes.isEmpty ? "1. 打开应用\n2. 执行测试\n3. 观察异常" : notes)

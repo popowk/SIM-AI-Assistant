@@ -67,35 +67,6 @@ public struct SystemSnapshot: Codable {
     }
 }
 
-public struct BluetoothDeviceSnapshot: Codable, Identifiable {
-    public var id: String
-    public var displayName: String
-    public var connected: Bool
-    public var targetCandidate: Bool
-    public init(id: String, displayName: String, connected: Bool, targetCandidate: Bool) {
-        self.id = id; self.displayName = displayName
-        self.connected = connected; self.targetCandidate = targetCandidate
-    }
-}
-
-public struct BluetoothSnapshot: Codable {
-    public var scanSucceeded: Bool
-    public var devices: [BluetoothDeviceSnapshot]
-    public var hfpVerified: Bool
-    public var note: String
-    public init(scanSucceeded: Bool = false, devices: [BluetoothDeviceSnapshot] = [],
-                hfpVerified: Bool = false, note: String = "仅检查已配对设备，不能证明 HFP 可用") {
-        self.scanSucceeded = scanSucceeded; self.devices = devices
-        self.hfpVerified = hfpVerified; self.note = note
-    }
-    public func exportSafe() -> BluetoothSnapshot {
-        BluetoothSnapshot(scanSucceeded: scanSucceeded, devices: devices.enumerated().map { index, item in
-            BluetoothDeviceSnapshot(id: "BT-DEVICE-\(index + 1)", displayName: "蓝牙设备 \(index + 1)",
-                                    connected: item.connected, targetCandidate: item.targetCandidate)
-        }, hfpVerified: hfpVerified, note: note)
-    }
-}
-
 public struct AudioDeviceSnapshot: Codable, Identifiable {
     public var id: String
     public var displayName: String

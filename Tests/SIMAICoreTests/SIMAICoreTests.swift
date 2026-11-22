@@ -3,21 +3,6 @@ import XCTest
 @testable import SIMAICore
 
 final class SIMAICoreTests: XCTestCase {
-    func testCallStateMachine() throws {
-        var call = CallSimulator()
-        XCTAssertThrowsError(try call.answer())
-        let first = try call.ring()
-        XCTAssertEqual(call.state, .ringing)
-        XCTAssertEqual(first.new, .ringing)
-        XCTAssertThrowsError(try call.ring())
-        try call.answer()
-        XCTAssertEqual(call.state, .connected)
-        try call.hangup()
-        XCTAssertEqual(call.state, .ended)
-        try call.ring()
-        XCTAssertEqual(call.state, .ringing)
-    }
-
     func testPrivacyRedaction() {
         let raw = "phone +8613812345678 and 415-555-0199; MAC AA:BB:CC:DD:EE:FF; test@example.com; token sk-ABCDEFGHIJKLMN"
         let clean = PrivacyRedactor.clean(raw)
@@ -168,9 +153,8 @@ final class SIMAICoreTests: XCTestCase {
                                          code: SIMErrorCode.audioTestFailed.rawValue,
                                          message: "测试失败 13812345678"))
         let context = ExportContext(system: SystemSnapshot(appVersion: "0.1.0", build: "1", osVersion: "macOS", architecture: "arm64"),
-            bluetooth: BluetoothSnapshot(scanSucceeded: true, devices: [.init(id: "MAC-AA:BB:CC:DD:EE:FF", displayName: "私人手机", connected: true, targetCandidate: true)]),
             audio: AudioSnapshot(devices: [.init(id: "uid-raw", displayName: "John's AirPods")]),
-            sessionID: "test-0001", recentError: nil, callState: .idle)
+            sessionID: "test-0001", recentError: nil, callState: "IDLE")
         let zip = temp.appendingPathComponent("result.zip")
         try DiagnosticsExporter(logs: store).export(context: context, to: zip)
         XCTAssertTrue(FileManager.default.fileExists(atPath: zip.path))
@@ -186,6 +170,6 @@ final class SIMAICoreTests: XCTestCase {
         XCTAssertEqual(command.terminationStatus, 0)
         XCTAssertFalse(json.contains("私人手机"))
         XCTAssertFalse(json.contains("AA:BB"))
-        XCTAssertTrue(json.contains("蓝牙设备 1"))
+        XCTAssertTrue(json.contains("音频设备 1"))
     }
 }

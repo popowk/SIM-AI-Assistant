@@ -27,11 +27,9 @@ private struct MenuBarCommands: View {
             openWindow(id: "dashboard")
         }
         Divider()
-        Button("刷新蓝牙与音频状态") { model.refresh() }
-        Button("模拟一通来电") { model.simulateCall() }
-        Button("打开 ChatGPT 官方网页") { model.openChatGPT() }
+        Button("刷新 Mac 音频设备") { model.refresh() }
         Divider()
-        Text("v0.1.0 · 真实 HFP 尚未连接")
+        Text("v0.2.0 · 电话音频兼容性实测")
         Button("退出 SIM AI Assistant") { NSApp.terminate(nil) }
     }
 }

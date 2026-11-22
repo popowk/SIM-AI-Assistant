@@ -25,6 +25,18 @@ struct ADBBridgeResult {
     let message: String
 }
 
+struct AndroidAudioProbeResult {
+    let succeeded: Bool
+    let action: String
+    let status: String
+    let fields: [String: String]
+}
+
+/// Supported actions are fixed at compile time. Never accept raw shell commands from UI.
+enum AndroidAudioProbeAction: String {
+    case info, downlink, uplink
+}
+
 enum ADBInspector {
     private enum CommandResult {
         case completed(Int32, String)
@@ -217,6 +229,66 @@ enum ADBInspector {
             return install(at: selected, apk: apk)
         default:
             return .init(succeeded: false, status: "卸载旧测试版失败；未继续安装。请检查手机提示。")
+        }
+    }
+
+
+    static func runAudioProbe(at selected: String?, jar: URL,
+                              action: AndroidAudioProbeAction) -> AndroidAudioProbeResult {
+        func failed(_ detail: String) -> AndroidAudioProbeResult {
+            .init(succeeded: false, action: action.rawValue, status: detail, fields: [:])
+        }
+        guard let adb = executable(at: selected) else { return failed("未找到 ADB 可执行文件") }
+        guard jar.pathExtension.lowercased() == "jar",
+              FileManager.default.fileExists(atPath: jar.path) else {
+            return failed("测试版没有内置 Android 音频诊断助手，请重新安装完整 Mac 包")
+        }
+        let devices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 12) {
+        case .completed(0, let output): devices = parseDevices(output)
+        default: return failed("ADB 无法列出手机，请检查已配对的 USB / 无线 ADB")
+        }
+        let ready = devices.filter { $0.state == "device" }
+        guard ready.count == 1 else {
+            return failed("必须且只能有一台授权中的 Android 手机，当前 \(ready.count) 台")
+        }
+        let serial = ready[0].serial // only in memory; not logged or exported
+        let remote = "/data/local/tmp/simai-audio-probe.jar"
+        switch run(adb, args: ["-s", serial, "push", jar.path, remote], timeout: 25) {
+        case .completed(0, _): break
+        case .timedOut: return failed("ADB 推送诊断程序超时")
+        default: return failed("ADB 推送诊断程序失败；请确认手机授权和存储空间")
+        }
+        let shell = "CLASSPATH=\(remote) app_process / dev.popowk.simai.probe.Main \(action.rawValue)"
+        let result = run(adb, args: ["-s", serial, "shell", shell],
+                         timeout: action == .downlink ? 24 : 17)
+        switch result {
+        case .completed(let code, let output):
+            // Read *only* whitelisted diagnostic key/value lines from the helper;
+            // any OEM stack trace or serial from adb is intentionally discarded.
+            let allowed: Set<String> = ["status", "error", "android", "shell", "audioMode",
+                "telephonyOutput", "pstnInterceptable", "downlink", "uplink",
+                "frames", "peak", "rms", "result", "written"]
+            var fields: [String: String] = [:]
+            for line in output.split(whereSeparator: \.isNewline) {
+                guard line.hasPrefix("SIMAI ") else { continue }
+                let kv = line.dropFirst(6).split(separator: "=", maxSplits: 1)
+                guard kv.count == 2 else { continue }
+                let key = String(kv[0])
+                let value = String(kv[1])
+                guard allowed.contains(key), value.count <= 64,
+                      value.unicodeScalars.allSatisfy({ $0.isASCII && !$0.properties.isWhitespace }) else { continue }
+                fields[key] = value
+            }
+            if fields["status"] == "ok" && code == 0 {
+                return .init(succeeded: true, action: action.rawValue,
+                             status: "Android Helper 已执行；仍需实机确认双向声音", fields: fields)
+            }
+            let error = fields["error"] ?? "HELPER_EXIT_\(code)"
+            return .init(succeeded: false, action: action.rawValue,
+                         status: "手机音频测试失败（\(error)）；已保存匿名错误码", fields: fields)
+        case .timedOut: return failed("手机音频诊断超时，已终止 ADB 命令")
+        case .launchFailed: return failed("无法启动 ADB 音频测试命令")
         }
     }
 

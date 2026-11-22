@@ -49,6 +49,17 @@ else
   echo "注意：未设置 ANDROID_COMPANION_APK_PATH，当前本地构建不含 APK。"
 fi
 
+if [[ -n "${ANDROID_AUDIO_PROBE_JAR_PATH:-}" ]]; then
+  if [[ ! -s "$ANDROID_AUDIO_PROBE_JAR_PATH" ]]; then
+    echo "错误：Android 音频诊断助手文件缺失：$ANDROID_AUDIO_PROBE_JAR_PATH" >&2
+    exit 5
+  fi
+  cp "$ANDROID_AUDIO_PROBE_JAR_PATH" "$APP/Contents/Resources/SIMAI-Audio-Probe.jar"
+  echo "已内置 Android 13 电话音频兼容性助手"
+else
+  echo "注意：未设置 ANDROID_AUDIO_PROBE_JAR_PATH，本地构建不含电话音频诊断助手。"
+fi
+
 chmod +x "$APP/Contents/MacOS/SIMAIAssistant"
 
 if [[ -n "${TARGET_TRIPLE:-}" ]]; then
@@ -69,7 +80,7 @@ codesign --verify --verbose "$APP"
 echo "[5/5] 生成发行 ZIP..."
 ARCH="${TARGET_TRIPLE%%-*}"
 if [[ -z "${TARGET_TRIPLE:-}" ]]; then ARCH="$(uname -m)"; fi
-ARCHIVE="$DIST/SIM-AI-Assistant-v0.1.5-macos-$ARCH.zip"
+ARCHIVE="$DIST/SIM-AI-Assistant-v0.2.0-macos-$ARCH.zip"
 rm -f "$ARCHIVE"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
 shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"

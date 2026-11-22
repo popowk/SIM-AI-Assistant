@@ -8,24 +8,22 @@ import SIMAICore
 
 @MainActor
 final class AssistantModel: ObservableObject {
-    @Published var bluetooth = BluetoothSnapshot()
     @Published var audio = AudioSnapshot()
-    @Published var call = CallSimulator()
     @Published var events: [DiagnosticEvent] = []
-    @Published var voiceMarkedActive = false
     @Published var probeStatus = "尚未测试"
-    @Published var loopbackStatus = "尚未测试"
-    @Published var observingPhone = false
-    @Published var phoneObservationStatus = "尚未开始"
-    @Published var phoneObservationElapsed = 0
     @Published var adbStatus = "未检测 ADB"
     @Published var adbChecking = false
     @Published var adbInstalling = false
     @Published var apkInstallStatus = "尚未安装伴侣 APK"
     @Published var liveSyncEnabled = UserDefaults.standard.object(forKey: "SIMAI_LIVE_SYNC") as? Bool ?? true
-    @Published var liveBridgeStatus = "正在检查 USB 连接"
+    @Published var liveBridgeStatus = "正在检查 ADB 连接"
     @Published var livePhoneState = "未连接"
     @Published var liveCallEvents: [String] = []
+    @Published var audioProbeBusy = false
+    @Published var audioProbeStatus = "尚未测试真实电话音频"
+    @Published var audioProbeFacts: [String] = []
+    @Published var audioProbeToneSent = false
+    @Published var audioProbeRemoteConfirmed = false
     @Published var selectedADBPath = UserDefaults.standard.string(forKey: "SIMAI_ADB_PATH") ?? ""
     @Published var cleanupPreviewText = ""
     @Published var isAudioTestRunning = false
@@ -33,17 +31,12 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.1.5"
-    let buildNumber = "6"
+    let version = "0.2.0"
+    let buildNumber = "7"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
     private let microphoneProbe = MicrophoneLevelProbe()
-    private let loopbackProbe = LocalLoopbackProbe()
-    private var phoneTimer: Timer?
-    private var phoneObservationStartedAt: Date?
-    private var phoneLastFingerprint = ""
-    private var phoneObservationChanges = 0
     private var bridgeTimer: Timer?
     private var bridgeLink: ADBBridgeLink?
     private var bridgeBusy = false
@@ -101,94 +94,14 @@ final class AssistantModel: ObservableObject {
     }
 
     func refresh() {
-        bluetooth = BluetoothInspector.inspect()
         audio = audioInspector.inspect()
-        log(.info, .bluetooth, "蓝牙配对设备检查完成", details: ["pairedCount": "\(bluetooth.devices.count)",
-            "connectedCount": "\(bluetooth.devices.filter(\.connected).count)"])
-        log(.info, .audio, "CoreAudio 设备检查完成", details: ["deviceCount": "\(audio.devices.count)",
-            "microphonePermission": audio.microphonePermission])
-        if !bluetooth.scanSucceeded {
-            log(.warn, .bluetooth, "无法取得蓝牙已配对列表", code: .bluetoothUnavailable)
-        } else if !bluetooth.devices.contains(where: \.targetCandidate) {
-            log(.info, .bluetooth, "蓝牙设备名未匹配 vivo S9e；ADB/APK 方案不依赖蓝牙配对")
-        } else {
-            log(.info, .bluetooth, "已发现 vivo 蓝牙配对候选；本项目不接管 HFP 蓝牙控制器")
-        }
         if audio.microphonePermission == "已拒绝" {
             log(.warn, .audio, "麦克风权限被拒绝", code: .microphoneDenied)
         }
     }
 
 
-    /// Observes only local Bluetooth and CoreAudio state (not real phone calls).
-    func startPhoneObservation() {
-        guard !observingPhone else { return }
-        sessionID = "phone-\(UUID().uuidString)"
-        observingPhone = true
-        phoneObservationElapsed = 0
-        phoneObservationChanges = 0
-        phoneObservationStartedAt = Date()
-        bluetooth = BluetoothInspector.inspect()
-        audio = audioInspector.inspect()
-        phoneLastFingerprint = phoneFingerprint(bluetooth, audio)
-        phoneObservationStatus = "观察中；请使用另一部电话拨打 vivo S9e"
-        log(.info, .call, "开始 60 秒真实来电只读观察；不会录音或控制手机",
-            details: ["pairedBT": "\(bluetooth.devices.count)",
-                      "connectedBT": "\(bluetooth.devices.filter(\.connected).count)",
-                      "audioCount": "\(audio.devices.count)"])
-        phoneTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.tickPhoneObservation() }
-        }
-    }
-    func markPhoneRinging() {
-        guard observingPhone else { return }
-        log(.info, .call, "人工标记手机正在响铃（不是自动检测）",
-            details: ["elapsedSeconds": "\(phoneObservationElapsed)"])
-    }
-    func stopPhoneObservation() {
-        guard observingPhone else { return }
-        observingPhone = false
-        phoneTimer?.invalidate()
-        phoneTimer = nil
-        phoneObservationStartedAt = nil
-        phoneObservationStatus = "结束：\(phoneObservationChanges) 次设备变化；HFP/SCO 未验证"
-        log(.info, .call, "真实来电观察结束；无状态变化不等于不支持 HFP",
-            details: ["elapsedSeconds": "\(phoneObservationElapsed)",
-                      "changeCount": "\(phoneObservationChanges)"])
-    }
-    private func tickPhoneObservation() {
-        guard observingPhone else { return }
-        phoneObservationElapsed = Int(Date().timeIntervalSince(phoneObservationStartedAt ?? Date()))
-        let nextBT = BluetoothInspector.inspect()
-        let nextAudio = audioInspector.inspect()
-        let fingerprint = phoneFingerprint(nextBT, nextAudio)
-        if fingerprint != phoneLastFingerprint {
-            phoneObservationChanges += 1
-            log(.info, .call, "观察到设备变化（不代表已获得电话音频）",
-                details: ["elapsedSeconds": "\(phoneObservationElapsed)",
-                          "connectedBT": "\(nextBT.devices.filter(\.connected).count)",
-                          "vivoCandidateConnected": "\(nextBT.devices.contains { $0.targetCandidate && $0.connected })",
-                          "audioDevices": "\(nextAudio.devices.count)",
-                          "defaultInputChanged": "\(nextAudio.devices.first(where: { $0.isDefaultInput })?.id != audio.devices.first(where: { $0.isDefaultInput })?.id)",
-                          "defaultOutputChanged": "\(nextAudio.devices.first(where: { $0.isDefaultOutput })?.id != audio.devices.first(where: { $0.isDefaultOutput })?.id)"])
-        }
-        phoneLastFingerprint = fingerprint
-        bluetooth = nextBT
-        audio = nextAudio
-        if phoneObservationElapsed >= 60 { stopPhoneObservation() }
-    }
-    private func phoneFingerprint(_ bt: BluetoothSnapshot, _ au: AudioSnapshot) -> String {
-        // IDs are never written to diagnostic logs; only compared in memory.
-        let bonds = bt.devices.map { "\($0.id):\($0.connected)" }.sorted().joined(separator: "|")
-        let sound = au.devices.map {
-            "\($0.id):\($0.sampleRate ?? 0):\($0.isDefaultInput):\($0.isDefaultOutput)"
-        }.sorted().joined(separator: "|")
-        return bonds + "||" + sound
-    }
-
-
-
-    // Phone events are received from the user-authorized Android APK over USB ADB,
+    // Phone events are received from the user-authorized Android APK over ADB,
     // never from Mac Bluetooth and never from a cellular audio channel.
     private func startLiveSyncTimer() {
         guard bridgeTimer == nil else { return }
@@ -271,11 +184,11 @@ final class AssistantModel: ObservableObject {
                                            "source": "USB_ADB"])
                     }
                     self.livePhoneState = snapshot.state
-                    self.liveBridgeStatus = "已连接 · USB ADB 自动同步"
+                    self.liveBridgeStatus = "已连接 · ADB 自动同步"
                 } catch {
                     self.liveBridgeStatus = "连接中断，准备自动重连（请确认手机监听已开启）"
                     let nsError = error as NSError
-                    self.log(.warn, .call, "USB 电话状态桥接连接中断，准备重连",
+                    self.log(.warn, .call, "ADB 电话状态桥接连接中断，准备重连",
                              details: ["errorDomain": nsError.domain, "errorCode": "\(nsError.code)"])
                     self.livePhoneState = "未连接"
                     self.closeLiveBridge()
@@ -294,13 +207,90 @@ final class AssistantModel: ObservableObject {
                     self.bridgeLink = link
                     // Keep the previous Android session and sequence across ADB port changes.
                     self.liveBridgeStatus = result.message
-                    self.log(.info, .call, "ADB USB 端口转发连接建立（未读取设备序列号）")
+                    self.log(.info, .call, "ADB 端口转发连接建立（未读取设备序列号）")
                     self.pollLiveBridge()
                 } else if self.liveBridgeStatus != result.message {
                     self.liveBridgeStatus = result.message
                 }
             }
         }
+    }
+
+
+    var embeddedAudioProbeAvailable: Bool {
+        guard let resources = Bundle.main.resourceURL else { return false }
+        return FileManager.default.fileExists(
+            atPath: resources.appendingPathComponent("SIMAI-Audio-Probe.jar").path)
+    }
+
+    /// Non-invasive check may run at any time. Actual audio tests are only
+    /// triggered by separate, informed consent dialogs and a connected call.
+    func runPhoneAudioProbe(_ action: AndroidAudioProbeAction) {
+        guard !audioProbeBusy && !adbInstalling else { return }
+        if action != .info && livePhoneState != "OFFHOOK" {
+            alertText = "必须先由双方同意并接通一通真实测试电话，且 Mac 状态为 OFFHOOK。未执行测试。"
+            return
+        }
+        guard let path = Bundle.main.resourceURL?.appendingPathComponent("SIMAI-Audio-Probe.jar"),
+              FileManager.default.fileExists(atPath: path.path) else {
+            alertText = "此 Mac 安装包没有包含音频兼容性助手。请下载最新完整版本。"
+            return
+        }
+        let adb = selectedADBPath
+        audioProbeBusy = true
+        audioProbeStatus = action == .info ? "检查 Android 13 音频能力……"
+            : action == .downlink ? "正在测量电话下行电平，约 2 秒（不录音）……"
+            : "准备播放一段低音量测试音（约 1 秒）……"
+        if action == .uplink {
+            audioProbeToneSent = false
+            audioProbeRemoteConfirmed = false
+        }
+        log(.info, .audio, "用户主动启动 Android 电话音频测试",
+            details: ["action": action.rawValue, "stage": "begin"])
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let report = ADBInspector.runAudioProbe(at: adb, jar: path, action: action)
+            await MainActor.run {
+                guard let self else { return }
+                self.audioProbeBusy = false
+                self.audioProbeFacts = report.fields.sorted(by: { $0.key < $1.key })
+                    .map { "\($0.key) = \($0.value)" }
+                self.audioProbeStatus = report.status
+                if report.succeeded {
+                    switch action {
+                    case .info:
+                        self.audioProbeStatus = "能力检查完成。是否能真正双向收发，还需通话实测。"
+                    case .downlink:
+                        let peak = report.fields["peak"] ?? "unknown"
+                        let frames = report.fields["frames"] ?? "0"
+                        self.audioProbeStatus = "下行读取 \(frames) 个样本，峰值 \(peak)。非零不等于已证明对方语音可用。"
+                    case .uplink:
+                        self.audioProbeToneSent = report.fields["result"] == "TONE_SENT_UNCONFIRMED"
+                        self.audioProbeStatus = self.audioProbeToneSent
+                            ? "已尝试写入测试音。请询问对方是否听到；写入成功不代表成功注入通话。"
+                            : "测试音未完成，需要检查诊断结果。"
+                    }
+                }
+                self.log(report.succeeded ? .info : .warn, .audio,
+                         "Android 电话音频诊断执行结束",
+                         details: ["action": action.rawValue,
+                                   "ok": "\(report.succeeded)",
+                                   "status": report.fields["status"] ?? "no_status",
+                                   "error": report.fields["error"] ?? "none",
+                                   "result": report.fields["result"] ?? "none",
+                                   "peak": report.fields["peak"] ?? "n/a",
+                                   "rms": report.fields["rms"] ?? "n/a",
+                                   "frames": report.fields["frames"] ?? "n/a",
+                                   "pstnInterceptable": report.fields["pstnInterceptable"] ?? "unknown"])
+            }
+        }
+    }
+
+    func confirmRemoteHeardTone() {
+        guard audioProbeToneSent else { return }
+        audioProbeRemoteConfirmed = true
+        audioProbeStatus = "对方已人工确认听到测试音；上行语音注入需要在后续版本进一步验证稳定性。"
+        log(.info, .audio, "通话对方人工确认听到上行测试音（非自动检测）",
+            details: ["method": "manual_confirmation"])
     }
 
     func prepareLogCleanup(days: Int) -> Bool {
@@ -464,31 +454,6 @@ final class AssistantModel: ObservableObject {
         }
     }
 
-    func simulateCall() {
-        do {
-            let transition = try call.ring()
-            sessionID = transition.sessionID
-            log(.info, .call, "模拟来电开始（不含真实手机号）")
-        } catch { log(.warn, .call, "模拟来电状态变更失败", code: .invalidCallTransition) }
-    }
-
-    func answerSimulated() {
-        do { try call.answer(); log(.info, .call, "模拟接听成功（不控制实体电话）") }
-        catch { log(.warn, .call, "模拟接听失败", code: .invalidCallTransition) }
-    }
-
-    func hangupSimulated() {
-        do { try call.hangup(); log(.info, .call, "模拟挂断完成（不控制实体电话）") }
-        catch { log(.warn, .call, "模拟挂断失败", code: .invalidCallTransition) }
-    }
-
-    func inject(_ fault: TestFault) {
-        sessionID = "test-\(UUID().uuidString.prefix(8))"
-        log(.error, fault.module, fault.rawValue + "（测试注入，非真实故障）", code: fault.code,
-            details: ["testMode": "true"])
-        alertText = "已模拟：\(fault.rawValue)。现在可以导出诊断包验证故障定位。"
-    }
-
     func runMicrophoneTest() {
         let state = AVCaptureDevice.authorizationStatus(for: .audio)
         switch state {
@@ -535,61 +500,9 @@ final class AssistantModel: ObservableObject {
         }
     }
 
-    func runLocalLoopback() {
-        guard !isAudioTestRunning else { return }
-        let status = AVCaptureDevice.authorizationStatus(for: .audio)
-        if status == .notDetermined {
-            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
-                Task { @MainActor in
-                    guard let self else { return }
-                    if granted { self.startLocalLoopback() }
-                    else { self.handleMicDenied() }
-                }
-            }
-        } else if status == .authorized {
-            startLocalLoopback()
-        } else {
-            handleMicDenied()
-        }
-    }
-
-    private func startLocalLoopback() {
-        guard !isAudioTestRunning else { return }
-        isAudioTestRunning = true
-        loopbackStatus = "本机回环运行中（最长 2 秒，音量 5%）"
-        log(.info, .audio, "用户发起本机麦克风到扬声器的短时回环（非电话音频）")
-        loopbackProbe.run { [weak self] result in
-            Task { @MainActor in
-                guard let self else { return }
-                self.isAudioTestRunning = false
-                switch result {
-                case .success:
-                    self.loopbackStatus = "本机 2 秒回环结束；请人工确认是否听见自己的声音"
-                    self.log(.info, .audio, "本机回环运行结束（听感需人工确认）")
-                case .failure(let error):
-                    self.loopbackStatus = "本机回环启动失败"
-                    self.log(.error, .audio, "本机音频回环初始化失败", code: .audioTestFailed,
-                             details: ["errorDomain": (error as NSError).domain,
-                                       "errorCode": "\((error as NSError).code)"])
-                }
-            }
-        }
-    }
-
     func playSpeakerBeep() {
         NSSound.beep()
         log(.info, .audio, "用户触发扬声器试听提示音（非电话链路）")
-    }
-
-    func openChatGPT() {
-        guard let url = URL(string: "https://chatgpt.com/") else { return }
-        NSWorkspace.shared.open(url)
-        log(.info, .voice, "用户打开 ChatGPT 官方网页，Voice 需用户手动开启", code: .voiceManualOnly)
-    }
-
-    func setVoiceMarkedActive(_ active: Bool) {
-        voiceMarkedActive = active
-        log(.info, .voice, active ? "用户标记官方 Voice 已启动（人工声明）" : "用户标记官方 Voice 已结束（人工声明）")
     }
 
     func restoreAudio() {
@@ -611,8 +524,8 @@ final class AssistantModel: ObservableObject {
         panel.nameFieldStringValue = DiagnosticsExporter.suggestedFileName()
         panel.title = "保存脱敏诊断包"
         guard panel.runModal() == .OK, let destination = panel.url else { return }
-        let context = ExportContext(system: system, bluetooth: bluetooth, audio: audio,
-            sessionID: sessionID, recentError: lastError, callState: call.state,
+        let context = ExportContext(system: system, audio: audio,
+            sessionID: sessionID, recentError: lastError, callState: livePhoneState,
             userReproductionNotes: reproductionNotes)
         do {
             try DiagnosticsExporter(logs: logs).export(context: context, to: destination)

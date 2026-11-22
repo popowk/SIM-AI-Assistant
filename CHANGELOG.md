@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.2.0 — 2026-11-22
+
+- 新增 Android 13 原生 ADB shell AudioProbe Helper：安全查询音频能力、通话下行声音 RMS/峰值检测、显式确认的上行短提示音测试。
+- Mac 增加三步电话音频兼容性诊断面板、人工确认、统一匿名日志及导出。
+- CI 编译并将独立 AudioProbe.dex JAR 内置于 Mac 包，不要求重新安装 Android Companion。
+- 清除旧蓝牙/HFP 观察、60 秒设备观察、模拟来电、模拟故障、本机回环、手动 Voice 模拟开关以及过时说明。
+- 保留已验证的 Android 来电状态同步与诊断日志。第一阶段**未**实现实时双向音频传输、AI 自动接听或 GPT API 接口。
+- Android 13 只是必要条件，音频 HAL 是否可用需要 vivo S9e 实机测试。
+
 ## 0.1.5 — 2026-11-22
 
 - 已通过用户实际 ZIP 证实 Android→Mac 来电事件同步成功：IDLE、RINGING、OFFHOOK、IDLE。

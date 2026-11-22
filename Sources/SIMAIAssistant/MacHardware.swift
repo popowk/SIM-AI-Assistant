@@ -1,27 +1,9 @@
 #if os(macOS)
 import Foundation
-import IOBluetooth
 import CoreAudio
 import AVFoundation
 import AppKit
 import SIMAICore
-
-struct BluetoothInspector {
-    static func inspect() -> BluetoothSnapshot {
-        // IOBluetooth pairedDevices lists Classic Bluetooth bonds only.
-        // A connected baseband is NOT proof of HFP service or cellular call audio.
-        guard let devices = IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] else {
-            return BluetoothSnapshot(scanSucceeded: false)
-        }
-        let result = devices.enumerated().map { index, device in
-            let name = device.name ?? "未命名蓝牙设备"
-            let candidate = name.localizedCaseInsensitiveContains("vivo") || name.localizedCaseInsensitiveContains("S9e")
-            return BluetoothDeviceSnapshot(id: "paired-\(index)", displayName: name,
-                                           connected: device.isConnected(), targetCandidate: candidate)
-        }
-        return BluetoothSnapshot(scanSucceeded: true, devices: result)
-    }
-}
 
 final class AudioInspector {
     private let savedInput: AudioDeviceID?
@@ -121,37 +103,6 @@ final class AudioInspector {
         let status = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address,
             0, nil, size, &mutableID)
         return status == noErr ? "恢复完成" : "失败（OSStatus \(status)）"
-    }
-}
-
-/// Strictly local mic-to-speaker experiment; no phone audio or persistent buffers.
-/// Low volume and a 2-second hard stop reduce (but do not eliminate) feedback risk.
-final class LocalLoopbackProbe {
-    private var engine: AVAudioEngine?
-
-    func run(completion: @escaping (Result<Void, Error>) -> Void) {
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0 else {
-            completion(.failure(NSError(domain: "SIMAI.Loopback", code: 2003,
-                userInfo: [NSLocalizedDescriptionKey: "无有效的输入音频流"])))
-            return
-        }
-        engine.connect(input, to: engine.mainMixerNode, format: format)
-        engine.mainMixerNode.outputVolume = 0.05
-        do {
-            try engine.start()
-            self.engine = engine
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                engine.stop()
-                self?.engine = nil
-                completion(.success(()))
-            }
-        } catch {
-            engine.stop()
-            completion(.failure(error))
-        }
     }
 }
 
