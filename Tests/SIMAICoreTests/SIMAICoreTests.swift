@@ -113,6 +113,49 @@ final class SIMAICoreTests: XCTestCase {
         XCTAssertEqual(try store.readRecent().count, 0)
     }
 
+    func testADBFileSnapshotFreshnessAndStaleRejection() throws {
+        let body = """
+        {"schema":1,"session":"service-1","running":true,"state":"OFFHOOK","seq":1,
+         "updatedAt":1000000,
+         "events":[{"seq":1,"state":"OFFHOOK","at":999990}]}
+        """
+        let snapshot = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: Data(body.utf8))
+        XCTAssertTrue(snapshot.isFresh(referenceMilliseconds: 1_000_010))
+        XCTAssertTrue(snapshot.isFresh(referenceMilliseconds: 1_090_000))
+        XCTAssertFalse(snapshot.isFresh(referenceMilliseconds: 1_090_001))
+        XCTAssertFalse(snapshot.isFresh(referenceMilliseconds: 999_999))
+        let legacy = """
+        {"schema":1,"session":"old","running":true,"state":"IDLE","seq":0,"events":[]}
+        """
+        let older = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: Data(legacy.utf8))
+        XCTAssertNil(older.updatedAt)
+        XCTAssertFalse(older.isFresh(referenceMilliseconds: 1_000_010))
+    }
+
+    func testHTTPAndPrivateFileSnapshotsShareOneCursor() throws {
+        let json = """
+        {"schema":1,"session":"same-service","running":true,"state":"OFFHOOK","seq":2,
+         "updatedAt":1000000,
+         "events":[{"seq":1,"state":"RINGING","at":1000},
+                   {"seq":2,"state":"OFFHOOK","at":2000}]}
+        """
+        let file = """
+        {"schema":1,"session":"same-service","running":true,"state":"IDLE","seq":3,
+         "updatedAt":1000100,
+         "events":[{"seq":1,"state":"RINGING","at":1000},
+                   {"seq":2,"state":"OFFHOOK","at":2000},
+                   {"seq":3,"state":"IDLE","at":3000}]}
+        """
+        let decoder = JSONDecoder()
+        let a = try decoder.decode(PhoneBridgeSnapshot.self, from: Data(json.utf8))
+        let b = try decoder.decode(PhoneBridgeSnapshot.self, from: Data(file.utf8))
+        var cursor = PhoneBridgeCursor()
+        XCTAssertEqual(cursor.consume(a).map(\.state), ["RINGING", "OFFHOOK"])
+        XCTAssertEqual(cursor.consume(b).map(\.state), ["IDLE"])
+        XCTAssertEqual(cursor.consume(a).count, 0)
+        XCTAssertEqual(cursor.consume(b).count, 0)
+    }
+
     func testPhoneBridgeProtocolFiltersDuplicateAndUnknownEvents() throws {
         let body = """
         {"schema":1,"session":"abc","running":true,"state":"RINGING","seq":4,

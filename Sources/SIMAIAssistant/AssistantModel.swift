@@ -37,8 +37,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.2.3"
-    let buildNumber = "10"
+    let version = "0.2.4"
+    let buildNumber = "11"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -48,6 +48,8 @@ final class AssistantModel: ObservableObject {
     private var bridgeBusy = false
     private var bridgeCursor = PhoneBridgeCursor()
     private var bridgeGeneration = 0
+    private var bridgeUsingFileFallback = false
+    private var nextHTTPRecoveryAttempt = Date.distantPast
     private var bridgeRetryAfter = Date.distantPast
     private var bridgeConsecutiveFailures = 0
     private(set) var sessionID = UUID().uuidString
@@ -149,6 +151,8 @@ final class AssistantModel: ObservableObject {
             }
         }
         bridgeLink = nil
+        bridgeUsingFileFallback = false
+        nextHTTPRecoveryAttempt = .distantPast
         bridgeGeneration += 1
         // Preserve cursor on temporary USB disconnect to avoid replaying old call events.
     }
@@ -200,10 +204,72 @@ final class AssistantModel: ObservableObject {
         }
     }
 
+    /// Existing phone-event decoder is shared by HTTP and shell-file paths,
+    /// so there is exactly one state cursor across transport switches.
+    private func applyBridgeSnapshot(_ snapshot: PhoneBridgeSnapshot, source: String) {
+        let priorSession = bridgeCursor.session
+        let received = bridgeCursor.consume(snapshot)
+        if priorSession != bridgeCursor.session {
+            liveCallEvents.removeAll()
+            log(.info, .call, "Android 电话状态桥接会话已建立",
+                details: ["bridgeSchema": "1", "newSession": "true"])
+        }
+        for event in received {
+            let displayTime = Date(timeIntervalSince1970: Double(event.at) / 1000)
+                .formatted(date: .omitted, time: .standard)
+            liveCallEvents.insert("\(displayTime) · \(event.state)", at: 0)
+            liveCallEvents = Array(liveCallEvents.prefix(16))
+            log(.info, .call, "收到 Android 实时电话状态",
+                details: ["state": event.state, "sequence": "\(event.seq)",
+                          "source": source])
+        }
+        livePhoneState = snapshot.state
+        liveBridgeLastSync = Date()
+        adbTransportHealth = "ADB 已授权"
+        adbShellHealth = "命令正常"
+        adbForwardHealth = source == "ADB_FILE" ? "HTTP 备用路径" : "工作正常"
+        adbBridgeHealthDetail = source == "ADB_FILE"
+            ? "HTTP 连接暂不可靠，已使用 ADB 私有状态快照"
+            : "HTTP 状态桥接已恢复"
+        if bridgeConsecutiveFailures > 0 {
+            log(.info, .call, "ADB 电话状态同步已恢复",
+                details: ["failedAttempts": "\(bridgeConsecutiveFailures)",
+                          "transport": source])
+        }
+        resetBridgeRetry()
+        liveBridgeStatus = source == "ADB_FILE"
+            ? "已连接 · ADB 私有状态快照（HTTP 备用）"
+            : "已连接 · ADB HTTP 自动同步"
+    }
+
+    private func pollPrivateSnapshot(generation: Int) {
+        let adb = selectedADBPath
+        Task.detached(priority: .utility) { [weak self] in
+            let result = ADBInspector.readPrivateStateSnapshot(at: adb)
+            await MainActor.run {
+                guard let self else { return }
+                self.bridgeBusy = false
+                guard self.liveSyncEnabled, generation == self.bridgeGeneration else { return }
+                if let snapshot = result.snapshot {
+                    self.applyBridgeSnapshot(snapshot, source: "ADB_FILE")
+                    self.bridgeUsingFileFallback = true
+                } else {
+                    self.bridgeUsingFileFallback = false
+                    self.noteBridgeFailure(code: result.reason, domain: "SIMAI.ADBFile")
+                    self.livePhoneState = "未连接"
+                }
+            }
+        }
+    }
+
     private func pollLiveBridge() {
         guard liveSyncEnabled, !adbInstalling, !bridgeBusy,
               Date() >= bridgeRetryAfter else { return }
         bridgeBusy = true
+        if bridgeUsingFileFallback && Date() < nextHTTPRecoveryAttempt {
+            pollPrivateSnapshot(generation: bridgeGeneration)
+            return
+        }
         if let link = bridgeLink {
             let generation = bridgeGeneration
             // Android retains at most 64 events. Fetch the bounded history so a freshly
@@ -233,50 +299,41 @@ final class AssistantModel: ObservableObject {
                           ["IDLE", "RINGING", "OFFHOOK"].contains(snapshot.state) else {
                         throw NSError(domain: "SIMAI.ADBBridge", code: 422)
                     }
-                    let priorSession = self.bridgeCursor.session
-                    let received = self.bridgeCursor.consume(snapshot)
-                    if priorSession != self.bridgeCursor.session {
-                        self.liveCallEvents.removeAll()
-                        self.log(.info, .call, "Android 电话状态桥接会话已建立",
-                                 details: ["bridgeSchema": "1", "newSession": "true"])
-                    }
-                    for event in received {
-                        let displayTime = Date(timeIntervalSince1970: Double(event.at) / 1000)
-                            .formatted(date: .omitted, time: .standard)
-                        self.liveCallEvents.insert("\(displayTime) · \(event.state)", at: 0)
-                        self.liveCallEvents = Array(self.liveCallEvents.prefix(16))
-                        self.log(.info, .call, "收到 Android 实时电话状态",
-                                 details: ["state": event.state, "sequence": "\(event.seq)",
-                                           "source": "USB_ADB"])
-                    }
-                    self.livePhoneState = snapshot.state
-                    self.liveBridgeLastSync = Date()
-                    self.adbTransportHealth = "ADB 已授权"
-                    self.adbShellHealth = "正常（状态服务可达）"
-                    self.adbForwardHealth = "工作正常"
-                    self.adbBridgeHealthDetail = "状态桥接已回应，无需解锁确认"
-                    if self.bridgeConsecutiveFailures > 0 {
-                        self.log(.info, .call, "ADB 电话状态同步已恢复",
-                                 details: ["failedAttempts": "\(self.bridgeConsecutiveFailures)"])
-                    }
-                    self.resetBridgeRetry()
-                    self.liveBridgeStatus = "已连接 · ADB 自动同步"
+                    self.applyBridgeSnapshot(snapshot, source: "ADB_HTTP")
+                    self.bridgeUsingFileFallback = false
+                    self.nextHTTPRecoveryAttempt = .distantPast
                 } catch {
                     guard self.liveSyncEnabled, generation == self.bridgeGeneration else {
                         self.bridgeBusy = false
                         return
                     }
                     let nsError = error as NSError
-                    self.noteBridgeFailure(code: "\(nsError.code)", domain: nsError.domain)
-                    self.livePhoneState = "未连接"
-                    if self.bridgeConsecutiveFailures == 1 {
-                        // Distinguish "ADB unauthorized/offline" from "Android
-                        // companion HTTP service suspended while screen is off".
-                        self.inspectBridgeHealth()
+                    let adb = self.selectedADBPath
+                    // HTTP can stall while an authorized ADB shell still works.
+                    // Try the private state file before tearing down a valid
+                    // port forward. This bypasses the HTTP socket only.
+                    let fallback = await Task.detached(priority: .utility) {
+                        ADBInspector.readPrivateStateSnapshot(at: adb)
+                    }.value
+                    guard self.liveSyncEnabled, generation == self.bridgeGeneration else {
+                        self.bridgeBusy = false
+                        return
                     }
-                    // A single timeout can be transient. Re-use the existing tunnel
-                    // once before replacing it, to reduce ADB forward churn.
-                    if self.bridgeConsecutiveFailures >= 2 { self.closeLiveBridge() }
+                    if let snapshot = fallback.snapshot {
+                        if !self.bridgeUsingFileFallback {
+                            self.log(.warn, .call, "电话状态 HTTP 暂不可用，切换到 ADB 快照",
+                                     details: ["httpErrorCode": "\(nsError.code)",
+                                               "fallback": "ADB_FILE"])
+                        }
+                        self.bridgeUsingFileFallback = true
+                        self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(20)
+                        self.applyBridgeSnapshot(snapshot, source: "ADB_FILE")
+                    } else {
+                        self.noteBridgeFailure(code: fallback.reason, domain: "SIMAI.ADBFile")
+                        self.livePhoneState = "未连接"
+                        if self.bridgeConsecutiveFailures == 1 { self.inspectBridgeHealth() }
+                        if self.bridgeConsecutiveFailures >= 2 { self.closeLiveBridge() }
+                    }
                 }
                 self.bridgeBusy = false
             }

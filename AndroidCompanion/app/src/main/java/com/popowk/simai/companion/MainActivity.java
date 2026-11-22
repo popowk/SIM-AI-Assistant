@@ -41,7 +41,7 @@ public final class MainActivity extends Activity {
         scroller.addView(column);
 
         TextView title = new TextView(this);
-        title.setText("SIM AI Companion · V0.2.1");
+        title.setText("SIM AI Companion · V0.2.2");
         title.setTextSize(22f);
         column.addView(title);
         TextView description = new TextView(this);

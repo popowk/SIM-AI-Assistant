@@ -23,6 +23,11 @@ struct ADBHealthReport {
     let code: String // Constant diagnostic category, never a serial or IP.
 }
 
+struct ADBSnapshotResult {
+    let snapshot: PhoneBridgeSnapshot?
+    let reason: String // fixed safe diagnostic code
+}
+
 struct ADBBridgeLink {
     let serial: String        // Only in memory, never logged or exported.
     let token: String         // Private app token, never logged or exported.
@@ -303,6 +308,42 @@ enum ADBInspector {
             return .init(transport: "ADB 已授权", shell: "命令正常", forward: "无法查询",
                          reason: "ADB 可执行命令，但无法检查端口映射",
                          code: "ADB_FORWARD_QUERY_FAILED")
+        }
+    }
+
+    /// Read a bounded, atomic JSON state snapshot from the already authorized
+    /// Companion's private files. No HTTP, no ADB port forward, no raw output
+    /// written to logs. Requires the debug APK's run-as access.
+    static func readPrivateStateSnapshot(at selected: String?) -> ADBSnapshotResult {
+        func failure(_ reason: String) -> ADBSnapshotResult {
+            .init(snapshot: nil, reason: reason)
+        }
+        guard let adb = executable(at: selected) else { return failure("ADB_MISSING") }
+        let devices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 7) {
+        case .completed(0, let raw): devices = parseDevices(raw)
+        case .timedOut: return failure("ADB_ENUMERATION_TIMEOUT")
+        default: return failure("ADB_ENUMERATION_FAILED")
+        }
+        let authorized = devices.filter { $0.state == "device" }
+        guard authorized.count == 1 else { return failure("ADB_NOT_READY") }
+        let serial = authorized[0].serial
+        switch run(adb, args: ["-s", serial, "shell", "run-as",
+                               "com.popowk.simai.companion", "cat",
+                               "files/bridge-snapshot.json"], timeout: 7) {
+        case .completed(0, let output):
+            guard output.utf8.count < 32_768,
+                  let data = output.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode(PhoneBridgeSnapshot.self, from: data),
+                  decoded.schema == 1, decoded.running,
+                  decoded.events.count <= 64,
+                  ["IDLE", "RINGING", "OFFHOOK"].contains(decoded.state),
+                  decoded.isFresh(referenceMilliseconds: Int64(Date().timeIntervalSince1970 * 1000))
+            else { return failure("SNAPSHOT_INVALID_OR_STALE") }
+            return .init(snapshot: decoded, reason: "ADB_FILE_OK")
+        case .completed: return failure("SNAPSHOT_UNAVAILABLE")
+        case .timedOut: return failure("ADB_FILE_TIMEOUT")
+        case .launchFailed: return failure("ADB_LAUNCH_FAILED")
         }
     }
 

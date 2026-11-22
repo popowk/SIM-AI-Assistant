@@ -2,6 +2,7 @@ package com.popowk.simai.companion;
 
 import android.content.Context;
 import android.util.Log;
+import android.util.AtomicFile;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.BufferedReader;
@@ -19,6 +20,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -33,6 +36,8 @@ final class PhoneEventBridge {
     static final int PORT = 18764;
     private static final int MAX_EVENTS = 64;
     private final String session = UUID.randomUUID().toString();
+    private final AtomicFile snapshotFile;
+    private ScheduledExecutorService heartbeat;
     private final String token;
     private final List<CallEvent> events = new ArrayList<>();
     private volatile boolean active;
@@ -53,6 +58,7 @@ final class PhoneEventBridge {
 
     PhoneEventBridge(Context context) throws Exception {
         token = loadToken(context);
+        snapshotFile = new AtomicFile(new File(context.getFilesDir(), "bridge-snapshot.json"));
     }
 
     private static String loadToken(Context context) throws Exception {
@@ -85,6 +91,7 @@ final class PhoneEventBridge {
         lastState = state;
         events.add(new CallEvent(++sequence, state, System.currentTimeMillis()));
         while (events.size() > MAX_EVENTS) events.remove(0);
+        persistSnapshot();
     }
 
     void start() throws Exception {
@@ -97,6 +104,17 @@ final class PhoneEventBridge {
                     return thread;
                 });
         active = true;
+        persistSnapshot();
+        heartbeat = Executors.newSingleThreadScheduledExecutor(job -> {
+            Thread thread = new Thread(job, "SIMAI-Snapshot-Heartbeat");
+            thread.setDaemon(true);
+            return thread;
+        });
+        heartbeat.scheduleWithFixedDelay(() -> {
+            if (active) {
+                synchronized (PhoneEventBridge.this) { persistSnapshot(); }
+            }
+        }, 15, 15, TimeUnit.SECONDS);
         worker = new Thread(this::serve, "SIMAI-CallEventBridge");
         worker.setDaemon(true);
         worker.start();
@@ -105,6 +123,8 @@ final class PhoneEventBridge {
 
     void stop() {
         active = false;
+        if (heartbeat != null) heartbeat.shutdownNow();
+        synchronized (this) { persistSnapshot(); }
         try { if (listener != null) listener.close(); } catch (Exception ignored) {}
         if (worker != null) worker.interrupt();
         if (requests != null) requests.shutdownNow();
@@ -164,25 +184,47 @@ final class PhoneEventBridge {
         try { since = Long.parseLong(first.substring(start, end)); }
         catch (NumberFormatException ignored) { since = 0; }
         if (since < 0) since = 0;
+        JSONObject body;
+        synchronized (this) { body = snapshot(since); }
+        reply(client, 200, body.toString());
+    }
+
+    private synchronized JSONObject snapshot(long since) throws Exception {
         JSONObject body = new JSONObject();
         body.put("schema", 1);
         body.put("session", session);
         body.put("running", active);
-        synchronized (this) {
-            body.put("state", lastState);
-            body.put("seq", sequence);
-            JSONArray rows = new JSONArray();
-            for (CallEvent event : events) {
-                if (event.seq <= since) continue;
-                JSONObject row = new JSONObject();
-                row.put("seq", event.seq);
-                row.put("state", event.state);
-                row.put("at", event.at);
-                rows.put(row);
-            }
-            body.put("events", rows);
+        body.put("state", lastState);
+        body.put("seq", sequence);
+        body.put("updatedAt", System.currentTimeMillis());
+        JSONArray rows = new JSONArray();
+        for (CallEvent event : events) {
+            if (event.seq <= since) continue;
+            JSONObject row = new JSONObject();
+            row.put("seq", event.seq);
+            row.put("state", event.state);
+            row.put("at", event.at);
+            rows.put(row);
         }
-        reply(client, 200, body.toString());
+        body.put("events", rows);
+        return body;
+    }
+
+    /// Atomic private snapshot is read only via previously authorized ADB
+    /// "run-as" when the HTTP status tunnel stalls during screen-off.
+    /// No numbers, contacts, speech or raw audio are persisted.
+    private synchronized void persistSnapshot() {
+        FileOutputStream out = null;
+        try {
+            byte[] bytes = snapshot(0).toString().getBytes(StandardCharsets.UTF_8);
+            out = snapshotFile.startWrite();
+            out.write(bytes);
+            snapshotFile.finishWrite(out);
+        } catch (Exception error) {
+            if (out != null) snapshotFile.failWrite(out);
+            Log.w("SIMAICompanion", "Anonymous state snapshot failed: "
+                    + error.getClass().getSimpleName());
+        }
     }
 
     private static void reply(Socket client, int status, String body) throws Exception {

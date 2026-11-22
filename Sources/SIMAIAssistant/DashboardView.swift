@@ -84,7 +84,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("真实电话音频兼容性诊断 · V0.2.3")
+                Text("真实电话音频兼容性诊断 · V0.2.4")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -136,7 +136,7 @@ struct DashboardView: View {
             }
             Text(model.adbStatus).font(.caption).foregroundStyle(.secondary)
             Divider()
-            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.2.1" : "当前构建未包含")")
+            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.2.2" : "当前构建未包含")")
                 .font(.caption)
             Button {
                 confirmAPKInstall = true
@@ -179,7 +179,7 @@ struct DashboardView: View {
             Text(model.adbBridgeHealthDetail).font(.caption).foregroundStyle(.secondary)
             Text("ADB 状态、Shell 响应与 Companion 电话事件服务分别诊断。锁屏时服务受限不等于撤销 ADB 授权；如果无线调试被系统关闭，仍需在手机上重新启用。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("手机 Companion V0.2.1 新增可选锁屏运行增强及后台电池设置入口，关闭屏幕时仍可能受 OEM/Doze 限制。")
+            Text("手机 Companion V0.2.2 可供 Mac 在 HTTP 超时时读取匿名 ADB 状态快照；系统关闭 ADB 授权时仍须重新授权。")
                 .font(.caption).foregroundStyle(.secondary)
                 .font(.caption).foregroundStyle(.secondary)
             Text("实时电话状态：\(model.livePhoneState)")
@@ -320,7 +320,7 @@ struct DashboardView: View {
             Text("已验证来电状态同步；双向电话音频仍需在 vivo S9e 上实测。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.2.3 (10)").font(.caption.monospaced())
+            Text("0.2.4 (11)").font(.caption.monospaced())
         }
     }
 

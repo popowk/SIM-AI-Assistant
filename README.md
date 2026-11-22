@@ -1,4 +1,4 @@
-# SIM AI Assistant · V0.2.3（Android 13 电话音频兼容性诊断）
+# SIM AI Assistant · V0.2.4（Android 13 电话音频兼容性诊断）
 
 **设备目标**：vivo S9e / Android 13 / 中国联通实体 SIM + Apple Silicon Mac / macOS 26.6.2。
 **源代码**：https://github.com/popowk/SIM-AI-Assistant
@@ -10,6 +10,27 @@
 - Android → Mac：私有通信令牌、本机端口转发、匿名电话状态同步和去重、断线重连。此前 vivo S9e 的真实来电日志已验证此项。
 - Mac 本地音频设备检查、麦克风电平、扬声器试听和设备恢复。
 - 诊断 ZIP、匿名事件日志、1/7/14 天清理与「清空全部（含今天）」。
+
+## V0.2.4 · 匿名电话状态快照备用（2026-11-22）
+
+### 实机依据
+
+诊断 ZIP `SIM-AI-Diagnostics-20261122-230139.zip` 来自 Mac V0.2.3 Build 10。在多次 `NSURLErrorDomain -1001` 超时期间，ADB 已授权、Shell 正常且端口映射仍在，分类为 `PHONE_SERVICE_TIMEOUT`；独立 Android 音频 Helper 仍可工作。下行有 35,200 个非零 PCM 样本、RMS 0.08331；上行经 `MANAGER_API_13` 写入测试音，用户两次点击「对方确认听到」。这不能替代连续音频流与下行语音听辨的真实测试。
+
+- **主链路**：保留 ADB 端口转发 + 带授权 token 的 Android 本地 HTTP 电话状态接口。
+- **备用链路**：Android Companion V0.2.2 将匿名事件、会话、状态和存活时间通过 `AtomicFile` 保存到私有 `files/bridge-snapshot.json`。状态变化时立即写入，服务存活时每 15 秒刷新。
+- Mac 在 HTTP 超时时通过先前已授权的 ADB `run-as` 读取状态快照，**不需要 HTTP 或端口映射，但仍需要有效 ADB 授权**。快照上限 32 KiB，过期超过 90 秒或服务停止时拒绝。
+- HTTP 和文件通道共用原来 PhoneBridgeCursor 去重，文件正常时每 20 秒尝试恢复 HTTP；备用可用时避免反复重建端口。
+- 后续 Shizuku Wi-Fi 传输可直接复用该匿名状态协议，不再另起状态模型。
+
+### 安装与验证
+
+1. 安装 Mac V0.2.4，再通过「一键安装/覆盖」升级手机 Companion V0.2.2（不同 CI debug 签名可能不允许覆盖，**不会自动卸载**）。
+2. 手机上重新确认监听服务正在运行，按需开启后台权限与锁屏运行增强。
+3. 锁屏两分钟，并用同意参与测试的另一手机拨入。观察 Mac 是否显示「ADB 私有状态快照（HTTP 备用）」以及来电状态变化。
+4. 导出 ZIP，查看 `source` 是 `ADB_HTTP` 或 `ADB_FILE`，确认切换时没有重复来电事件。
+
+本版不录音、不传输电话音频、不启动 GPT、不自动接听。如果锁屏时连 ADB Shell 都不能执行，备用文件读取也会失败，那时需要独立 Wi-Fi 状态链路，而非无限重新连接。
 
 ## V0.2.3 · vivo Android 13 锁屏状态同步适配（2026-11-22）
 
