@@ -48,6 +48,7 @@ final class AssistantModel: ObservableObject {
     @Published var aiReplyReceivedFrames = 0
     @Published var aiReplyMonitorDropped = 0
     @Published var aiReplyUplinkUnderflow = 0
+    @Published var aiReplyPeakRMS = 0.0
     @Published var liveVoiceRxFrames = 0
     @Published var liveVoiceTxFrames = 0
     @Published var liveVoiceDropFrames = 0
@@ -527,6 +528,7 @@ final class AssistantModel: ObservableObject {
         aiReplyReceivedFrames = 0
         aiReplyMonitorDropped = 0
         aiReplyUplinkUnderflow = 0
+        aiReplyPeakRMS = 0
         liveVoiceRxFrames = 0
         liveVoiceTxFrames = 0
         liveVoiceDropFrames = 0
@@ -562,10 +564,11 @@ final class AssistantModel: ObservableObject {
                     self.liveVoiceUplinkLateFrames = txLate
                     self.liveVoiceMicBufferedMs = micBufferedMs
                     self.chatGPTVoiceRouteDropped = voiceRouteDropped
-                case .aiReturnMetrics(let captured, let monitorDropped, let uplinkUnderflow):
+                case .aiReturnMetrics(let captured, let monitorDropped, let uplinkUnderflow, let peakRMS):
                     self.aiReplyReceivedFrames = captured
                     self.aiReplyMonitorDropped = monitorDropped
                     self.aiReplyUplinkUnderflow = uplinkUnderflow
+                    self.aiReplyPeakRMS = peakRMS
                 case .finished(let reason):
                     self.liveVoiceStarting = false
                     self.liveVoiceActive = false
@@ -593,6 +596,7 @@ final class AssistantModel: ObservableObject {
                             "aiReturnCaptured": "\(self.aiReplyReceivedFrames)",
                             "aiReturnMonitorDropped": "\(self.aiReplyMonitorDropped)",
                             "aiReturnUplinkUnderflow": "\(self.aiReplyUplinkUnderflow)",
+                            "aiReturnPeakRMS": String(format: "%.5f", self.aiReplyPeakRMS),
                             "handshakeAttempts": "\(self.liveVoiceHandshakeAttempts)"])
                 }
             }
@@ -644,9 +648,13 @@ final class AssistantModel: ObservableObject {
                 aiReplyToPhoneEnabled = false
                 aiReplyReturnStatus = "监听启动失败，请核对 BlackHole 16ch 和输出设备；失败细节请导出诊断"
                 let ns = error as NSError
+                // LiveAudioFailure only contains predefined internal reason codes,
+                // not device names, paths, secrets, or captured audio.
+                let reason = String(describing: error)
                 log(.warn, .audio, "GPT 回复监听初始化失败",
                     details: ["category": "AI_RETURN_MONITOR", "errorDomain": ns.domain,
-                              "errorCode": "\(ns.code)"])
+                              "errorCode": "\(ns.code)",
+                              "failure": reason.prefix(80).description])
             }
         } else {
             do { try voiceStream.setAIReplyMonitoring(false) } catch {}
