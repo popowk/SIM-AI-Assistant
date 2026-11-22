@@ -129,7 +129,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("电话音频 + ChatGPT Voice 隔离双向桥接 · V0.4.1")
+                Text("电话音频 + GPT Voice + 飞书短信通知 · V0.4.2")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -195,7 +195,7 @@ struct DashboardView: View {
             Text("自动识别默认开启：手机接入 USB、恢复已授权无线 ADB 或 Mac 唤醒后，会自动检测并尝试恢复来电状态；有多台设备时不会猜测选择。")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
-            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.2.2" : "当前构建未包含")")
+            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.3.0" : "当前构建未包含")")
                 .font(.caption)
             Button {
                 confirmAPKInstall = true
@@ -238,7 +238,7 @@ struct DashboardView: View {
             Text(model.adbBridgeHealthDetail).font(.caption).foregroundStyle(.secondary)
             Text("ADB 状态、Shell 响应与 Companion 电话事件服务分别诊断。锁屏时服务受限不等于撤销 ADB 授权；如果无线调试被系统关闭，仍需在手机上重新启用。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("手机 Companion V0.2.2 在 HTTP 超时时提供匿名 ADB 快照；系统撤销授权或关闭无线调试后仍须手机端手动恢复。")
+            Text("手机 Companion V0.3.0 保留原有电话状态快照，同时新增短信→飞书功能。短信权限、Webhook 和开关请在手机 App 内设置，消息直接由手机网络发送，不依赖 Mac/ADB。")
                 .font(.caption).foregroundStyle(.secondary)
             Text("实时电话状态：\(model.livePhoneState)")
                 .font(.headline)
