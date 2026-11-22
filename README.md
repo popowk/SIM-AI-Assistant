@@ -1,4 +1,4 @@
-# SIM AI Assistant · V0.4.5（Android 自动初始化 + 飞书短信诊断）
+# SIM AI Assistant · V0.4.6（Android 安全升级基础设施 + 通话转写规划）
 
 **设备目标**：vivo S9e / Android 13 / 中国联通实体 SIM + Apple Silicon Mac / macOS 26.6.2。
 **源代码**：https://github.com/popowk/SIM-AI-Assistant
@@ -11,6 +11,13 @@
 - Mac 本地音频设备检查、麦克风电平、扬声器试听和设备恢复。
 - 诊断 ZIP、匿名事件日志、1/7/14 天清理与「清空全部（含今天）」。
 
+## V0.4.6 · Android 固定签名升级基础设施（2026-11-23）
+
+- 新 Android Companion V0.3.4（versionCode 9）。GitHub Actions 支持从四项仓库 Secret 安全地读取**同一固定 Android 签名证书**，编译仍为 Debug APK 以保留 ADB `run-as`，保证后续签名连续时可覆盖安装。
+- **关键限制：尚未配置 Secret 时仍是 Runner 临时 debug 签名，不保证无损覆盖。** CI 会标记 `EPHEMERAL_DEBUG_SIGNING` 并发出警告；Mac 内置 APK 安装区域也显示固定/临时签名状态。只配置部分 Secret 的构建会安全失败，不会假装完成固定签名。
+- 正式启用固定签名需要仓库管理员在 GitHub Settings → Secrets and variables → Actions 设置四项 Secret，详情见 [固定签名与迁移指南](docs/ANDROID_SIGNING_MIGRATION.md)。不要发送 keystore/口令给聊天、公开仓库或诊断日志。
+- 已有旧 APK 如由丢失的临时证书签名，新固定证书可能仍需要**最后一次经用户确认的迁移**；绝不自动卸载、清空设置或绕过系统短信/电话权限。完整原有短信/飞书、GPT 音频功能保持不变。
+- 为下一阶段新增 [通话本地转写 → 飞书转发设计方案](docs/CALL_TRANSCRIPTION_FEISHU_PLAN.md)：Mac 复用 16kHz/20ms PCM、区分本人/对方/AI，优先本地识别和先人工确认、再独立转发。**当前版本尚未实现转写**。
 ## V0.4.5 · Android 自动初始化与验证码短信广播诊断（2026-11-23）
 
 - Mac 端安装/覆盖 Android APK 成功后，自动打开手机 Companion；若 Mac 钥匙串已有飞书 Webhook，还会自动下发配置。清空旧 App 数据仍必须用户单独确认，不能偷偷卸载。
