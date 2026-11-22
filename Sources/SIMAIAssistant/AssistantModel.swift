@@ -70,8 +70,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.4"
-    let buildNumber = "21"
+    let version = "0.4.5"
+    let buildNumber = "22"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
