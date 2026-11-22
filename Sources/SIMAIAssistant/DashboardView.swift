@@ -84,7 +84,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("真实电话音频兼容性诊断 · V0.2.0")
+                Text("真实电话音频兼容性诊断 · V0.2.1")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -301,7 +301,7 @@ struct DashboardView: View {
             Text("已验证来电状态同步；双向电话音频仍需在 vivo S9e 上实测。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.2.0 (7)").font(.caption.monospaced())
+            Text("0.2.1 (8)").font(.caption.monospaced())
         }
     }
 

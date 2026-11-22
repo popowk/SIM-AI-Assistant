@@ -268,7 +268,8 @@ enum ADBInspector {
             // any OEM stack trace or serial from adb is intentionally discarded.
             let allowed: Set<String> = ["status", "error", "android", "shell", "audioMode",
                 "telephonyOutput", "pstnInterceptable", "downlink", "uplink",
-                "frames", "peak", "rms", "result", "written"]
+                "frames", "peak", "rms", "result", "written", "route", "stage",
+                "uplinkManagerApi", "legacyCallRedirectApi"]
             var fields: [String: String] = [:]
             for line in output.split(whereSeparator: \.isNewline) {
                 guard line.hasPrefix("SIMAI ") else { continue }
@@ -286,7 +287,7 @@ enum ADBInspector {
             }
             let error = fields["error"] ?? "HELPER_EXIT_\(code)"
             return .init(succeeded: false, action: action.rawValue,
-                         status: "手机音频测试失败（\(error)）；已保存匿名错误码", fields: fields)
+                         status: "手机音频测试失败（\(error)，阶段：\(fields["stage"] ?? "unknown")）；已保存匿名错误码", fields: fields)
         case .timedOut: return failed("手机音频诊断超时，已终止 ADB 命令")
         case .launchFailed: return failed("无法启动 ADB 音频测试命令")
         }

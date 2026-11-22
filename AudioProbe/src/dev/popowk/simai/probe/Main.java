@@ -23,6 +23,8 @@ public final class Main {
     private static final int MODE_CALL_SCREENING = 4;
     private static final int MODE_CALL_REDIRECT = 5;
     private static final String PREFIX = "SIMAI ";
+    // Stage names are constant codes only; never output OS stack traces or sensitive values.
+    private static String stage = "INIT";
     private Main() {}
 
     public static void main(String[] args) {
@@ -40,10 +42,12 @@ public final class Main {
         } catch (ProbeError e) {
             out("status", "error");
             out("error", e.code);
+            out("stage", stage);
             exit = 2;
         } catch (Throwable e) {
             out("status", "error");
             out("error", classify(e));
+            out("stage", stage);
             exit = 3;
         }
         System.out.flush();
@@ -61,9 +65,18 @@ public final class Main {
         out("audioMode", Integer.toString(manager.getMode()));
         out("telephonyOutput", telephonyOutput());
         out("pstnInterceptable", interceptable());
+        out("uplinkManagerApi", hasMethod(AudioManager.class,
+                "getCallUplinkInjectionAudioTrack", AudioFormat.class) ? "present" : "absent");
+        out("legacyCallRedirectApi", hasMethod(AudioAttributes.Builder.class,
+                "setForCallRedirection") ? "present" : "absent");
         out("downlink", "REQUIRES_REAL_CALL");
         out("uplink", "REQUIRES_REAL_CALL_AND_CONSENT");
         out("status", "ok");
+    }
+
+    private static boolean hasMethod(Class<?> owner, String name, Class<?>... arguments) {
+        try { owner.getMethod(name, arguments); return true; }
+        catch (NoSuchMethodException ignored) { return false; }
     }
 
     private static String telephonyOutput() {
@@ -141,33 +154,27 @@ public final class Main {
     }
 
     private static void uplink() throws Exception {
+        stage = "CHECK_CALL_MODE";
         requireInCall();
-        AudioAttributes.Builder builder = new AudioAttributes.Builder()
-                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH);
-        AudioAttributes.Builder.class.getMethod("setSystemUsage", int.class).invoke(builder, 17);
-        AudioAttributes.Builder.class.getMethod("setForCallRedirection").invoke(builder);
         AudioFormat format = new AudioFormat.Builder()
                 .setSampleRate(RATE).setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build();
-        int min = AudioTrack.getMinBufferSize(RATE,
-                AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
-        AudioTrack track = new AudioTrack.Builder()
-                .setContext(ProbeRuntime.context())
-                .setAudioAttributes(builder.build()).setAudioFormat(format)
-                .setBufferSizeInBytes(Math.max(min, RATE * 2))
-                .setTransferMode(AudioTrack.MODE_STREAM).build();
+        AudioTrack track = openUplinkTrack(format);
         try {
+            stage = "TRACK_INITIALIZATION";
             if (track.getState() != AudioTrack.STATE_INITIALIZED)
                 throw new ProbeError("UPLINK_NOT_INITIALIZED");
             short[] samples = new short[RATE];
             for (int i = 0; i < RATE; i++) {
                 int phase = i % (RATE / 2);
-                // Two short gentle test tones with silence between.
+                // Two short, modestly attenuated test tones separated by silence.
                 if (phase < RATE / 6)
                     samples[i] = (short) (4500.0 * Math.sin(2 * Math.PI * 660 * i / RATE));
             }
+            stage = "TRACK_PLAY";
             track.play();
             int offset = 0;
+            stage = "TRACK_WRITE";
             while (offset < samples.length) {
                 int n = track.write(samples, offset, samples.length - offset);
                 if (n <= 0) throw new ProbeError("UPLINK_WRITE_FAILED");
@@ -179,6 +186,44 @@ public final class Main {
         } finally {
             try { track.stop(); } catch (Throwable ignored) {}
             track.release();
+        }
+    }
+
+    private static AudioTrack openUplinkTrack(AudioFormat format) throws Exception {
+        AudioManager audio = ProbeRuntime.context().getSystemService(AudioManager.class);
+        // Android 13 exposes a dedicated system API. This uses the shell user's
+        // system permissions; no root / permission escalation is attempted.
+        stage = "MANAGER_UPLINK_METHOD";
+        try {
+            Method method = AudioManager.class.getMethod(
+                    "getCallUplinkInjectionAudioTrack", AudioFormat.class);
+            stage = "MANAGER_UPLINK_INVOKE";
+            Object result = method.invoke(audio, format);
+            if (!(result instanceof AudioTrack))
+                throw new ProbeError("UPLINK_MANAGER_NO_TRACK");
+            out("route", "MANAGER_API_13");
+            return (AudioTrack) result;
+        } catch (NoSuchMethodException missing) {
+            // Some OEMs omit the manager API; only then attempt the original
+            // AudioAttributes flag path. Do not bypass SecurityExceptions.
+            out("route", "LEGACY_ATTRIBUTES");
+            stage = "LEGACY_SET_SYSTEM_USAGE";
+            AudioAttributes.Builder builder = new AudioAttributes.Builder()
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH);
+            AudioAttributes.Builder.class.getMethod("setSystemUsage", int.class)
+                    .invoke(builder, 17);
+            stage = "LEGACY_CALL_REDIRECTION_FLAG";
+            AudioAttributes.Builder.class.getMethod("setForCallRedirection")
+                    .invoke(builder);
+            stage = "LEGACY_TRACK_BUILD";
+            int min = AudioTrack.getMinBufferSize(RATE,
+                    AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT);
+            return new AudioTrack.Builder()
+                    .setContext(ProbeRuntime.context())
+                    .setAudioAttributes(builder.build())
+                    .setAudioFormat(format)
+                    .setBufferSizeInBytes(Math.max(min, RATE * 2))
+                    .setTransferMode(AudioTrack.MODE_STREAM).build();
         }
     }
 

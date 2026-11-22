@@ -1,5 +1,13 @@
 # 变更记录
 
+## 0.2.1 — 2026-11-22
+
+- 根据 vivo S9e 实机诊断确认 Android 13 PSTN 音频重定向报告 true，VOICE_DOWNLINK 读取非零 PCM（34,560 样本；RMS 0.02590）；但对方说话尚未音频听辨验证。
+- 旧上行音轨反射方式返回 API_MISSING。优先使用 Android 13 系统 AudioManager.getCallUplinkInjectionAudioTrack(AudioFormat)，仅方法不存在时回退旧属性方案。
+- 新增详细但匿名的上行错误阶段、接口存在性、已使用的音轨路径等诊断字段。
+- ADB 桥接在两分钟内重建约 22 次：增加 4–60 秒退避重连、失败日志合并与连接恢复报告，仍需进一步验证根因。
+- Android Companion APK 不变；仅更新 Mac/内置 AudioProbe Helper。
+
 ## 0.2.0 — 2026-11-22
 
 - 新增 Android 13 原生 ADB shell AudioProbe Helper：安全查询音频能力、通话下行声音 RMS/峰值检测、显式确认的上行短提示音测试。

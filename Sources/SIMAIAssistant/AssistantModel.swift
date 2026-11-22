@@ -31,8 +31,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.2.0"
-    let buildNumber = "7"
+    let version = "0.2.1"
+    let buildNumber = "8"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -41,6 +41,8 @@ final class AssistantModel: ObservableObject {
     private var bridgeLink: ADBBridgeLink?
     private var bridgeBusy = false
     private var bridgeCursor = PhoneBridgeCursor()
+    private var bridgeRetryAfter = Date.distantPast
+    private var bridgeConsecutiveFailures = 0
     private(set) var sessionID = UUID().uuidString
     private(set) var lastError: DiagnosticEvent?
 
@@ -115,6 +117,7 @@ final class AssistantModel: ObservableObject {
         liveSyncEnabled = value
         UserDefaults.standard.set(value, forKey: "SIMAI_LIVE_SYNC")
         if value {
+            resetBridgeRetry()
             liveBridgeStatus = "正在连接手机"
             pollLiveBridge()
         } else {
@@ -125,6 +128,7 @@ final class AssistantModel: ObservableObject {
     }
 
     func reconnectLiveBridge() {
+        resetBridgeRetry()
         closeLiveBridge()
         liveBridgeStatus = "正在重连……"
         if liveSyncEnabled { pollLiveBridge() }
@@ -141,8 +145,29 @@ final class AssistantModel: ObservableObject {
         // Preserve cursor on temporary USB disconnect to avoid replaying old call events.
     }
 
+    private func resetBridgeRetry() {
+        bridgeRetryAfter = .distantPast
+        bridgeConsecutiveFailures = 0
+    }
+
+    private func noteBridgeFailure(code: String, domain: String) {
+        bridgeConsecutiveFailures += 1
+        let attempt = min(bridgeConsecutiveFailures, 5)
+        let delay = min(60, 4 * (1 << (attempt - 1)))
+        bridgeRetryAfter = Date().addingTimeInterval(TimeInterval(delay))
+        liveBridgeStatus = "连接中断，将在约 \(delay) 秒后重试（可手动重新连接）"
+        // One warning per outage, then sparse checkpoints. Avoid dozens of
+        // redundant JSONL entries when the phone's ADB tunnel remains unreachable.
+        if bridgeConsecutiveFailures == 1 || bridgeConsecutiveFailures % 8 == 0 {
+            log(.warn, .call, "ADB 电话状态桥接连接中断",
+                details: ["errorDomain": domain, "errorCode": code,
+                          "retrySeconds": "\(delay)", "failures": "\(bridgeConsecutiveFailures)"])
+        }
+    }
+
     private func pollLiveBridge() {
-        guard liveSyncEnabled, !adbInstalling, !bridgeBusy else { return }
+        guard liveSyncEnabled, !adbInstalling, !bridgeBusy,
+              Date() >= bridgeRetryAfter else { return }
         bridgeBusy = true
         if let link = bridgeLink {
             // Android retains at most 64 events. Fetch the bounded history so a freshly
@@ -184,14 +209,19 @@ final class AssistantModel: ObservableObject {
                                            "source": "USB_ADB"])
                     }
                     self.livePhoneState = snapshot.state
+                    if self.bridgeConsecutiveFailures > 0 {
+                        self.log(.info, .call, "ADB 电话状态同步已恢复",
+                                 details: ["failedAttempts": "\(self.bridgeConsecutiveFailures)"])
+                    }
+                    self.resetBridgeRetry()
                     self.liveBridgeStatus = "已连接 · ADB 自动同步"
                 } catch {
-                    self.liveBridgeStatus = "连接中断，准备自动重连（请确认手机监听已开启）"
                     let nsError = error as NSError
-                    self.log(.warn, .call, "ADB 电话状态桥接连接中断，准备重连",
-                             details: ["errorDomain": nsError.domain, "errorCode": "\(nsError.code)"])
+                    self.noteBridgeFailure(code: "\(nsError.code)", domain: nsError.domain)
                     self.livePhoneState = "未连接"
-                    self.closeLiveBridge()
+                    // A single timeout can be transient. Re-use the existing tunnel
+                    // once before replacing it, to reduce ADB forward churn.
+                    if self.bridgeConsecutiveFailures >= 2 { self.closeLiveBridge() }
                 }
                 self.bridgeBusy = false
             }
@@ -207,10 +237,13 @@ final class AssistantModel: ObservableObject {
                     self.bridgeLink = link
                     // Keep the previous Android session and sequence across ADB port changes.
                     self.liveBridgeStatus = result.message
-                    self.log(.info, .call, "ADB 端口转发连接建立（未读取设备序列号）")
+                    if self.bridgeConsecutiveFailures == 0 {
+                        self.log(.info, .call, "ADB 端口转发连接建立（未读取设备序列号）")
+                    }
                     self.pollLiveBridge()
-                } else if self.liveBridgeStatus != result.message {
-                    self.liveBridgeStatus = result.message
+                } else {
+                    self.noteBridgeFailure(code: "ADB_UNAVAILABLE", domain: "SIMAI.ADB")
+                    self.liveBridgeStatus = "\(result.message)；自动重连已退避"
                 }
             }
         }
@@ -280,7 +313,10 @@ final class AssistantModel: ObservableObject {
                                    "peak": report.fields["peak"] ?? "n/a",
                                    "rms": report.fields["rms"] ?? "n/a",
                                    "frames": report.fields["frames"] ?? "n/a",
-                                   "pstnInterceptable": report.fields["pstnInterceptable"] ?? "unknown"])
+                                   "pstnInterceptable": report.fields["pstnInterceptable"] ?? "unknown",
+                                   "uplinkManagerApi": report.fields["uplinkManagerApi"] ?? "unknown",
+                                   "route": report.fields["route"] ?? "none",
+                                   "stage": report.fields["stage"] ?? "none"])
             }
         }
     }

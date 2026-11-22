@@ -1,4 +1,4 @@
-# SIM AI Assistant · V0.2.0（Android 13 电话音频兼容性诊断）
+# SIM AI Assistant · V0.2.1（Android 13 电话音频兼容性诊断）
 
 **设备目标**：vivo S9e / Android 13 / 中国联通实体 SIM + Apple Silicon Mac / macOS 26.6.2。
 **源代码**：https://github.com/popowk/SIM-AI-Assistant
@@ -10,6 +10,22 @@
 - Android → Mac：私有通信令牌、本机端口转发、匿名电话状态同步和去重、断线重连。此前 vivo S9e 的真实来电日志已验证此项。
 - Mac 本地音频设备检查、麦克风电平、扬声器试听和设备恢复。
 - 诊断 ZIP、匿名事件日志、1/7/14 天清理与「清空全部（含今天）」。
+
+## V0.2.1 真实设备诊断修复（2026-11-22）
+
+vivo S9e / Android 13 / 联通真实电话测试已得到：
+- 电话状态 \`OFFHOOK → IDLE\` 被 Mac 接收。
+- \`pstnInterceptable=true\`，表示系统报告 PSTN 可重定向。
+- \`VOICE_DOWNLINK\` 返回 34,560 样本，峰值 0.2435，RMS 0.02590，\`NONZERO_PCM\`；证明获得了非零采样，但**未在 Mac 播放或验证它是否就是通话对方的声音**。
+- 旧上行测试返回 \`API_MISSING\`，无法判断是 \`setSystemUsage\` 还是 \`setForCallRedirection\` 缺失。
+
+本版上行测试优先调用 **Android 13 的 \`AudioManager.getCallUplinkInjectionAudioTrack(AudioFormat)\`**（AOSP Android 13 系统 API；须系统允许 \`CALL_AUDIO_INTERCEPTION\`），只有该方法在手机系统上确实不存在时才尝试旧的属性标记方案。不尝试规避 Android 权限政策。
+
+增加 \`uplinkManagerApi\`、\`legacyCallRedirectApi\`、\`route\`、\`stage\` 的匿名诊断信息，区分系统接口缺失、方法调用、Track 创建、播放及 PCM 写入等阶段。**成功写入并不证明对方听到了测试音，仍需通话对方的人工确认**。
+
+同时诊断发现约 22 次连续 ADB 端口转发重建，HTTP 层错误包括 \`NSURLErrorDomain -1001\`（超时）和 \`-1005\`（连接中断）。本版对重复故障实施指数退避（4–60 秒）、减少重复日志、优先复用连接一次，并记录恢复情况。这缓解刷日志与重连压力，**不代表已确定底层断线原因或保证始终在线**。
+
+本次没有修改 Android Companion APK（仍为 V0.2.0）。用户只需更换 Mac V0.2.1；诊断 Helper 已自动内置并会在点击测试时通过 ADB 运行。
 
 ## V0.2.0：第一阶段音频兼容性验证
 
