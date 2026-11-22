@@ -30,6 +30,13 @@ final class AssistantModel: ObservableObject {
     @Published var audioProbeFacts: [String] = []
     @Published var audioProbeToneSent = false
     @Published var audioProbeRemoteConfirmed = false
+    @Published var liveVoiceStatus = "尚未开始实时语音桥接"
+    @Published var liveVoiceStarting = false
+    @Published var liveVoiceActive = false
+    @Published var liveVoiceMicrophoneEnabled = false
+    @Published var liveVoiceRxFrames = 0
+    @Published var liveVoiceTxFrames = 0
+    @Published var liveVoiceDropFrames = 0
     @Published var selectedADBPath = UserDefaults.standard.string(forKey: "SIMAI_ADB_PATH") ?? ""
     @Published var cleanupPreviewText = ""
     @Published var isAudioTestRunning = false
@@ -37,12 +44,14 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.2.4"
-    let buildNumber = "11"
+    let version = "0.3.0"
+    let buildNumber = "12"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
     private let microphoneProbe = MicrophoneLevelProbe()
+    private var voiceStream: PhoneAudioStream?
+    private var voiceSessionID = ""
     private var bridgeTimer: Timer?
     private var bridgeLink: ADBBridgeLink?
     private var bridgeBusy = false
@@ -380,8 +389,111 @@ final class AssistantModel: ObservableObject {
 
     /// Non-invasive check may run at any time. Actual audio tests are only
     /// triggered by separate, informed consent dialogs and a connected call.
+    /// Starts an independent TCP-over-ADB audio transport. No dependency on
+    /// Mac's potentially stale OFFHOOK event; Android checks its real call mode.
+    /// Must only be invoked following the user's explicit two-party consent.
+    func startLiveVoice() {
+        guard !liveVoiceStarting, !liveVoiceActive, !adbInstalling,
+              !audioProbeBusy else { return }
+        guard let jar = Bundle.main.resourceURL?.appendingPathComponent("SIMAI-Audio-Probe.jar"),
+              FileManager.default.fileExists(atPath: jar.path) else {
+            alertText = "未找到 Android 电话音频 Helper，请重新安装完整 Mac 包。"
+            return
+        }
+        let id = UUID().uuidString
+        voiceSessionID = id
+        liveVoiceStatus = "准备建立 16 kHz 双向 PCM 通道……"
+        liveVoiceStarting = true
+        liveVoiceActive = false
+        liveVoiceMicrophoneEnabled = false
+        liveVoiceRxFrames = 0
+        liveVoiceTxFrames = 0
+        liveVoiceDropFrames = 0
+        log(.info, .audio, "用户确认开始实时电话音频预览",
+            details: ["mode": "manual", "mic": "muted", "maxDurationSeconds": "180"])
+        let stream = PhoneAudioStream { [weak self] update in
+            Task { @MainActor in
+                guard let self, self.voiceSessionID == id else { return }
+                switch update {
+                case .status(let message):
+                    self.liveVoiceStatus = message
+                case .active:
+                    self.liveVoiceActive = true
+                    self.liveVoiceStarting = false
+                    self.liveVoiceStatus = "实时播放电话下行中 · 麦克风默认静音"
+                    self.log(.info, .audio, "ADB 双向 PCM 通道已建立",
+                        details: ["sampleRate": "16000", "channels": "1", "frameMs": "20"])
+                case .metrics(let received, let sent, let dropped):
+                    self.liveVoiceRxFrames = received
+                    self.liveVoiceTxFrames = sent
+                    self.liveVoiceDropFrames = dropped
+                case .finished(let reason):
+                    self.liveVoiceStarting = false
+                    self.liveVoiceActive = false
+                    self.liveVoiceMicrophoneEnabled = false
+                    self.liveVoiceStatus = "实时语音已停止（\(reason)）"
+                    self.voiceStream = nil
+                    self.log(reason == "USER_STOPPED" ? .info : .warn, .audio,
+                        "实时电话音频会话结束", details: [
+                            "reason": reason, "rxFrames": "\(self.liveVoiceRxFrames)",
+                            "txFrames": "\(self.liveVoiceTxFrames)",
+                            "dropped": "\(self.liveVoiceDropFrames)"])
+                }
+            }
+        }
+        voiceStream = stream
+        stream.start(adb: selectedADBPath, jar: jar)
+    }
+
+    func stopLiveVoice() {
+        guard liveVoiceStarting || liveVoiceActive else { return }
+        liveVoiceMicrophoneEnabled = false
+        liveVoiceStatus = "正在停止并释放电话音频通道……"
+        voiceStream?.stop()
+    }
+
+    func setLiveVoiceMicrophone(_ enabled: Bool) {
+        guard liveVoiceActive, let voiceStream else { return }
+        guard enabled else {
+            do { try voiceStream.setMicrophone(false) } catch { }
+            liveVoiceMicrophoneEnabled = false
+            liveVoiceStatus = "电话下行实时播放中 · Mac 麦克风已静音"
+            log(.info, .audio, "用户关闭 Mac 电话上行麦克风")
+            return
+        }
+
+        func enable() {
+            guard self.liveVoiceActive, let voiceStream = self.voiceStream else { return }
+            do {
+                try voiceStream.setMicrophone(true)
+                self.liveVoiceMicrophoneEnabled = true
+                self.liveVoiceStatus = "双向实时语音已开启（建议佩戴耳机防止回声）"
+                self.log(.info, .audio, "用户主动开启 Mac 实时通话麦克风")
+            } catch {
+                self.liveVoiceMicrophoneEnabled = false
+                self.liveVoiceStatus = "Mac 麦克风启动失败，请检查输入设备及权限"
+                let err = error as NSError
+                self.log(.warn, .audio, "实时通话麦克风无法启动",
+                    details: ["errorDomain": err.domain, "errorCode": "\(err.code)"])
+            }
+        }
+
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: enable()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if granted { self.setLiveVoiceMicrophone(true) }
+                    else { self.handleMicDenied() }
+                }
+            }
+        default: handleMicDenied()
+        }
+    }
+
     func runPhoneAudioProbe(_ action: AndroidAudioProbeAction) {
-        guard !audioProbeBusy && !adbInstalling else { return }
+        guard !audioProbeBusy && !adbInstalling && !liveVoiceActive && !liveVoiceStarting else { return }
         // Mac call-state notifications are best-effort and may arrive late when
         // the ADB event tunnel reconnects. Do not gate a real-call test on them.
         // Android's requireInCall() is the authoritative safety check.

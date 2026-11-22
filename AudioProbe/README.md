@@ -13,3 +13,8 @@ The helper runs with the standard Android ADB shell user through \`app_process\`
 The Mac bundles the dex jar compiled by \`Scripts/build-audio-probe.sh\` and pushes it to \`/data/local/tmp/simai-audio-probe.jar\` when the user starts a test. The helper exits after each action. Use only on the user's own phone and only when the other party has agreed to the sound test.
 
 This uses the *architectural approach* described by PhoneBridge (ADB + app_process + Android call redirection), with thanks and license information in THIRD_PARTY_NOTICES.md.
+
+
+## V0.3.0 audio-stream mode (experimental)
+
+`app_process / dev.popowk.simai.probe.Main serve <64hex-secret>` creates a one-session (max 180s) Android 13 audio server at `127.0.0.1:18765`. The Mac uses a separate user-authorized ADB TCP forward and sends `SIMAI_AUDIO_1 <secret>\n`. If the phone is in real call audio mode, the server answers `OK\n` and exchanges simultaneous raw PCM16 mono LE 16 kHz, in exact 640-byte/20ms frames. Android's AudioRecord source is VOICE_DOWNLINK; its AudioTrack comes from AudioManager's getCallUplinkInjectionAudioTrack. The Mac's uplink starts as *silence*, and microphone use requires another explicit consent. Caller and helper audio is only in volatile memory. No raw PCM/secret/number in logs, no external IP listener, and no automatic call answering. If one direction closes, the entire preview session stops. OEM support, latency and intelligibility must be verified on the actual handset.

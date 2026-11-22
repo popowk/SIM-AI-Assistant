@@ -9,11 +9,11 @@
     <key>CFBundleName</key><string>SIM AI Assistant</string>
     <key>CFBundleDisplayName</key><string>SIM AI Assistant</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.2.4</string>
-    <key>CFBundleVersion</key><string>11</string>
+    <key>CFBundleShortVersionString</key><string>0.3.0</string>
+    <key>CFBundleVersion</key><string>12</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>仅在您点击“麦克风电平测试”后使用麦克风测量电平，不录制或保存音频。</string>
+    <key>NSMicrophoneUsageDescription</key><string>仅在您主动启用“麦克风电平测试”或“实时通话麦克风”时读取音频。实时声音经已授权的手机通话传输，不保存录音。</string>
     <key>NSAppTransportSecurity</key>
     <dict><key>NSAllowsLocalNetworking</key><true/></dict>
     <key>NSHighResolutionCapable</key><true/>

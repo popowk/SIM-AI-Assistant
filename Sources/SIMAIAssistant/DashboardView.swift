@@ -8,6 +8,8 @@ struct DashboardView: View {
     @State private var previewExport = false
     @State private var confirmDownlink = false
     @State private var confirmUplink = false
+    @State private var confirmLiveVoice = false
+    @State private var confirmLiveMic = false
     @State private var cleanupDays = 7
     @State private var confirmLogCleanup = false
     @State private var confirmAPKInstall = false
@@ -20,6 +22,7 @@ struct DashboardView: View {
                 statusBar
                 adbPanel
                 phoneAudioPanel
+                liveVoicePanel
                 audioPanel
                 diagnosticPanel
                 footer
@@ -42,6 +45,20 @@ struct DashboardView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("必须是双方同意的测试电话，先接通并确认对方知晓即将听到两声测试音。即使 Mac 电话状态暂时未同步，Android 端仍会核实通话已接通；否则拒绝发送测试音。成功写入不代表对方一定听见。")
+        }
+        .confirmationDialog("开始真实电话双向音频桥接？", isPresented: $confirmLiveVoice,
+                            titleVisibility: .visible) {
+            Button("双方已同意，开始实时预览（最多 3 分钟）") { model.startLiveVoice() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("先接通已同意参与测试的运营商电话，并告知对方语音将通过 Mac 参与。接通后点击开始。Mac 将实时播放对方声音；麦克风默认静音，需要再次手动开启。通话 PCM 仅在内存中转发，不保存录音。建议佩戴耳机，避免回声。")
+        }
+        .confirmationDialog("开启 Mac 麦克风向电话传输声音？", isPresented: $confirmLiveMic,
+                            titleVisibility: .visible) {
+            Button("双方已同意，开启 Mac 麦克风") { model.setLiveVoiceMicrophone(true) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("开启后，Mac 当前默认麦克风采集的声音会经 ADB 送入这通运营商电话。请佩戴耳机防止回声。随时可关闭麦克风或停止整条音频通道，不会保存原始语音。")
         }
         .confirmationDialog("确认清理本应用日志？", isPresented: $confirmLogCleanup,
                             titleVisibility: .visible) {
@@ -84,7 +101,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("真实电话音频兼容性诊断 · V0.2.4")
+                Text("真实双向电话音频预览 · V0.3.0")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -236,6 +253,47 @@ struct DashboardView: View {
         }
     }
 
+    private var liveVoicePanel: some View {
+        panel("第二阶段 · 实时双向语音桥接（V0.3.0 预览）", symbol: "waveform") {
+            Text("手动启动 · 16 kHz 单声道 PCM · 每帧 20 ms · 单次最多 3 分钟。音频通过独立 ADB 转发通道，不使用电话状态 HTTP 服务。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("开始实时通话音频") { confirmLiveVoice = true }
+                    .disabled(model.liveVoiceStarting || model.liveVoiceActive ||
+                              model.adbInstalling || model.audioProbeBusy ||
+                              !model.embeddedAudioProbeAvailable)
+                    .buttonStyle(.borderedProminent)
+                Button("立即停止") { model.stopLiveVoice() }
+                    .disabled(!model.liveVoiceStarting && !model.liveVoiceActive)
+                    .buttonStyle(.bordered)
+            }
+            HStack {
+                Button(model.liveVoiceMicrophoneEnabled ? "静音 Mac 麦克风" : "开启 Mac 麦克风") {
+                    if model.liveVoiceMicrophoneEnabled {
+                        model.setLiveVoiceMicrophone(false)
+                    } else {
+                        confirmLiveMic = true
+                    }
+                }
+                .disabled(!model.liveVoiceActive)
+                .buttonStyle(.bordered)
+                if model.liveVoiceMicrophoneEnabled {
+                    Label("麦克风正在向电话发送语音", systemImage: "mic.fill")
+                        .foregroundStyle(.orange).font(.caption)
+                } else {
+                    Label("Mac 麦克风默认静音", systemImage: "mic.slash")
+                        .foregroundStyle(.secondary).font(.caption)
+                }
+            }
+            if model.liveVoiceStarting { ProgressView("正在建立实时音频连接……").controlSize(.small) }
+            Text(model.liveVoiceStatus).font(.subheadline.weight(.medium))
+            Text("下行接收：\(model.liveVoiceRxFrames) 帧 · 上行发送：\(model.liveVoiceTxFrames) 帧 · Mac 播放丢帧：\(model.liveVoiceDropFrames)")
+                .font(.caption.monospaced()).foregroundStyle(.secondary)
+            Text("预览阶段：Android 必须处于真实通话状态；电话结束、断线或达到 180 秒上限会退出。若 Mac 无法听清对方人声、存在回声或语音中断，请直接停止并导出匿名诊断日志。")
+                .font(.caption).foregroundStyle(.orange)
+        }
+    }
+
     private var audioPanel: some View {
         panel("CoreAudio 音频检测", symbol: "waveform.path") {
             Text("麦克风权限：\(model.audio.microphonePermission)")
@@ -317,10 +375,10 @@ struct DashboardView: View {
 
     private var footer: some View {
         HStack {
-            Text("已验证来电状态同步；双向电话音频仍需在 vivo S9e 上实测。")
+            Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.2.4 (11)").font(.caption.monospaced())
+            Text("0.3.0 (12)").font(.caption.monospaced())
         }
     }
 

@@ -29,7 +29,7 @@ private struct MenuBarCommands: View {
         Divider()
         Button("刷新 Mac 音频设备") { model.refresh() }
         Divider()
-        Text("v0.2.4 · 锁屏双通道同步")
+        Text("v0.3.0 · 双向 PCM 实时预览")
         Button("退出 SIM AI Assistant") { NSApp.terminate(nil) }
     }
 }

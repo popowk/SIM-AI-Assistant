@@ -23,6 +23,18 @@ struct ADBHealthReport {
     let code: String // Constant diagnostic category, never a serial or IP.
 }
 
+struct ADBAudioStreamSetup {
+    let executable: URL
+    let serial: String
+    let localPort: Int
+    let secret: String
+}
+
+struct ADBAudioStreamResult {
+    let setup: ADBAudioStreamSetup?
+    let errorCode: String
+}
+
 struct ADBSnapshotResult {
     let snapshot: PhoneBridgeSnapshot?
     let reason: String // fixed safe diagnostic code
@@ -309,6 +321,43 @@ enum ADBInspector {
                          reason: "ADB 可执行命令，但无法检查端口映射",
                          code: "ADB_FORWARD_QUERY_FAILED")
         }
+    }
+
+    /// Sets up a distinct ADB forward for raw cellular audio. No phone state,
+    /// contact identifier or raw PCM is captured by this method.
+    static func prepareAudioStream(at selected: String?, jar: URL) -> ADBAudioStreamResult {
+        func fail(_ code: String) -> ADBAudioStreamResult { .init(setup: nil, errorCode: code) }
+        guard let adb = executable(at: selected) else { return fail("ADB_MISSING") }
+        guard jar.pathExtension.lowercased() == "jar",
+              FileManager.default.fileExists(atPath: jar.path) else { return fail("AUDIO_HELPER_MISSING") }
+        let devices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 10) {
+        case .completed(0, let output): devices = parseDevices(output)
+        default: return fail("ADB_UNAVAILABLE")
+        }
+        let authorized = devices.filter { $0.state == "device" }
+        guard authorized.count == 1 else { return fail("ADB_DEVICE_COUNT") }
+        let serial = authorized[0].serial
+        let remote = "/data/local/tmp/simai-audio-probe.jar"
+        switch run(adb, args: ["-s", serial, "push", jar.path, remote], timeout: 20) {
+        case .completed(0, _): break
+        default: return fail("AUDIO_HELPER_PUSH")
+        }
+        switch run(adb, args: ["-s", serial, "forward", "tcp:0", "tcp:18765"], timeout: 10) {
+        case .completed(0, let output):
+            guard let port = Int(output.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  (1024...65535).contains(port) else { return fail("ADB_FORWARD_PORT") }
+            let secret = (0..<32).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
+            return .init(setup: .init(executable: adb, serial: serial,
+                                      localPort: port, secret: secret),
+                         errorCode: "OK")
+        default: return fail("ADB_FORWARD_FAILED")
+        }
+    }
+
+    static func closeAudioStream(_ session: ADBAudioStreamSetup) {
+        _ = run(session.executable, args: ["-s", session.serial,
+                  "forward", "--remove", "tcp:\(session.localPort)"], timeout: 6)
     }
 
     /// Read a bounded, atomic JSON state snapshot from the already authorized

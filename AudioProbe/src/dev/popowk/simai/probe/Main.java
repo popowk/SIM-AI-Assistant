@@ -32,11 +32,15 @@ public final class Main {
         try {
             if (Build.VERSION.SDK_INT < 33) throw new ProbeError("ANDROID_BELOW_13");
             ProbeRuntime.context();
-            String command = args.length == 1 ? args[0] : "invalid";
+            String command = args.length >= 1 ? args[0] : "invalid";
             switch (command) {
                 case "info": info(); break;
                 case "downlink": downlink(); break;
                 case "uplink": uplink(); break;
+                case "serve":
+                    if (args.length != 2) throw new ProbeError("MISSING_STREAM_TOKEN");
+                    AudioStreamServer.serve(args[1]);
+                    break;
                 default: throw new ProbeError("INVALID_ACTION");
             }
         } catch (ProbeError e) {
