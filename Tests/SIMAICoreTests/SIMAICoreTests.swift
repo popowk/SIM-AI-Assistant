@@ -4,6 +4,18 @@ import XCTest
 
 final class SIMAICoreTests: XCTestCase {
 
+    func testAudioHelperEarlyExitReportsOnlySafeCodes() {
+        XCTAssertEqual(
+            PhoneAudioProtocol.helperExitStatus("SIMAI status=error\nSIMAI error=ANDROID_IllegalStateException\nSIMAI stage=SERVE\n"),
+            "ANDROID_HELPER_EXIT_SERVE_ANDROID_ILLEGALSTATEEXCEPTION")
+        XCTAssertEqual(PhoneAudioProtocol.helperExitStatus("adb: permission denied"),
+                       "ANDROID_HELPER_EXIT_UNKNOWN")
+        XCTAssertEqual(PhoneAudioProtocol.helperExitStatus("SIMAI error=secret@127.0.0.1\n"),
+                       "ANDROID_HELPER_EXIT_UNKNOWN")
+        XCTAssertEqual(PhoneAudioProtocol.helperExitStatus("SIMAI error=API_MISSING\n"),
+                       "ANDROID_HELPER_EXIT_UNKNOWN_API_MISSING")
+    }
+
     func testLiveAudioHandshakeDistinguishesErrors() {
         XCTAssertEqual(PhoneAudioProtocol.handshakeStatus("OK"), "OK")
         XCTAssertEqual(PhoneAudioProtocol.handshakeStatus("ERR NOT_IN_CALL"),

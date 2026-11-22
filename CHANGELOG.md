@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.3.2 — 2026-11-22
+
+- 用户 Mac V0.3.1 实机诊断：连续实时音频两次 AUDIO_HANDSHAKE_NO_RESPONSE 且收发帧皆为 0，但传统 Android 上下行音频测试仍正常。
+- 修复潜在的启动竞态：ADB TCP 转发连接可能早于 Android 服务开始监听；16 秒内完整重试连接与握手，已被接受的连接保留等待，不掩盖明确的 ERR 错误。
+- Android Helper 提前退出时只解析 SIMAI error/stage 固定匿名诊断字段；服务启动命令增加 SERVE 阶段标记。
+- 诊断日志加入握手次数，新增严格错误码解析/隐私安全单元测试。
+- 保持原来用户确认、最长 180 秒、麦克风默认静音、无录音和非自动接听限制。
+- Android Companion 仍为 V0.2.2，不重装手机。
+
 ## 0.3.1 — 2026-11-22
 
 - 用户 V0.3.0 实测：传统上下行短测试仍成功；持续 PCM 会话分别因 AUDIO_HELPER_PUSH 和 AUDIO_HANDSHAKE_FAILED_OR_NO_CALL 失败，均无音频帧。

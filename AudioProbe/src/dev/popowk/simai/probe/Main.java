@@ -38,6 +38,7 @@ public final class Main {
                 case "downlink": downlink(); break;
                 case "uplink": uplink(); break;
                 case "serve":
+                    stage = "SERVE";
                     if (args.length != 2) throw new ProbeError("MISSING_STREAM_TOKEN");
                     AudioStreamServer.serve(args[1]);
                     break;

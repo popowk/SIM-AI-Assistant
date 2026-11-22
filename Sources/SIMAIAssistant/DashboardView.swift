@@ -101,7 +101,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("真实双向电话音频预览 · V0.3.1")
+                Text("真实双向电话音频预览 · V0.3.2")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -254,7 +254,7 @@ struct DashboardView: View {
     }
 
     private var liveVoicePanel: some View {
-        panel("第二阶段 · 实时双向语音桥接（V0.3.1 诊断预览）", symbol: "waveform") {
+        panel("第二阶段 · 实时双向语音桥接（V0.3.2 诊断预览）", symbol: "waveform") {
             Text("手动启动 · 16 kHz 单声道 PCM · 每帧 20 ms · 单次最多 3 分钟。音频通过独立 ADB 转发通道，不使用电话状态 HTTP 服务。")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
@@ -288,6 +288,8 @@ struct DashboardView: View {
             if model.liveVoiceStarting { ProgressView("正在建立实时音频连接……").controlSize(.small) }
             Text(model.liveVoiceStatus).font(.subheadline.weight(.medium))
             Text("下行接收：\(model.liveVoiceRxFrames) 帧 · 上行发送：\(model.liveVoiceTxFrames) 帧 · Mac 播放丢帧：\(model.liveVoiceDropFrames)")
+                .font(.caption.monospaced()).foregroundStyle(.secondary)
+            Text("音频启动握手尝试：\(model.liveVoiceHandshakeAttempts) 次")
                 .font(.caption.monospaced()).foregroundStyle(.secondary)
             Text("预览阶段：Android 必须处于真实通话状态；电话结束、断线或达到 180 秒上限会退出。若 Mac 无法听清对方人声、存在回声或语音中断，请直接停止并导出匿名诊断日志。")
                 .font(.caption).foregroundStyle(.orange)
@@ -378,7 +380,7 @@ struct DashboardView: View {
             Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.3.1 (13)").font(.caption.monospaced())
+            Text("0.3.2 (14)").font(.caption.monospaced())
         }
     }
 

@@ -37,6 +37,7 @@ final class AssistantModel: ObservableObject {
     @Published var liveVoiceRxFrames = 0
     @Published var liveVoiceTxFrames = 0
     @Published var liveVoiceDropFrames = 0
+    @Published var liveVoiceHandshakeAttempts = 0
     @Published var selectedADBPath = UserDefaults.standard.string(forKey: "SIMAI_ADB_PATH") ?? ""
     @Published var cleanupPreviewText = ""
     @Published var isAudioTestRunning = false
@@ -44,8 +45,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.3.1"
-    let buildNumber = "13"
+    let version = "0.3.2"
+    let buildNumber = "14"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -409,6 +410,7 @@ final class AssistantModel: ObservableObject {
         liveVoiceRxFrames = 0
         liveVoiceTxFrames = 0
         liveVoiceDropFrames = 0
+        liveVoiceHandshakeAttempts = 0
         log(.info, .audio, "用户确认开始实时电话音频预览",
             details: ["mode": "manual", "mic": "muted", "maxDurationSeconds": "180"])
         let stream = PhoneAudioStream { [weak self] update in
@@ -417,6 +419,8 @@ final class AssistantModel: ObservableObject {
                 switch update {
                 case .status(let message):
                     self.liveVoiceStatus = message
+                case .handshakeAttempts(let count):
+                    self.liveVoiceHandshakeAttempts = count
                 case .active:
                     self.liveVoiceActive = true
                     self.liveVoiceStarting = false
@@ -437,7 +441,8 @@ final class AssistantModel: ObservableObject {
                         "实时电话音频会话结束", details: [
                             "reason": reason, "rxFrames": "\(self.liveVoiceRxFrames)",
                             "txFrames": "\(self.liveVoiceTxFrames)",
-                            "dropped": "\(self.liveVoiceDropFrames)"])
+                            "dropped": "\(self.liveVoiceDropFrames)",
+                            "handshakeAttempts": "\(self.liveVoiceHandshakeAttempts)"])
                 }
             }
         }

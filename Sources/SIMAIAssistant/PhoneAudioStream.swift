@@ -9,6 +9,7 @@ import SIMAICore
 enum LiveAudioEvent {
     case status(String)
     case active
+    case handshakeAttempts(Int)
     case metrics(received: Int, sent: Int, dropped: Int)
     case finished(String)
 }
@@ -252,8 +253,11 @@ final class PhoneAudioStream {
         process.executableURL = target.executable
         process.arguments = ["-s", target.serial, "shell",
             "CLASSPATH=/data/local/tmp/simai-audio-probe.jar app_process / dev.popowk.simai.probe.Main serve \(target.secret)"]
-        // Never capture the helper's logs or expose its token/command line.
-        process.standardOutput = FileHandle.nullDevice
+        // Only helper stdout is captured in memory to decode fixed error/stage
+        // fields if the process exits before the socket starts. Raw stdout is
+        // never logged, and stderr is discarded to protect device details.
+        let helperOutput = Pipe()
+        process.standardOutput = helperOutput
         process.standardError = FileHandle.nullDevice
         do { try process.run() }
         catch { reason = "ANDROID_HELPER_LAUNCH"; return }
@@ -261,27 +265,88 @@ final class PhoneAudioStream {
         helper = process
         gate.unlock()
 
-        report(.status("Android 音频进程已启动，等待握手……"))
-        var fd: Int32 = -1
-        let until = Date().addingTimeInterval(10)
-        while Date() < until && !isClosed {
-            fd = Self.connectLocal(port: target.localPort)
-            if fd >= 0 { break }
-            usleep(150_000)
-        }
-        guard fd >= 0 else { reason = isClosed ? "USER_STOPPED" : "AUDIO_PORT_TIMEOUT"; return }
-        gate.lock()
-        socketFD = fd
-        gate.unlock()
-        if isClosed { reason = "USER_STOPPED"; return }
-
+        report(.status("Android 音频进程已启动，正在等待服务就绪……"))
         let hello = Array("SIMAI_AUDIO_1 \(target.secret)\n".utf8)
-        guard Self.sendAll(fd, hello) else { reason = "AUDIO_HANDSHAKE_WRITE"; return }
-        let handshake = PhoneAudioProtocol.handshakeStatus(Self.readLine(fd))
-        guard handshake == "OK" else {
-            reason = handshake
+        let deadline = Date().addingTimeInterval(16)
+        var fd: Int32 = -1
+        var attempts = 0
+        var ready = false
+        reason = "AUDIO_HANDSHAKE_NO_RESPONSE"
+
+        // An ADB forward can accept a local TCP connection *before* the Android
+        // app_process has bound its loopback port. In that case the first socket
+        // is closed immediately. Retry the whole handshake, not just connect().
+        // Once a socket stays open, however, wait for its response: Android
+        // may still be creating VOICE_DOWNLINK / injection audio tracks.
+        while Date() < deadline && !isClosed {
+            if !process.isRunning {
+                let data = helperOutput.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data.prefix(4096), encoding: .utf8) ?? ""
+                reason = PhoneAudioProtocol.helperExitStatus(output)
+                break
+            }
+            let candidate = Self.connectLocal(port: target.localPort)
+            if candidate < 0 {
+                attempts += 1
+                usleep(200_000)
+                continue
+            }
+            attempts += 1
+            gate.lock()
+            socketFD = candidate
+            gate.unlock()
+            if isClosed {
+                _ = Darwin.shutdown(candidate, Int32(SHUT_RDWR))
+            } else if Self.sendAll(candidate, hello) {
+                var partial: [UInt8] = []
+                attemptHandshake: while Date() < deadline && !isClosed {
+                    switch Self.readHandshake(candidate, partial: &partial) {
+                    case .line(let response):
+                        let parsed = PhoneAudioProtocol.handshakeStatus(response)
+                        if parsed == "OK" {
+                            fd = candidate
+                            ready = true
+                            reason = "STREAM_DISCONNECTED"
+                        } else {
+                            reason = parsed
+                        }
+                        break attemptHandshake
+                    case .timeout:
+                        // The helper accepted the socket but is still initializing;
+                        // never open a second connection just because it is slow.
+                        continue
+                    case .closed:
+                        reason = "AUDIO_HANDSHAKE_NO_RESPONSE"
+                        break attemptHandshake
+                    case .invalid:
+                        reason = "AUDIO_HANDSHAKE_UNEXPECTED"
+                        break attemptHandshake
+                    }
+                }
+            } else {
+                reason = "AUDIO_HANDSHAKE_WRITE"
+            }
+            if ready { break }
+            gate.lock()
+            if socketFD == candidate { socketFD = -1 }
+            gate.unlock()
+            _ = Darwin.shutdown(candidate, Int32(SHUT_RDWR))
+            _ = Darwin.close(candidate)
+            // Explicit Android errors and malformed responses must not be
+            // disguised by retries; only early EOF / write failure can recover.
+            if reason != "AUDIO_HANDSHAKE_NO_RESPONSE" &&
+               reason != "AUDIO_HANDSHAKE_WRITE" { break }
+            if attempts % 5 == 0 {
+                report(.status("Android 音频服务尚未就绪，重试握手（\(attempts) 次）……"))
+            }
+            usleep(250_000)
+        }
+        report(.handshakeAttempts(attempts))
+        guard ready && fd >= 0 else {
+            if isClosed { reason = "USER_STOPPED" }
             return
         }
+        report(.status("实时音频服务握手完成（\(attempts) 次连接尝试）"))
 
         let speaker: LiveMacSpeaker
         do { speaker = try LiveMacSpeaker() }
@@ -368,17 +433,32 @@ final class PhoneAudioStream {
         }
     }
 
-    private static func readLine(_ fd: Int32) -> String? {
-        var bytes: [UInt8] = []
-        while bytes.count < 80 {
+    private enum HandshakeRead {
+        case line(String)
+        case timeout
+        case closed
+        case invalid
+    }
+
+    private static func readHandshake(_ fd: Int32, partial: inout [UInt8]) -> HandshakeRead {
+        while partial.count < 80 {
             var c: UInt8 = 0
             let n = Darwin.recv(fd, &c, 1, 0)
-            if n <= 0 { return nil }
-            if c == 10 { return String(bytes: bytes, encoding: .ascii) }
-            if c < 32 || c > 126 { return nil }
-            bytes.append(c)
+            if n == 0 { return .closed }
+            if n < 0 {
+                if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK {
+                    return .timeout
+                }
+                return .closed
+            }
+            if c == 10 {
+                guard let text = String(bytes: partial, encoding: .ascii) else { return .invalid }
+                return .line(text)
+            }
+            guard c >= 32 && c <= 126 else { return .invalid }
+            partial.append(c)
         }
-        return nil
+        return .invalid
     }
 
     private static func readExact(_ fd: Int32, count: Int) -> [UInt8]? {
