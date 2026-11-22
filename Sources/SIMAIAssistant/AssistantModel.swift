@@ -15,18 +15,25 @@ final class AssistantModel: ObservableObject {
     @Published var voiceMarkedActive = false
     @Published var probeStatus = "尚未测试"
     @Published var loopbackStatus = "尚未测试"
+    @Published var observingPhone = false
+    @Published var phoneObservationStatus = "尚未开始"
+    @Published var phoneObservationElapsed = 0
     @Published var isAudioTestRunning = false
     @Published var alertText: String?
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.1.0"
-    let buildNumber = "1"
+    let version = "0.1.1"
+    let buildNumber = "2"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
     private let microphoneProbe = MicrophoneLevelProbe()
     private let loopbackProbe = LocalLoopbackProbe()
+    private var phoneTimer: Timer?
+    private var phoneObservationStartedAt: Date?
+    private var phoneLastFingerprint = ""
+    private var phoneObservationChanges = 0
     private(set) var sessionID = UUID().uuidString
     private(set) var lastError: DiagnosticEvent?
 
@@ -95,6 +102,73 @@ final class AssistantModel: ObservableObject {
         if audio.microphonePermission == "已拒绝" {
             log(.warn, .audio, "麦克风权限被拒绝", code: .microphoneDenied)
         }
+    }
+
+
+    /// Observes only local Bluetooth and CoreAudio state (not real phone calls).
+    func startPhoneObservation() {
+        guard !observingPhone else { return }
+        sessionID = "phone-\(UUID().uuidString)"
+        observingPhone = true
+        phoneObservationElapsed = 0
+        phoneObservationChanges = 0
+        phoneObservationStartedAt = Date()
+        bluetooth = BluetoothInspector.inspect()
+        audio = audioInspector.inspect()
+        phoneLastFingerprint = phoneFingerprint(bluetooth, audio)
+        phoneObservationStatus = "观察中；请使用另一部电话拨打 vivo S9e"
+        log(.info, .call, "开始 60 秒真实来电只读观察；不会录音或控制手机",
+            details: ["pairedBT": "\(bluetooth.devices.count)",
+                      "connectedBT": "\(bluetooth.devices.filter(\.connected).count)",
+                      "audioCount": "\(audio.devices.count)"])
+        phoneTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.tickPhoneObservation() }
+        }
+    }
+    func markPhoneRinging() {
+        guard observingPhone else { return }
+        log(.info, .call, "人工标记手机正在响铃（不是自动检测）",
+            details: ["elapsedSeconds": "\(phoneObservationElapsed)"])
+    }
+    func stopPhoneObservation() {
+        guard observingPhone else { return }
+        observingPhone = false
+        phoneTimer?.invalidate()
+        phoneTimer = nil
+        phoneObservationStartedAt = nil
+        phoneObservationStatus = "结束：\(phoneObservationChanges) 次设备变化；HFP/SCO 未验证"
+        log(.info, .call, "真实来电观察结束；无状态变化不等于不支持 HFP",
+            details: ["elapsedSeconds": "\(phoneObservationElapsed)",
+                      "changeCount": "\(phoneObservationChanges)"])
+    }
+    private func tickPhoneObservation() {
+        guard observingPhone else { return }
+        phoneObservationElapsed = Int(Date().timeIntervalSince(phoneObservationStartedAt ?? Date()))
+        let nextBT = BluetoothInspector.inspect()
+        let nextAudio = audioInspector.inspect()
+        let fingerprint = phoneFingerprint(nextBT, nextAudio)
+        if fingerprint != phoneLastFingerprint {
+            phoneObservationChanges += 1
+            log(.info, .call, "观察到设备变化（不代表已获得电话音频）",
+                details: ["elapsedSeconds": "\(phoneObservationElapsed)",
+                          "connectedBT": "\(nextBT.devices.filter(\.connected).count)",
+                          "vivoCandidateConnected": "\(nextBT.devices.contains { $0.targetCandidate && $0.connected })",
+                          "audioDevices": "\(nextAudio.devices.count)",
+                          "defaultInputChanged": "\(nextAudio.devices.first(where: { $0.isDefaultInput })?.id != audio.devices.first(where: { $0.isDefaultInput })?.id)",
+                          "defaultOutputChanged": "\(nextAudio.devices.first(where: { $0.isDefaultOutput })?.id != audio.devices.first(where: { $0.isDefaultOutput })?.id)"])
+        }
+        phoneLastFingerprint = fingerprint
+        bluetooth = nextBT
+        audio = nextAudio
+        if phoneObservationElapsed >= 60 { stopPhoneObservation() }
+    }
+    private func phoneFingerprint(_ bt: BluetoothSnapshot, _ au: AudioSnapshot) -> String {
+        // IDs are never written to diagnostic logs; only compared in memory.
+        let bonds = bt.devices.map { "\($0.id):\($0.connected)" }.sorted().joined(separator: "|")
+        let sound = au.devices.map {
+            "\($0.id):\($0.sampleRate ?? 0):\($0.isDefaultInput):\($0.isDefaultOutput)"
+        }.sorted().joined(separator: "|")
+        return bonds + "||" + sound
     }
 
     func simulateCall() {

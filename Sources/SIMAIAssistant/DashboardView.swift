@@ -52,7 +52,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("macOS 原生电话辅助与诊断 · V0.1 测试版")
+                Text("macOS 原生电话辅助与诊断 · V0.1.1 测试版")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -101,6 +101,24 @@ struct DashboardView: View {
             }
             Text("注意：配对或显示已连接，并不等于支持电话 HFP/SCO。")
                 .font(.caption).foregroundStyle(.orange)
+            Divider()
+            Text("真实来电观察 · 60 秒").font(.subheadline.bold())
+            Text("开始后使用另一部电话拨打 vivo S9e。本功能只观察设备状态，不接听、不录音。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("开始观察") { model.startPhoneObservation() }
+                    .disabled(model.observingPhone)
+                Button("手机已响铃（标记）") { model.markPhoneRinging() }
+                    .disabled(!model.observingPhone)
+                Button("停止") { model.stopPhoneObservation() }
+                    .disabled(!model.observingPhone)
+            }.buttonStyle(.bordered)
+            Text(model.phoneObservationStatus).font(.caption).foregroundStyle(.secondary)
+            if model.observingPhone {
+                Text("已观察 \(model.phoneObservationElapsed)/60 秒")
+                    .font(.caption.monospacedDigit())
+            }
+
         }
     }
 
@@ -218,7 +236,7 @@ struct DashboardView: View {
             Text("V0.1 仅提供诊断、模拟测试与人工 Voice 启动；真实 HFP/电话控制待设备验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.1.0 (1)").font(.caption.monospaced()).foregroundStyle(.secondary)
+            Text("0.1.1 (2)").font(.caption.monospaced()).foregroundStyle(.secondary)
         }
     }
 

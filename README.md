@@ -1,4 +1,4 @@
-# SIM AI Assistant — macOS V0.1 (测试工程)
+# SIM AI Assistant — macOS V0.1.1 (测试工程)
 
 macOS 菜单栏工具：为 Apple Silicon Mac + vivo S9e + 中国联通 SIM 的后续电话辅助实验提供**可运行的 UI、诊断能力和测试基线**。当前版本**不具备真实运营商电话接听、挂断、监听或 HFP/SCO 双向音频桥接能力**。
 
@@ -20,6 +20,17 @@ macOS 菜单栏工具：为 Apple Silicon Mac + vivo S9e + 中国联通 SIM 的�
 | 故障恢复 | 代码已完成，待 Mac 实测 | 仅用户主动点击，恢复应用启动时备份的默认输入和输出设备；不重置蓝牙 |
 | 崩溃诊断 | 当前仅指引 | 避免导出用户其他应用信息，ZIP 内提供手动导出说明 |
 
+## V0.1.1 真实来电只读观察
+
+从首份实机诊断 ZIP 可见，macOS 已发现 vivo 候选设备，但不能证明 HFP/SCO 可用。新增 60 秒只读设备状态观察模式：
+
+1. 在蓝牙面板点击「开始观察」；
+2. 使用另一部电话拨打 vivo S9e；
+3. 手机响铃时点击「手机已响铃（标记）」，人工接听、挂断；
+4. 观察结束后导出诊断 ZIP，查看计数及默认音频设备变化。
+
+该模式不记录手机号、录音、设备名称或敏感设备 UID，不接管电话。变化不等于 HFP 成功；无变化也不能证明不兼容。用户必须主动点击开始与导出。
+
 ## GitHub Actions 自动编译与下载
 
 将本仓库 push 到 `main` 后，`.github/workflows/build-macos.yml` 会用 GitHub 提供的 macOS 机器执行测试、交叉编译 **Apple Silicon arm64**、临时签名并打包。可在 **Actions → macOS Build → 最新成功任务 → Artifacts** 下载，也会在 **Releases → Dev Latest** 更新测试发行包。推送 `v*` tag 可创建该版本的 Release。
@@ -37,7 +48,7 @@ bash Scripts/build-macos.sh
 open "dist/SIM AI Assistant.app"
 ```
 
-脚本将执行 `swift test`、`swift build -c release`，组装 `.app`，做本机临时签名并生成 `dist/SIM-AI-Assistant-v0.1.0-macos-arm64.zip`。**临时签名并不等于 Apple 正式公证；不提供面向公众分发的已签名安装包。**
+脚本将执行 `swift test`、`swift build -c release`，组装 `.app`，做本机临时签名并生成 `dist/SIM-AI-Assistant-v0.1.1-macos-arm64.zip`。**临时签名并不等于 Apple 正式公证；不提供面向公众分发的已签名安装包。**
 
 若只做编译检查：
 
