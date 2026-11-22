@@ -13,7 +13,7 @@ enum LiveAudioEvent {
     case active
     case handshakeAttempts(Int)
     case metrics(received: Int, sent: Int, dropped: Int, micUnderflows: Int, micOverflows: Int, txLate: Int, micBufferedMs: Int, voiceRouteDropped: Int)
-    case aiReturnMetrics(captured: Int, monitorDropped: Int, uplinkUnderflow: Int)
+    case aiReturnMetrics(captured: Int, monitorDropped: Int, uplinkUnderflow: Int, peakRMS: Double)
     case finished(String)
 }
 
@@ -182,6 +182,7 @@ private final class LiveAIReplyCapture {
     private let lock = NSLock()
     private var stopped = false
     private var capturedSamples = 0
+    private var peakRMS = 0.0
 
     init(virtualInput: AudioDeviceID, physicalOutput: AudioDeviceID) throws {
         self.monitor = try LiveMacSpeaker(deviceID: physicalOutput)
@@ -217,10 +218,12 @@ private final class LiveAIReplyCapture {
             monitor.stop()
             throw LiveAudioFailure.reason("AI_RETURN_FORMAT_UNSUPPORTED")
         }
+        converter.channelMap = [0]
         phoneQueue.setCaptureEnabled(true)
         monitorQueue.setCaptureEnabled(true)
-        // Do not capture the default mic or any other application. Input
-        // device identity was explicitly set and read back above.
+        // Only this named virtual device is tapped. If it is set as the
+        // macOS system output, other applications may ALSO feed this device.
+        // User is warned to silence other apps before enabling PSTN uplink.
         input.installTap(onBus: 0, bufferSize: 1024, format: source) {
             [weak self, converter, converted] buffer, _ in
             guard let self else { return }
@@ -239,10 +242,17 @@ private final class LiveAIReplyCapture {
             guard err == nil, converted.frameLength > 0,
                   let data = converted.floatChannelData?[0] else { return }
             let count = Int(converted.frameLength)
+            var power = 0.0
+            for i in 0..<count {
+                let v = Double(data[i])
+                power += v * v
+            }
+            let rms = sqrt(power / Double(count))
             self.phoneQueue.appendFloatSamples(data, count: count)
             self.monitorQueue.appendFloatSamples(data, count: count)
             self.lock.lock()
             self.capturedSamples += count
+            self.peakRMS = max(self.peakRMS, rms)
             self.lock.unlock()
         }
         do {
@@ -277,11 +287,12 @@ private final class LiveAIReplyCapture {
 
     func nextPhoneFrame() -> [UInt8] { phoneQueue.nextFrame() }
 
-    func statistics() -> (captured: Int, monitorDropped: Int, uplinkUnderflow: Int) {
+    func statistics() -> (captured: Int, monitorDropped: Int, uplinkUnderflow: Int, peakRMS: Double) {
         lock.lock()
         let samples = capturedSamples
+        let peak = peakRMS
         lock.unlock()
-        return (samples / 320, monitor.droppedFrames(), phoneQueue.statistics().underflowFrames)
+        return (samples / 320, monitor.droppedFrames(), phoneQueue.statistics().underflowFrames, peak)
     }
 
     func stop() {
@@ -657,7 +668,8 @@ final class PhoneAudioStream {
             let stats = capture.statistics()
             report(.aiReturnMetrics(captured: stats.captured,
                                     monitorDropped: stats.monitorDropped,
-                                    uplinkUnderflow: stats.uplinkUnderflow))
+                                    uplinkUnderflow: stats.uplinkUnderflow,
+                                    peakRMS: stats.peakRMS))
         }
         report(.metrics(received: received, sent: sending.sent,
                         dropped: speaker.droppedFrames(),
