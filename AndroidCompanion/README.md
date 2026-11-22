@@ -1,8 +1,20 @@
-# SIM AI Companion — Android 0.2.2 测试版
+# SIM AI Companion — Android 0.3.0 测试版
+
+## V0.3.0 · 飞书短信 Webhook 通知（默认开启开关）
+
+- 适用于手机自身新收到的短信（包括运营商验证码）；**完整正文按原样保留**，在前面标注发送方和“短信全文”。多段短信通过系统提供的 PDU 列表合并，无需 READ_SMS，也不读取收件箱历史。
+- 默认勾选“自动转发新短信”；但 **只有用户在 Android 系统权限弹窗授权 RECEIVE_SMS，并在手机 App 本地保存有效的飞书自定义机器人 HTTPS Webhook，才实际发送**。只依赖 vivo S9e 的网络，不依赖 Mac/ADB/电话监听服务。
+- 仅允许 `https://open.feishu.cn/open-apis/bot/v2/hook/...` 或 `https://open.larksuite.com/open-apis/bot/v2/hook/...`，不允许 HTTP、其他主机或重定向。
+- 使用飞书机器人 `msg_type: text` 格式；可填写飞书签名校验密钥（可选）。若开启签名校验，消息包含时间戳与 HMAC-SHA256 签名。
+- Android App 界面提供：默认开启的开关、请求短信权限、Webhook/签名输入与保存、发送不含验证码的测试消息、清除配置、匿名发送状态。Webhook 地址与签名只保存在 App 私有首选项，不进入诊断日志；短信正文/验证码仅在接收后于内存中构造发送，不写入磁盘。
+- 简单去重以避免一条系统广播的重复投递；连接/读取各 4 秒超时，发送失败记录类别，不会持久保存或离线排队原文。因此断网时 **不能保证短信补发**，Android 电池管理与部分 SMS Retriever 专属消息也可能受系统限制。
+- 飞书群成员能够查看短信全文与验证码，请务必使用自己控制的**私人飞书群**，只授权必要人员；收到验证码应及时使用，群消息可能被飞书平台保存。不得将此权限用于读取非本人设备或非本人有权访问的短信。
+- 软件不请求 READ_SMS/SEND_SMS，不自动发送手机短信，不允许远程修改 Webhook。首次升级 Android Companion 到 V0.3.0 需要用户手动确认 RECEIVE_SMS 运行时权限；此前的电话状态功能保持独立。
+- 注意 Android Debug APK 不同 GitHub Runner 可能使用不同临时签名：`adb install -r` 失败时**不会自动卸载**；用户如主动卸载重装会清除应用私有设置、电话监听授权和桥接令牌，需重新授权、重配。优先保留旧数据，不要为本功能盲目清空。
 
 ## 功能
 - 由用户主动启动/停止本机电话状态监听服务，展示 IDLE/RINGING/OFFHOOK。
-- READ_PHONE_STATE 明确运行时授权，不采集电话号码、联系人、IMEI、短信、录音。
+- READ_PHONE_STATE 明确运行时授权，不采集来电号码、联系人、IMEI、通话录音；V0.3.0 新增用户配置的入站短信转发（正文不写入日志）。
 - Android 12+ 使用 TelephonyCallback.CallStateListener，Android 8–11 使用 PhoneStateListener。
 - 前台服务通知显示运行状态，拒绝权限时不能运行，关闭 App 不代表手动停止服务。
 - 数据仅在手机本机显示；新版本添加本机只读电话状态 HTTP 服务，Mac 通过 USB ADB forward 接收事件（不使用局域网）。
