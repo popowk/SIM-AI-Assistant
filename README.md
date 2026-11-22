@@ -1,4 +1,4 @@
-# SIM AI Assistant · V0.4.0（ChatGPT Voice 手动电话下行输入原型）
+# SIM AI Assistant · V0.4.1（ChatGPT Voice 隔离双向语音原型）
 
 **设备目标**：vivo S9e / Android 13 / 中国联通实体 SIM + Apple Silicon Mac / macOS 26.6.2。
 **源代码**：https://github.com/popowk/SIM-AI-Assistant
@@ -10,6 +10,34 @@
 - Android → Mac：私有通信令牌、本机端口转发、匿名电话状态同步和去重、断线重连。此前 vivo S9e 的真实来电日志已验证此项。
 - Mac 本地音频设备检查、麦克风电平、扬声器试听和设备恢复。
 - 诊断 ZIP、匿名事件日志、1/7/14 天清理与「清空全部（含今天）」。
+
+## V0.4.1 · GPT 回复隔离监听与手动电话回传（2026-11-23）
+
+### 本次诊断事实
+
+- 最新 SIM-AI-Diagnostics-20261123-005010.zip 来自 V0.4.0 Build 17，系统发现 BlackHole，但新会话未出现 V0.4.0 电话音频预览或电话→ChatGPT 路由的启动日志。此前记录的 2,631/2,552 帧来自旧会话，不能冒充本轮验收。
+- 截图显示 ChatGPT 生成了文本回复，但并不能单独证明 Voice 语音已从任何设备播放。未听到声音的原因可能是没有打开 Voice、浏览器音量或输出路由到了 BlackHole。
+
+### 两条虚拟设备与两级授权
+
+1. 电话→ChatGPT：继续使用 BlackHole 2ch，用户主动开启电话实时音频和第三阶段的输入路由，ChatGPT Voice 选择 BlackHole 2ch 为麦克风。
+2. ChatGPT→Mac 耳机：新增 BlackHole 16ch 输入监听；请将 ChatGPT 语音播放输出指向 BlackHole 16ch。若浏览器不能单独选择输出，可手动将 macOS 默认声音输出设为 BlackHole 16ch。用户须在第四阶段明确选择实体耳机或扬声器，监听默认**不会进入电话**。
+3. ChatGPT→电话：本地试听成功、双方明确知情同意后，再单独点击“人工授权：将 GPT 回复发给电话”。启用期间 Mac 麦克风自动关闭，不能和 AI 回复混音；用户可随时点“立即关闭回传”恢复静音。
+4. 电话断开后立即释放上述路由，仍受原有 180 秒限制；Android Companion V0.2.2 不变。不自动接听，不操作 ChatGPT 登录和官方 Voice，不使用付费 API，不将声音写入日志或录音。
+
+### 验收步骤
+
+1. 安装 BlackHole 2ch 与 BlackHole 16ch，可使用 BlackHole 官方 Homebrew 方式：brew install blackhole-2ch；brew install blackhole-16ch。安装后在本应用点击“重新自检”。
+2. 在第四阶段选择实体耳机/扬声器，最好先选择设备再启动电话音频，以免系统声音输出切换后原有电话监听也进入虚拟设备。
+3. 打开官方 ChatGPT Voice；为其麦克风选择 BlackHole 2ch；将其播放输出导向 BlackHole 16ch（必要时手动选择 Mac 系统声音输出 BlackHole 16ch）。
+4. 与双方同意的测试对象接通电话，手动开启实时 PCM 和电话下行送入 ChatGPT，然后点“开始在耳机监听 GPT”。让 GPT 说一段测试回复，确认实体耳机能听到，查看 AI 回复采集帧数、峰值 RMS、监听丢帧。帧数增长但 RMS 为 0 可能说明只有静音。
+5. 只有确认 Mac 听清 AI 且测试对象知情同意后，才点击“人工授权：将 GPT 回复发给电话”。让对方确认能否听清完整 AI 人声。结束点“立即关闭 AI 电话回传”，并导出匿名 ZIP；查看 aiReturnCaptured、aiReturnPeakRMS、aiReturnMonitorDropped、aiReturnUplinkUnderflow。
+
+### 重要限制
+
+- BlackHole 16ch 如果被用作系统默认输出，会接收其它应用通知和声音，不能保证只有 ChatGPT。务必禁用不相关音频，避免经电话回传泄露；只有在双方知情同意下测试。
+- 本版是实验性 CoreAudio 本地路由，不是官方 ChatGPT Plus API 或 OAuth 语音接口。用户的 ChatGPT Voice 使用、处理与保存遵循官方服务规则。
+- Mac 虚拟设备输入选择、音频监控和真正的电话上行仍须实机验证。GitHub Actions 构建通过不等于通话中的音质与路由均通过。
 
 ## V0.4.0 · ChatGPT Voice 单向电话输入（2026-11-23）
 
