@@ -35,6 +35,13 @@ struct ADBAudioStreamResult {
     let errorCode: String
 }
 
+/// Only fixed status categories; credentials, phone serial, and request bytes
+/// must never appear in diagnostics or user-visible status text.
+struct ADBFeishuConfigResult {
+    let succeeded: Bool
+    let code: String
+}
+
 struct ADBSnapshotResult {
     let snapshot: PhoneBridgeSnapshot?
     let reason: String // fixed safe diagnostic code
@@ -195,6 +202,101 @@ enum ADBInspector {
         }
     }
 
+
+    /// User-triggered direct ADB configuration sync. It intentionally does
+    /// not use the phone call-state HTTP bridge: SMS handling must keep working
+    /// when the phone monitor is stopped, locked, or the Mac is later unplugged.
+    ///
+    /// The JSON credentials are sent only through adb's stdin (NOT argv),
+    /// atomically staged inside the debug APK private sandbox and consumed by
+    /// the app when next opened or on the next new SMS broadcast.
+    static func syncFeishuSettings(at selected: String?,
+                                   settings: FeishuWebhookSettings) -> ADBFeishuConfigResult {
+        func fail(_ code: String) -> ADBFeishuConfigResult {
+            ADBFeishuConfigResult(succeeded: false, code: code)
+        }
+        guard FeishuWebhookSettings.validWebhook(settings.webhook),
+              settings.signingSecret.utf8.count <= 256 else {
+            return fail("FEISHU_INVALID_SETTINGS")
+        }
+        guard let adb = executable(at: selected) else { return fail("ADB_MISSING") }
+        let devices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 12) {
+        case .completed(0, let listing):
+            devices = parseDevices(listing)
+        case .timedOut: return fail("ADB_DEVICES_TIMEOUT")
+        default: return fail("ADB_DEVICES_FAILED")
+        }
+        let authorized = devices.filter { $0.state == "device" }
+        guard authorized.count == 1 else {
+            return fail(authorized.count == 0
+                ? (devices.contains(where: { $0.state == "unauthorized" })
+                    ? "ADB_UNAUTHORIZED" : "ADB_NO_AUTHORIZED_PHONE")
+                : "ADB_MULTIPLE_AUTHORIZED_PHONES")
+        }
+        let serial = authorized[0].serial // Always private; never log.
+        let appID = "com.popowk.simai.companion"
+
+        // Prevent false success against an older Android APK which cannot
+        // consume this staged format. No phone identifiers are reported.
+        let version: Int?
+        switch run(adb, args: ["-s", serial, "shell",
+                               "dumpsys package \(appID) | grep -m 1 'versionCode='"],
+                   timeout: 10) {
+        case .completed(0, let output):
+            if let match = output.range(of: #"versionCode=([0-9]+)"#, options: .regularExpression) {
+                version = Int(output[match].dropFirst("versionCode=".count))
+            } else {
+                version = nil
+            }
+        case .timedOut: return fail("ANDROID_PACKAGE_QUERY_TIMEOUT")
+        default: return fail("ANDROID_COMPANION_NOT_FOUND")
+        }
+        guard let version else { return fail("ANDROID_COMPANION_VERSION_UNKNOWN") }
+        guard version >= 7 else { return fail("ANDROID_COMPANION_UPDATE_REQUIRED") }
+
+        let bytes: Data
+        do {
+            bytes = try JSONSerialization.data(withJSONObject: [
+                "webhook": settings.webhook,
+                "secret": settings.signingSecret,
+                "enabled": settings.enabled
+            ])
+        } catch { return fail("FEISHU_ENCODE_FAILED") }
+        guard bytes.count < 4096 else { return fail("FEISHU_CONFIG_TOO_LARGE") }
+
+        // Shell command is a hardcoded string; credentials are NEVER embedded
+        // in Process.arguments, app logs or any diagnostic bundle. -T keeps
+        // the stdin stream binary-clean instead of terminal line discipline.
+        let process = Process()
+        process.executableURL = adb
+        process.arguments = ["-s", serial, "shell", "-T",
+            "run-as \(appID) sh -c 'umask 077; cat > files/simai-feishu-sync.tmp && mv files/simai-feishu-sync.tmp files/simai-feishu-sync.json'"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        let input = Pipe()
+        process.standardInput = input
+        let completed = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in completed.signal() }
+        do {
+            try process.run()
+        } catch { return fail("ADB_CONFIG_PROCESS_LAUNCH") }
+        do {
+            try input.fileHandleForWriting.write(contentsOf: bytes)
+            try input.fileHandleForWriting.close()
+        } catch {
+            if process.isRunning { process.terminate() }
+            return fail("ADB_CONFIG_STDIN_FAILED")
+        }
+        if completed.wait(timeout: .now() + 12) == .timedOut {
+            if process.isRunning { process.terminate() }
+            return fail("ADB_CONFIG_WRITE_TIMEOUT")
+        }
+        guard process.terminationStatus == 0 else {
+            return fail("ADB_CONFIG_RUN_AS_FAILED")
+        }
+        return .init(succeeded: true, code: "ADB_PRIVATE_CONFIG_STAGED")
+    }
 
     /// Requires exactly one authorized device and a running, user-started companion service.
     /// Reopens a previously authorized wireless ADB transport when it drops out
