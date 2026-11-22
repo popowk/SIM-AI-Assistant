@@ -339,6 +339,13 @@ public final class MainActivity extends Activity {
         super.onResume();
         handler.removeCallbacks(update);
         handler.post(update);
+        // If the user granted phone permission through Android Settings, also
+        // resume the previously requested monitor without an extra tap.
+        if (monitorDesired() && !CallMonitorService.running &&
+                checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
+                        == PackageManager.PERMISSION_GRANTED) {
+            startPhoneMonitorIfAllowed();
+        }
     }
     @Override protected void onPause() {
         handler.removeCallbacks(update);
