@@ -1,4 +1,4 @@
-# SIM AI Companion — Android 0.3.1 测试版
+# SIM AI Companion — Android 0.3.2 测试版
 
 ## V0.3.0 · 飞书短信 Webhook 通知（默认开启开关）
 
