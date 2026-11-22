@@ -17,6 +17,7 @@ struct DashboardView: View {
     @State private var confirmLogCleanup = false
     @State private var confirmAPKInstall = false
     @State private var confirmAPKReset = false
+    @State private var showFeishuWebhook = false
 
     var body: some View {
         ScrollView {
@@ -24,6 +25,7 @@ struct DashboardView: View {
                 header
                 statusBar
                 adbPanel
+                feishuPanel
                 phoneAudioPanel
                 liveVoicePanel
                 chatGPTVoicePanel
@@ -129,7 +131,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("电话音频 + GPT Voice + 飞书短信通知 · V0.4.2")
+                Text("电话音频 + GPT Voice + 飞书短信通知 · V0.4.3")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -195,7 +197,7 @@ struct DashboardView: View {
             Text("自动识别默认开启：手机接入 USB、恢复已授权无线 ADB 或 Mac 唤醒后，会自动检测并尝试恢复来电状态；有多台设备时不会猜测选择。")
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
-            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.3.0" : "当前构建未包含")")
+            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.3.1" : "当前构建未包含")")
                 .font(.caption)
             Button {
                 confirmAPKInstall = true
@@ -238,7 +240,7 @@ struct DashboardView: View {
             Text(model.adbBridgeHealthDetail).font(.caption).foregroundStyle(.secondary)
             Text("ADB 状态、Shell 响应与 Companion 电话事件服务分别诊断。锁屏时服务受限不等于撤销 ADB 授权；如果无线调试被系统关闭，仍需在手机上重新启用。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("手机 Companion V0.3.0 保留原有电话状态快照，同时新增短信→飞书功能。短信权限、Webhook 和开关请在手机 App 内设置，消息直接由手机网络发送，不依赖 Mac/ADB。")
+            Text("手机 Companion V0.3.1 保留原有来电状态桥接和短信转发；飞书地址现在可以在 Mac 下方统一填写并通过 ADB 同步。短信权限仍需在手机端手动授权。")
                 .font(.caption).foregroundStyle(.secondary)
             Text("实时电话状态：\(model.livePhoneState)")
                 .font(.headline)
@@ -248,6 +250,50 @@ struct DashboardView: View {
             }
             Text("通过已授权的 USB 或无线 ADB 读取匿名来电事件；不使用 HFP。请确保手机 APK 已启动电话监听。")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var feishuPanel: some View {
+        panel("飞书 Webhook · Mac 设置与手机同步", symbol: "message.badge") {
+            Text("在桌面填写并保存后，通过唯一已授权手机的 ADB 桥接下发配置。Mac 保存于系统钥匙串，手机独立接收并发送新短信；即使 Mac 退出，也可继续推送。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                if showFeishuWebhook {
+                    TextField("https://open.feishu.cn/open-apis/bot/v2/hook/…",
+                              text: $model.feishuWebhookDraft)
+                        .textFieldStyle(.roundedBorder)
+                } else {
+                    SecureField("粘贴飞书自定义机器人 Webhook 地址",
+                                text: $model.feishuWebhookDraft)
+                        .textFieldStyle(.roundedBorder)
+                }
+                Button(showFeishuWebhook ? "隐藏地址" : "显示地址") {
+                    showFeishuWebhook.toggle()
+                }
+                .buttonStyle(.bordered)
+            }
+            SecureField("飞书安全设置中的签名密钥（可选，留空会清除原有签名）",
+                        text: $model.feishuSigningSecretDraft)
+                .textFieldStyle(.roundedBorder)
+            Toggle("自动转发手机新短信（默认开启；包括短信全文和验证码）",
+                   isOn: $model.feishuForwardEnabled)
+            HStack {
+                Button("保存到 Mac 并同步手机") { model.saveFeishuSettings() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.feishuSyncBusy)
+                Button("重新同步已保存配置") { model.syncFeishuSettings() }
+                    .disabled(!model.feishuSavedOnMac || model.feishuSyncBusy)
+                    .buttonStyle(.bordered)
+            }
+            if model.feishuSyncBusy {
+                ProgressView("正在通过 ADB 同步飞书设置……").controlSize(.small)
+            }
+            Text(model.feishuSyncStatus)
+                .font(.caption.weight(.medium))
+            Text("重要：保存到 Mac 不等于手机已接收配置；请确认上方显示“已同步手机”。手机端需自行授权 RECEIVE_SMS，且启动 Companion 电话状态监听，首次 ADB 同步才能连接认证端口。")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("完整验证码会进入所选飞书群，请只使用自己管理、成员受限的群。Webhook 与密钥不会写入诊断日志、GitHub 或 ADB 命令参数。")
+                .font(.caption).foregroundStyle(.orange)
         }
     }
 
