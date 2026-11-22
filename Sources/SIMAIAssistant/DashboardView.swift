@@ -10,6 +10,7 @@ struct DashboardView: View {
     @State private var confirmUplink = false
     @State private var confirmLiveVoice = false
     @State private var confirmLiveMic = false
+    @State private var confirmChatGPTInput = false
     @State private var cleanupDays = 7
     @State private var confirmLogCleanup = false
     @State private var confirmAPKInstall = false
@@ -23,6 +24,7 @@ struct DashboardView: View {
                 adbPanel
                 phoneAudioPanel
                 liveVoicePanel
+                chatGPTVoicePanel
                 audioPanel
                 diagnosticPanel
                 footer
@@ -59,6 +61,15 @@ struct DashboardView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("开启后，Mac 当前默认麦克风采集的声音会经 ADB 送入这通运营商电话。请佩戴耳机防止回声。随时可关闭麦克风或停止整条音频通道，不会保存原始语音。")
+        }
+        .confirmationDialog("将真实电话声音送入 ChatGPT Voice？",
+                            isPresented: $confirmChatGPTInput, titleVisibility: .visible) {
+            Button("对方已知情同意，开启单向虚拟麦克风") {
+                model.setChatGPTVoiceRoute(true)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("电话下行将经 BlackHole 2ch 送入你自行开启的 ChatGPT Voice。ChatGPT 会处理收到的语音，请先获得通话另一方明确同意。AI 回复仍只在 Mac 播放，不会自动送回手机；SIM AI Assistant 不存储原始音频。随时可关闭路由或停止电话连接。")
         }
         .confirmationDialog("确认清理本应用日志？", isPresented: $confirmLogCleanup,
                             titleVisibility: .visible) {
@@ -101,7 +112,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("真实双向电话音频预览 · V0.3.4")
+                Text("电话音频 + ChatGPT Voice 单向输入 · V0.4.0")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -267,7 +278,7 @@ struct DashboardView: View {
     }
 
     private var liveVoicePanel: some View {
-        panel("第二阶段 · 双向语音音质优化（V0.3.4 预览）", symbol: "waveform") {
+        panel("第二阶段 · 真实电话双向语音（V0.4.0）", symbol: "waveform") {
             Text("手动启动 · 16 kHz 单声道 PCM · 每帧 20 ms · 单次最多 3 分钟。音频通过独立 ADB 转发通道，不使用电话状态 HTTP 服务。")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
@@ -309,6 +320,47 @@ struct DashboardView: View {
             Text("音频启动握手尝试：\(model.liveVoiceHandshakeAttempts) 次")
                 .font(.caption.monospaced()).foregroundStyle(.secondary)
             Text("音质诊断：麦克风欠载表示采样跟不上发送；上行发送延迟表示 ADB 写入或调度延迟；播放丢帧仅统计 Mac 下行。若仍卡顿，请停止并导出匿名诊断日志。")
+                .font(.caption).foregroundStyle(.orange)
+        }
+    }
+
+    private var chatGPTVoicePanel: some View {
+        panel("第三阶段 · ChatGPT Plus Voice 辅助输入（V0.4.0 实验）",
+              symbol: "waveform.path") {
+            Text("仅将电话下行送至 BlackHole 2ch 虚拟麦克风。ChatGPT Voice 需要你在官方界面手动开启；AI 回复不会自动传入电话，不使用任何付费 API 或第三方 OAuth。")
+                .font(.caption).foregroundStyle(.secondary)
+            let ready = model.audio.devices.contains {
+                $0.displayName.caseInsensitiveCompare("BlackHole 2ch") == .orderedSame
+            }
+            Text(ready ? "虚拟麦克风：已找到 BlackHole 2ch" :
+                         "虚拟麦克风：缺少 BlackHole 2ch，请先安装并点击“重新自检”")
+                .font(.caption)
+                .foregroundStyle(ready ? .green : .orange)
+            HStack {
+                Button("打开 ChatGPT Voice") {
+                    if let url = URL(string: "https://chatgpt.com/") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .buttonStyle(.bordered)
+                Button(model.chatGPTVoiceRouteEnabled ? "断开 ChatGPT 输入" :
+                       "将电话声音送入 ChatGPT") {
+                    if model.chatGPTVoiceRouteEnabled {
+                        model.setChatGPTVoiceRoute(false)
+                    } else {
+                        confirmChatGPTInput = true
+                    }
+                }
+                .disabled(!model.liveVoiceActive || (!ready && !model.chatGPTVoiceRouteEnabled))
+                .buttonStyle(.borderedProminent)
+            }
+            Text(model.chatGPTVoiceRouteStatus)
+                .font(.subheadline.weight(.medium))
+            Text("虚拟麦克风播放丢帧：\(model.chatGPTVoiceRouteDropped) 帧")
+                .font(.caption.monospaced()).foregroundStyle(.secondary)
+            Text("操作：① 安装 BlackHole 2ch；② 保持 Mac 默认输出为耳机；③ 在浏览器打开官方 ChatGPT Voice，选择 BlackHole 2ch 作为输入；④ 在双方同意的通话中建立 PCM，再点击上方路由按钮。")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("注意：此版不发送 AI 语音给电话对方，不进行自动接听，不修改 macOS 默认设备，不抓取 ChatGPT 登录或会话。关闭音频连接将自动停用路由。")
                 .font(.caption).foregroundStyle(.orange)
         }
     }
