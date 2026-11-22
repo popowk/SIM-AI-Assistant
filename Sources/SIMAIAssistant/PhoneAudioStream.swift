@@ -10,7 +10,7 @@ enum LiveAudioEvent {
     case status(String)
     case active
     case handshakeAttempts(Int)
-    case metrics(received: Int, sent: Int, dropped: Int)
+    case metrics(received: Int, sent: Int, dropped: Int, micUnderflows: Int, micOverflows: Int, txLate: Int, micBufferedMs: Int)
     case finished(String)
 }
 
@@ -18,38 +18,10 @@ private enum LiveAudioFailure: Error {
     case reason(String)
 }
 
-private final class MicrophonePCMQueue {
-    private var buffer: [Int16] = []
-    private let lock = NSLock()
-    func append(_ values: [Int16]) {
-        lock.lock()
-        buffer.append(contentsOf: values)
-        if buffer.count > 9600 { buffer.removeFirst(buffer.count - 9600) }
-        lock.unlock()
-    }
-    func nextFrame() -> [UInt8] {
-        lock.lock()
-        var values = [Int16](repeating: 0, count: 320)
-        if buffer.count >= 320 {
-            values = Array(buffer.prefix(320))
-            buffer.removeFirst(320)
-        }
-        lock.unlock()
-        var output = [UInt8](repeating: 0, count: 640)
-        for i in 0..<320 {
-            let bits = UInt16(bitPattern: values[i])
-            output[i * 2] = UInt8(truncatingIfNeeded: bits)
-            output[i * 2 + 1] = UInt8(truncatingIfNeeded: bits >> 8)
-        }
-        return output
-    }
-    func clear() { lock.lock(); buffer.removeAll(keepingCapacity: true); lock.unlock() }
-}
-
 private final class LiveMacMicrophone {
-    private let queue: MicrophonePCMQueue
+    private let queue: RealtimeAudioBuffer
     private var engine: AVAudioEngine?
-    init(queue: MicrophonePCMQueue) { self.queue = queue }
+    init(queue: RealtimeAudioBuffer) { self.queue = queue }
 
     func start() throws {
         guard engine == nil else { return }
@@ -63,16 +35,20 @@ private final class LiveMacMicrophone {
               let converter = AVAudioConverter(from: format, to: target)
         else { throw LiveAudioFailure.reason("MIC_FORMAT_UNSUPPORTED") }
 
+        // Reuse the conversion destination. Per-tap heap allocations and
+        // array removeFirst() were causing unnecessary work in the microphone
+        // callback. The input node invokes this tap serially.
+        guard let converted = AVAudioPCMBuffer(pcmFormat: target,
+                                               frameCapacity: 4096) else {
+            throw LiveAudioFailure.reason("MIC_BUFFER_UNAVAILABLE")
+        }
         input.installTap(onBus: 0, bufferSize: 1024, format: format) {
-            [weak self, converter, target] original, _ in
+            [weak self, converter, converted] original, _ in
             guard let self else { return }
-            let needed = max(512, Int(ceil(Double(original.frameLength) *
-                                          16000.0 / format.sampleRate)) + 128)
-            guard let reduced = AVAudioPCMBuffer(pcmFormat: target,
-                                                 frameCapacity: AVAudioFrameCount(needed)) else { return }
+            converted.frameLength = 0
             var supplied = false
             var convertError: NSError?
-            _ = converter.convert(to: reduced, error: &convertError) { _, status in
+            _ = converter.convert(to: converted, error: &convertError) { _, status in
                 if supplied {
                     status.pointee = .noDataNow
                     return nil
@@ -81,33 +57,31 @@ private final class LiveMacMicrophone {
                 status.pointee = .haveData
                 return original
             }
-            guard convertError == nil, reduced.frameLength > 0,
-                  let samples = reduced.floatChannelData?[0] else { return }
-            var pcm: [Int16] = []
-            pcm.reserveCapacity(Int(reduced.frameLength))
-            for i in 0..<Int(reduced.frameLength) {
-                // Limiter prevents unexpected clipped/loud microphone audio.
-                let value = max(-0.6, min(0.6, samples[i] * 0.55))
-                pcm.append(Int16(value * 32767))
-            }
-            self.queue.append(pcm)
+            guard convertError == nil, converted.frameLength > 0,
+                  let samples = converted.floatChannelData?[0] else { return }
+            // Convert directly into the bounded ring without allocating and
+            // removing arrays on each realtime audio callback.
+            self.queue.appendFloatSamples(samples, count: Int(converted.frameLength))
         }
+        queue.setCaptureEnabled(true)
         do {
             try audio.start()
             engine = audio
         } catch {
+            queue.setCaptureEnabled(false)
             input.removeTap(onBus: 0)
             throw error
         }
     }
 
     func stop() {
+        // Discard buffered microphone speech immediately on mute/stop.
+        queue.setCaptureEnabled(false)
         if let engine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
         }
         engine = nil
-        queue.clear()
     }
 }
 
@@ -137,7 +111,7 @@ private final class LiveMacSpeaker {
               let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 320),
               let output = pcm.floatChannelData?[0] else { return }
         gate.lock()
-        if pending >= 12 {
+        if pending >= 18 {
             dropped += 1
             gate.unlock()
             return
@@ -149,7 +123,10 @@ private final class LiveMacSpeaker {
             let value = UInt16(bytes[i * 2]) | UInt16(bytes[i * 2 + 1]) << 8
             output[i] = Float(Int16(bitPattern: value)) / 32768
         }
-        player.scheduleBuffer(pcm, completionHandler: { [weak self] in
+        // Count completion at actual playback, not merely buffer consumption,
+        // so pending measures the speaker backlog more accurately.
+        player.scheduleBuffer(pcm, completionCallbackType: .dataPlayedBack,
+                              completionHandler: { [weak self] in
             guard let self else { return }
             self.gate.lock()
             self.pending = max(0, self.pending - 1)
@@ -166,7 +143,7 @@ private final class LiveMacSpeaker {
 /// The phone's call-state HTTP endpoint is NOT involved in audio delivery.
 final class PhoneAudioStream {
     private let gate = NSLock()
-    private let microphoneQueue = MicrophonePCMQueue()
+    private let microphoneQueue = RealtimeAudioBuffer()
     private let microphone: LiveMacMicrophone
     private var closed = false
     private var socketFD: Int32 = -1
@@ -371,9 +348,10 @@ final class PhoneAudioStream {
             speaker.feed(frame)
             received += 1
             if received % 50 == 0 {
-                report(.metrics(received: received, sent: sentFrames(), dropped: speaker.droppedFrames()))
+                reportMetrics(received: received, speaker: speaker)
             }
         }
+        reportMetrics(received: received, speaker: speaker)
         if isClosed { reason = "USER_STOPPED" }
         else if Date().timeIntervalSince(started) >= maxDuration { reason = "SESSION_LIMIT_180S" }
         // Signal the writer immediately instead of letting a stalled send linger.
@@ -382,16 +360,41 @@ final class PhoneAudioStream {
     }
 
     private var sent = 0
-    private func sentFrames() -> Int {
-        gate.lock(); defer { gate.unlock() }; return sent
+    private var txLateFrames = 0
+    private func sentStatistics() -> (sent: Int, late: Int) {
+        gate.lock(); defer { gate.unlock() }
+        return (sent, txLateFrames)
+    }
+
+    private func reportMetrics(received: Int, speaker: LiveMacSpeaker) {
+        let mic = microphoneQueue.statistics()
+        let sending = sentStatistics()
+        report(.metrics(received: received, sent: sending.sent,
+                        dropped: speaker.droppedFrames(),
+                        micUnderflows: mic.underflowFrames,
+                        micOverflows: mic.overflowFrames,
+                        txLate: sending.late,
+                        micBufferedMs: mic.bufferedMilliseconds))
     }
 
     private func sendLoop(fd: Int32, since: Date) {
+        var pacing = AudioFramePacer()
         while !isClosed && Date().timeIntervalSince(since) < maxDuration {
+            let waitNs = pacing.waitNanoseconds(now: DispatchTime.now().uptimeNanoseconds)
+            if waitNs > 0 {
+                // The system may wake slightly early or late. Absolute
+                // deadlines prevent slow ADB writes from accumulating drift.
+                usleep(useconds_t(max(100, min(20_000, waitNs / 1_000))))
+                continue
+            }
             let data = microphoneQueue.nextFrame()
             guard Self.sendAll(fd, data) else { break }
-            gate.lock(); sent += 1; gate.unlock()
-            usleep(20_000)
+            gate.lock()
+            sent += 1
+            txLateFrames = pacing.lateFrames
+            gate.unlock()
+            // Do not add a 20ms sleep *after* the blocking socket write.
+            // Next iteration is timed against the monotonic deadline.
         }
         _ = Darwin.shutdown(fd, Int32(SHUT_RDWR))
     }

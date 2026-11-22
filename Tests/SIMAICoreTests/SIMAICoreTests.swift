@@ -4,6 +4,73 @@ import XCTest
 
 final class SIMAICoreTests: XCTestCase {
 
+    func testMicrophoneQueueSilenceUnderflowAndMute() {
+        let queue = RealtimeAudioBuffer()
+        XCTAssertEqual(queue.nextFrame(), [UInt8](repeating: 0, count: 640))
+        XCTAssertEqual(queue.statistics().underflowFrames, 0)
+        queue.setCaptureEnabled(true)
+        queue.appendPCM16([Int16](repeating: 1000, count: 320))
+        XCTAssertEqual(queue.statistics().bufferedMilliseconds, 20)
+        let pcm = queue.nextFrame()
+        XCTAssertEqual(pcm.count, 640)
+        XCTAssertEqual(pcm[0], 232)
+        XCTAssertEqual(pcm[1], 3)
+        XCTAssertEqual(queue.statistics().underflowFrames, 0)
+        XCTAssertEqual(queue.nextFrame(), [UInt8](repeating: 0, count: 640))
+        XCTAssertEqual(queue.statistics().underflowFrames, 1)
+        queue.setCaptureEnabled(false)
+        XCTAssertEqual(queue.nextFrame(), [UInt8](repeating: 0, count: 640))
+        XCTAssertEqual(queue.statistics().underflowFrames, 1)
+        queue.setCaptureEnabled(true)
+        XCTAssertEqual(queue.statistics().underflowFrames, 0)
+        XCTAssertEqual(queue.statistics().bufferedMilliseconds, 0)
+    }
+
+    func testMicrophoneQueueOverflowDropsOldestFrame() {
+        let queue = RealtimeAudioBuffer()
+        queue.setCaptureEnabled(true)
+        queue.appendPCM16((0..<4480).map { Int16($0) })
+        let stats = queue.statistics()
+        XCTAssertEqual(stats.bufferedMilliseconds, 240)
+        XCTAssertEqual(stats.overflowFrames, 2)
+        XCTAssertEqual(stats.peakBufferedMilliseconds, 240)
+        let first = queue.nextFrame()
+        let firstSample = UInt16(first[0]) | (UInt16(first[1]) << 8)
+        XCTAssertEqual(firstSample, 640)
+        XCTAssertEqual(queue.statistics().bufferedMilliseconds, 220)
+    }
+
+    func testMicrophoneQueueConvertsFloatAndRejectsNonfiniteInput() {
+        let queue = RealtimeAudioBuffer()
+        queue.setCaptureEnabled(true)
+        let values: [Float] = [1.0, -1.0, .nan] +
+            [Float](repeating: 0, count: 317)
+        values.withUnsafeBufferPointer { pointer in
+            queue.appendFloatSamples(pointer.baseAddress!, count: pointer.count)
+        }
+        let frame = queue.nextFrame()
+        XCTAssertEqual(frame.count, 640)
+        let positive = Int16(bitPattern: UInt16(frame[0]) | (UInt16(frame[1]) << 8))
+        let negative = Int16(bitPattern: UInt16(frame[2]) | (UInt16(frame[3]) << 8))
+        XCTAssertEqual(positive, 18021) // 1.0 * 0.55 * 32767
+        XCTAssertEqual(negative, -18021)
+        XCTAssertEqual(frame[4], 0)
+        XCTAssertEqual(frame[5], 0)
+    }
+
+    func testMonotonicUplinkPacerSkipsMissedDeadlines() {
+        var pacing = AudioFramePacer()
+        let begin: UInt64 = 1_000_000_000
+        XCTAssertEqual(pacing.waitNanoseconds(now: begin), 0)
+        XCTAssertEqual(pacing.waitNanoseconds(now: begin + 5_000_000), 15_000_000)
+        XCTAssertEqual(pacing.waitNanoseconds(now: begin + 20_000_000), 0)
+        XCTAssertEqual(pacing.waitNanoseconds(now: begin + 40_000_000), 0)
+        XCTAssertEqual(pacing.lateFrames, 0)
+        XCTAssertEqual(pacing.waitNanoseconds(now: begin + 160_000_000), 0)
+        XCTAssertEqual(pacing.lateFrames, 5)
+        XCTAssertEqual(pacing.waitNanoseconds(now: begin + 161_000_000), 19_000_000)
+    }
+
     func testAudioHelperEarlyExitReportsOnlySafeCodes() {
         XCTAssertEqual(
             PhoneAudioProtocol.helperExitStatus("SIMAI status=error\nSIMAI error=ANDROID_IllegalStateException\nSIMAI stage=SERVE\n"),

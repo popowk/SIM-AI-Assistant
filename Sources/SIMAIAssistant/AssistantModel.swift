@@ -41,6 +41,10 @@ final class AssistantModel: ObservableObject {
     @Published var liveVoiceRxFrames = 0
     @Published var liveVoiceTxFrames = 0
     @Published var liveVoiceDropFrames = 0
+    @Published var liveVoiceMicUnderflows = 0
+    @Published var liveVoiceMicOverflows = 0
+    @Published var liveVoiceUplinkLateFrames = 0
+    @Published var liveVoiceMicBufferedMs = 0
     @Published var liveVoiceHandshakeAttempts = 0
     @Published var selectedADBPath = UserDefaults.standard.string(forKey: "SIMAI_ADB_PATH") ?? ""
     @Published var cleanupPreviewText = ""
@@ -49,8 +53,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.3.3"
-    let buildNumber = "15"
+    let version = "0.3.4"
+    let buildNumber = "16"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -366,7 +370,11 @@ final class AssistantModel: ObservableObject {
     }
 
     private func pollLiveBridge() {
-        guard liveSyncEnabled, !adbInstalling, !bridgeBusy,
+        // Realtime PCM has priority over noncritical ADB status polling.
+        // The Android audio helper independently detects call hang-up.
+        // Resume state sync after the explicit audio preview ends.
+        guard !liveVoiceStarting, !liveVoiceActive,
+              liveSyncEnabled, !adbInstalling, !bridgeBusy,
               Date() >= bridgeRetryAfter else { return }
         bridgeBusy = true
         if bridgeUsingFileFallback && Date() < nextHTTPRecoveryAttempt {
@@ -503,6 +511,10 @@ final class AssistantModel: ObservableObject {
         liveVoiceRxFrames = 0
         liveVoiceTxFrames = 0
         liveVoiceDropFrames = 0
+        liveVoiceMicUnderflows = 0
+        liveVoiceMicOverflows = 0
+        liveVoiceUplinkLateFrames = 0
+        liveVoiceMicBufferedMs = 0
         liveVoiceHandshakeAttempts = 0
         log(.info, .audio, "用户确认开始实时电话音频预览",
             details: ["mode": "manual", "mic": "muted", "maxDurationSeconds": "180"])
@@ -520,21 +532,34 @@ final class AssistantModel: ObservableObject {
                     self.liveVoiceStatus = "实时播放电话下行中 · 麦克风默认静音"
                     self.log(.info, .audio, "ADB 双向 PCM 通道已建立",
                         details: ["sampleRate": "16000", "channels": "1", "frameMs": "20"])
-                case .metrics(let received, let sent, let dropped):
+                case .metrics(let received, let sent, let dropped,
+                              let micUnderflows, let micOverflows,
+                              let txLate, let micBufferedMs):
                     self.liveVoiceRxFrames = received
                     self.liveVoiceTxFrames = sent
                     self.liveVoiceDropFrames = dropped
+                    self.liveVoiceMicUnderflows = micUnderflows
+                    self.liveVoiceMicOverflows = micOverflows
+                    self.liveVoiceUplinkLateFrames = txLate
+                    self.liveVoiceMicBufferedMs = micBufferedMs
                 case .finished(let reason):
                     self.liveVoiceStarting = false
                     self.liveVoiceActive = false
                     self.liveVoiceMicrophoneEnabled = false
                     self.liveVoiceStatus = "实时语音已停止（\(reason)）"
                     self.voiceStream = nil
+                    // Resume anonymous call-state synchronization without
+                    // rebuilding the ADB connection unnecessarily.
+                    self.pollLiveBridge()
                     self.log(reason == "USER_STOPPED" ? .info : .warn, .audio,
                         "实时电话音频会话结束", details: [
                             "reason": reason, "rxFrames": "\(self.liveVoiceRxFrames)",
                             "txFrames": "\(self.liveVoiceTxFrames)",
                             "dropped": "\(self.liveVoiceDropFrames)",
+                            "micUnderflows": "\(self.liveVoiceMicUnderflows)",
+                            "micOverflows": "\(self.liveVoiceMicOverflows)",
+                            "uplinkLateFrames": "\(self.liveVoiceUplinkLateFrames)",
+                            "micBufferedMs": "\(self.liveVoiceMicBufferedMs)",
                             "handshakeAttempts": "\(self.liveVoiceHandshakeAttempts)"])
                 }
             }
