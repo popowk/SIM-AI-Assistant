@@ -1,6 +1,8 @@
 #if os(macOS)
 import Foundation
 import AVFoundation
+import CoreAudio
+import AudioToolbox
 import Darwin
 import SIMAICore
 
@@ -10,7 +12,7 @@ enum LiveAudioEvent {
     case status(String)
     case active
     case handshakeAttempts(Int)
-    case metrics(received: Int, sent: Int, dropped: Int, micUnderflows: Int, micOverflows: Int, txLate: Int, micBufferedMs: Int)
+    case metrics(received: Int, sent: Int, dropped: Int, micUnderflows: Int, micOverflows: Int, txLate: Int, micBufferedMs: Int, voiceRouteDropped: Int)
     case finished(String)
 }
 
@@ -92,8 +94,9 @@ private final class LiveMacSpeaker {
     private let gate = NSLock()
     private var pending = 0
     private var dropped = 0
+    private var stopped = false
 
-    init() throws {
+    init(deviceID: AudioDeviceID? = nil) throws {
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                          sampleRate: 16000, channels: 1,
                                          interleaved: false) else {
@@ -102,6 +105,26 @@ private final class LiveMacSpeaker {
         self.format = format
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: format)
+        if var target = deviceID {
+            // Route only the phone's downlink to the selected virtual device.
+            // Never change macOS system output or the user's headphones.
+            guard let unit = engine.outputNode.audioUnit else {
+                throw LiveAudioFailure.reason("VOICE_ROUTE_NO_OUTPUT_UNIT")
+            }
+            let size = UInt32(MemoryLayout<AudioDeviceID>.size)
+            let setStatus = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                kAudioUnitScope_Global, 0, &target, size)
+            guard setStatus == noErr else {
+                throw LiveAudioFailure.reason("VOICE_ROUTE_SELECT_DEVICE_FAILED")
+            }
+            var actual: AudioDeviceID = 0
+            var actualSize = size
+            let getStatus = AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                kAudioUnitScope_Global, 0, &actual, &actualSize)
+            guard getStatus == noErr && actual == target else {
+                throw LiveAudioFailure.reason("VOICE_ROUTE_DEVICE_MISMATCH")
+            }
+        }
         try engine.start()
         player.play()
     }
@@ -111,7 +134,7 @@ private final class LiveMacSpeaker {
               let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 320),
               let output = pcm.floatChannelData?[0] else { return }
         gate.lock()
-        if pending >= 18 {
+        if stopped || pending >= 18 {
             dropped += 1
             gate.unlock()
             return
@@ -136,7 +159,13 @@ private final class LiveMacSpeaker {
     func droppedFrames() -> Int {
         gate.lock(); defer { gate.unlock() }; return dropped
     }
-    func stop() { player.stop(); engine.stop() }
+    func stop() {
+        gate.lock()
+        stopped = true
+        gate.unlock()
+        player.stop()
+        engine.stop()
+    }
 }
 
 /// Transport: ADB TCP forwarding to an Android app_process shell helper.
@@ -148,6 +177,7 @@ final class PhoneAudioStream {
     private var closed = false
     private var socketFD: Int32 = -1
     private var helper: Process?
+    private var chatGPTVirtualMic: LiveMacSpeaker?
     private var setup: ADBAudioStreamSetup?
     private var active = false
     private let onEvent: (LiveAudioEvent) -> Void
@@ -178,6 +208,37 @@ final class PhoneAudioStream {
         }
     }
 
+    /// Opt-in receive-only ChatGPT Voice input; never routes AI audio to caller.
+    func setChatGPTInputRouting(_ enabled: Bool) throws {
+        if !enabled {
+            gate.lock()
+            let old = chatGPTVirtualMic
+            chatGPTVirtualMic = nil
+            gate.unlock()
+            old?.stop()
+            return
+        }
+        guard isActive else { throw LiveAudioFailure.reason("VOICE_ROUTE_CALL_INACTIVE") }
+        // Never fall back to the default output or a real microphone.
+        let matches = AudioInspector().inspect().devices.filter {
+            $0.displayName.caseInsensitiveCompare("BlackHole 2ch") == .orderedSame
+        }
+        guard matches.count == 1, let rawID = UInt32(matches[0].id) else {
+            throw LiveAudioFailure.reason("VOICE_ROUTE_BLACKHOLE_MISSING")
+        }
+        let output = try LiveMacSpeaker(deviceID: AudioDeviceID(rawID))
+        gate.lock()
+        let available = active && !closed
+        let previous = chatGPTVirtualMic
+        if available { chatGPTVirtualMic = output }
+        gate.unlock()
+        guard available else {
+            output.stop()
+            throw LiveAudioFailure.reason("VOICE_ROUTE_CALL_ENDED")
+        }
+        previous?.stop()
+    }
+
     func stop() {
         gate.lock()
         closed = true
@@ -202,6 +263,8 @@ final class PhoneAudioStream {
             socketFD = -1
             let process = helper
             helper = nil
+            let virtualMic = chatGPTVirtualMic
+            chatGPTVirtualMic = nil
             let session = setup
             setup = nil
             gate.unlock()
@@ -209,6 +272,7 @@ final class PhoneAudioStream {
                 _ = Darwin.shutdown(fd, Int32(SHUT_RDWR))
                 _ = Darwin.close(fd)
             }
+            virtualMic?.stop()
             if let process, process.isRunning { process.terminate() }
             if let session { ADBInspector.closeAudioStream(session) }
             DispatchQueue.main.async { [weak self] in self?.microphone.stop() }
@@ -346,6 +410,10 @@ final class PhoneAudioStream {
                 break
             }
             speaker.feed(frame)
+            gate.lock()
+            let virtualMic = chatGPTVirtualMic
+            gate.unlock()
+            virtualMic?.feed(frame)
             received += 1
             if received % 50 == 0 {
                 reportMetrics(received: received, speaker: speaker)
@@ -374,7 +442,15 @@ final class PhoneAudioStream {
                         micUnderflows: mic.underflowFrames,
                         micOverflows: mic.overflowFrames,
                         txLate: sending.late,
-                        micBufferedMs: mic.bufferedMilliseconds))
+                        micBufferedMs: mic.bufferedMilliseconds,
+                        voiceRouteDropped: virtualMicDroppedFrames()))
+    }
+
+    private func virtualMicDroppedFrames() -> Int {
+        gate.lock()
+        let output = chatGPTVirtualMic
+        gate.unlock()
+        return output?.droppedFrames() ?? 0
     }
 
     private func sendLoop(fd: Int32, since: Date) {
