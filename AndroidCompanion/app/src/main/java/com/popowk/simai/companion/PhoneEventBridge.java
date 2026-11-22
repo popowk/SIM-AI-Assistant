@@ -6,6 +6,7 @@ import android.util.AtomicFile;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.BufferedReader;
+import java.io.InputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -37,6 +38,7 @@ final class PhoneEventBridge {
     private static final int MAX_EVENTS = 64;
     private final String session = UUID.randomUUID().toString();
     private final AtomicFile snapshotFile;
+    private final Context context;
     private ScheduledExecutorService heartbeat;
     private final String token;
     private final List<CallEvent> events = new ArrayList<>();
@@ -57,6 +59,7 @@ final class PhoneEventBridge {
     }
 
     PhoneEventBridge(Context context) throws Exception {
+        this.context = context.getApplicationContext();
         token = loadToken(context);
         snapshotFile = new AtomicFile(new File(context.getFilesDir(), "bridge-snapshot.json"));
     }
@@ -157,22 +160,91 @@ final class PhoneEventBridge {
     }
 
     private void handle(Socket client) throws Exception {
-        BufferedReader reader = new BufferedReader(
-                new InputStreamReader(client.getInputStream(), StandardCharsets.US_ASCII));
-        String first = reader.readLine();
-        if (first == null || first.length() > 256) return;
+        // Read HTTP headers byte-by-byte. BufferedReader may read beyond the
+        // blank line and swallow POST body bytes before JSON parsing.
+        InputStream in = client.getInputStream();
+        String first = readHeaderLine(in, 256);
+        if (first == null) return;
         String accessToken = "";
+        int contentLength = -1;
+        String contentType = "";
+        boolean headersEnded = false;
         for (int i = 0; i < 32; i++) {
-            String line = reader.readLine();
-            if (line == null || line.length() == 0) break;
-            if (line.length() > 512) return;
-            if (line.toLowerCase(Locale.US).startsWith("x-simai-token:"))
+            String line = readHeaderLine(in, 512);
+            if (line == null) return;
+            if (line.isEmpty()) {
+                headersEnded = true;
+                break;
+            }
+            String lower = line.toLowerCase(Locale.US);
+            if (lower.startsWith("x-simai-token:"))
                 accessToken = line.substring("x-simai-token:".length()).trim();
+            else if (lower.startsWith("content-length:")) {
+                try { contentLength = Integer.parseInt(line.substring(15).trim()); }
+                catch (NumberFormatException invalid) { return; }
+            } else if (lower.startsWith("content-type:")) {
+                contentType = line.substring(13).trim().toLowerCase(Locale.US);
+            }
         }
+        if (!headersEnded) return;
         if (!accessToken.equals(token)) {
             reply(client, 403, "{\"error\":\"forbidden\"}");
             return;
         }
+
+        if (first.startsWith("POST /sms/config HTTP/1.")) {
+            if (contentLength < 2 || contentLength > 4096 ||
+                    !contentType.startsWith("application/json")) {
+                reply(client, 400, "{\"error\":\"invalid_request\"}");
+                return;
+            }
+            byte[] body = new byte[contentLength];
+            int received = 0;
+            while (received < body.length) {
+                int n = in.read(body, received, body.length - received);
+                if (n <= 0) return;
+                received += n;
+            }
+            try {
+                JSONObject settings = new JSONObject(new String(body, StandardCharsets.UTF_8));
+                String webhook = settings.optString("webhook", "");
+                String signingSecret = settings.optString("secret", "");
+                if (!settings.has("enabled") || !(settings.opt("enabled") instanceof Boolean)
+                        || signingSecret.getBytes(StandardCharsets.UTF_8).length > 256
+                        || !SmsWebhookForwarder.validWebhook(webhook)) {
+                    reply(client, 422, "{\"error\":\"invalid_settings\"}");
+                    return;
+                }
+                // Never echo or log credentials or SMS data. The phone retains
+                // its own private config for independent sending after unplug.
+                if (!SmsWebhookForwarder.configure(context, webhook, signingSecret, true)) {
+                    reply(client, 500, "{\"error\":\"save_failed\"}");
+                    return;
+                }
+                SmsWebhookForwarder.setEnabled(context, settings.getBoolean("enabled"));
+                boolean granted = context.checkSelfPermission(
+                        android.Manifest.permission.RECEIVE_SMS)
+                        == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                reply(client, 200, "{\"ok\":true,\"configured\":true,\"enabled\":" +
+                        SmsWebhookForwarder.isEnabled(context) +
+                        ",\"smsPermissionGranted\":" + granted + "}");
+            } catch (org.json.JSONException invalid) {
+                reply(client, 422, "{\"error\":\"invalid_json\"}");
+            }
+            return;
+        }
+
+        if (first.startsWith("GET /sms/status HTTP/1.")) {
+            boolean granted = context.checkSelfPermission(
+                    android.Manifest.permission.RECEIVE_SMS)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            reply(client, 200, "{\"ok\":true,\"configured\":" +
+                    SmsWebhookForwarder.hasConfiguration(context) +
+                    ",\"enabled\":" + SmsWebhookForwarder.isEnabled(context) +
+                    ",\"smsPermissionGranted\":" + granted + "}");
+            return;
+        }
+
         if (!first.startsWith("GET /events?since=")) {
             reply(client, 404, "{\"error\":\"not_found\"}");
             return;
@@ -187,6 +259,23 @@ final class PhoneEventBridge {
         JSONObject body;
         synchronized (this) { body = snapshot(since); }
         reply(client, 200, body.toString());
+    }
+
+    private static String readHeaderLine(InputStream in, int max) throws Exception {
+        StringBuilder line = new StringBuilder();
+        while (line.length() < max) {
+            int next = in.read();
+            if (next < 0) return null;
+            if (next == '\n') {
+                if (line.length() > 0 && line.charAt(line.length() - 1) == '\r')
+                    line.setLength(line.length() - 1);
+                return line.toString();
+            }
+            if (next < 32 && next != '\r' && next != '\t') return null;
+            if (next > 126) return null;
+            line.append((char) next);
+        }
+        return null;
     }
 
     private synchronized JSONObject snapshot(long since) throws Exception {
