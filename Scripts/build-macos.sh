@@ -38,6 +38,17 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN" "$APP/Contents/MacOS/SIMAIAssistant"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+if [[ -n "${ANDROID_COMPANION_APK_PATH:-}" ]]; then
+  if [[ ! -s "$ANDROID_COMPANION_APK_PATH" ]]; then
+    echo "错误：Android 伴侣 APK 不存在或为空：$ANDROID_COMPANION_APK_PATH" >&2
+    exit 4
+  fi
+  cp "$ANDROID_COMPANION_APK_PATH" "$APP/Contents/Resources/SIMAI-Companion.apk"
+  echo "已内置 Android Companion APK"
+else
+  echo "注意：未设置 ANDROID_COMPANION_APK_PATH，当前本地构建不含 APK。"
+fi
+
 chmod +x "$APP/Contents/MacOS/SIMAIAssistant"
 
 if [[ -n "${TARGET_TRIPLE:-}" ]]; then
@@ -58,7 +69,7 @@ codesign --verify --verbose "$APP"
 echo "[5/5] 生成发行 ZIP..."
 ARCH="${TARGET_TRIPLE%%-*}"
 if [[ -z "${TARGET_TRIPLE:-}" ]]; then ARCH="$(uname -m)"; fi
-ARCHIVE="$DIST/SIM-AI-Assistant-v0.1.2-macos-$ARCH.zip"
+ARCHIVE="$DIST/SIM-AI-Assistant-v0.1.3-macos-$ARCH.zip"
 rm -f "$ARCHIVE"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
 shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"

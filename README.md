@@ -1,4 +1,4 @@
-# SIM AI Assistant — macOS V0.1.2 (测试工程)
+# SIM AI Assistant — macOS V0.1.3 (测试工程)
 
 macOS 菜单栏工具：为 Apple Silicon Mac + vivo S9e + 中国联通 SIM 的后续电话辅助实验提供**可运行的 UI、诊断能力和测试基线**。当前版本**不具备真实运营商电话接听、挂断、监听或 HFP/SCO 双向音频桥接能力**。
 
@@ -6,12 +6,13 @@ macOS 菜单栏工具：为 Apple Silicon Mac + vivo S9e + 中国联通 SIM 的�
 
 | 模块 | V0.1 状态 | 实际行为 |
 |---|---|---|
-| macOS 菜单栏原生 App | 代码已完成，待 Mac 编译实测 | SwiftUI MenuBarExtra 与诊断窗口，LSUIElement 常驻 |
+| macOS 菜单栏原生 App | GitHub 构建过旧版，V0.1.3 待 CI 验证 | SwiftUI MenuBarExtra 与诊断窗口，LSUIElement 常驻 |
 | 蓝牙自检 | 代码已完成，待 vivo 实测 | IOBluetooth 查询已配对经典蓝牙设备和连接状态；**不能判断 HFP 是否可用** |
 | CoreAudio 设备自检 | 代码已完成，待 Mac 实测 | 查询音频设备、默认输入输出、采样率和 BlackHole 是否可见 |
 | 麦克风测试 | 代码已完成，待 Mac 实测 | 用户主动授权后监测约 1.5 秒 RMS 电平，不保存音频 |
 | 本机回环 | 代码已完成，待 Mac 实测 | **用户确认已连接耳机**后运行 2 秒、5% 音量的麦克风→扬声器本地回环；不是电话音频回环 |
 | 扬声器测试 | 代码已完成，待 Mac 实测 | macOS 提示音。并非两端通话回环 |
+| Android APK 一键安装 / 覆盖 | Mac 端代码和测试版 APK 源码已完成，待实机测试 | 用户确认后只向唯一授权设备执行 adb install -r；签名不一致时不卸载 |
 | Android ADB 连接自检 | 代码已完成，待 vivo USB 实测 | 仅统计 adb 已授权/未授权/离线设备，不读取序列号与电话内容 |
 | 旧日志清理 | 已实现、待 Mac 实测 | 手动选择保留 1/7/14 天，预览文件数和大小，确认后仅删除本 App 的历史 JSONL 文件 |
 | 模拟来电 | 已完成，跨平台测试通过 | 来电→模拟接听→模拟挂断；**不访问真实电话** |
@@ -53,6 +54,20 @@ macOS 菜单栏工具：为 Apple Silicon Mac + vivo S9e + 中国联通 SIM 的�
 
 普通第三方 APK **不能直接捕获联通运营商电话双向声音**。Android 的 `VOICE_CALL` 录音源需要系统级 `CAPTURE_AUDIO_OUTPUT` 权限，USB ADB 并不会绕过该限制。若以后需要自动语音通话，必须单独验证可用的音频硬件/系统级通道，不承诺仅凭 APK 与 BlackHole 即可实现。
 
+## V0.1.3 · ADB 手动定位与 APK 一键安装/覆盖
+
+**Mac 端：** 新增「手动选择 adb」，直接选中 `platform-tools/adb` 可执行文件；路径写入本机 UserDefaults，下次启动继续使用。可以随时点击「恢复自动检测」。ADB 检测失败不影响菜单栏、模拟来电和其他诊断功能。
+
+**Android 端：** 新增 `AndroidCompanion/` 伴侣 APK 的完整 Java/Gradle 工程。由 GitHub Actions 在 macOS 构建时同步生成 `SIMAI-Companion-v0.1.0-debug.apk`，内置于 macOS App 的 `Contents/Resources/SIMAI-Companion.apk`，并单独上传到 Releases。
+
+连接仅一部安卓手机，并在手机确认 USB 调试授权，然后在 Mac 端点击「一键安装 / 覆盖 APK」并确认。程序执行 `adb -s <设备序列号> install -r <APK>`；成功后尝试在手机上启动伴侣应用。序列号只在内存中使用，不写入日志。ADB 不会读取联系人、IMEI、手机号或录音，也不会调整 Mac 蓝牙连接。
+
+**重要更新签名限制：** 当前 CI 使用临时 Android debug keystore。一次构建出的**同一 APK** 可以反复 `install -r`，但新 CI 运行很可能生成不同签名，导致 **INSTALL_FAILED_UPDATE_INCOMPATIBLE**；Mac 端只提示错误，不自动卸载旧 App/清除数据。实现跨构建真正无损覆盖，必须配置安全且持久的私有签名密钥（GitHub Secrets 或其他受控 CI 密钥），不可将私钥上传公开 GitHub 仓库。这个限制会在配置持久签名后消除。
+
+手机 APK 用户主动授予 `READ_PHONE_STATE` 并点击「开始监听」后，尝试通过 Android 系统回调观察 `IDLE / RINGING / OFFHOOK`。测试服务使用前台通知，需要 vivo 允许后台运行；不更换默认拨号器，不读取号码、不录音、不自动接听，不采用 HFP；V0.1.3 **暂不把真实状态传到 Mac**，先验证 vivo 系统回调是否稳定。Android 14+ 的前台服务类型要求会依 `targetSdk` 变化，当前测试项目 targetSdk 32 仅供开发验证，后续升级须遵守新版本限制。
+
+若本机编译 Mac App 未设置 `ANDROID_COMPANION_APK_PATH` 环境变量，则 App 不会内置 APK，「安装/覆盖」按钮将禁用；在 GitHub 自动构建版本中则包含 APK。
+
 ## GitHub Actions 自动编译与下载
 
 将本仓库 push 到 `main` 后，`.github/workflows/build-macos.yml` 会用 GitHub 提供的 macOS 机器执行测试、交叉编译 **Apple Silicon arm64**、临时签名并打包。可在 **Actions → macOS Build → 最新成功任务 → Artifacts** 下载，也会在 **Releases → Dev Latest** 更新测试发行包。推送 `v*` tag 可创建该版本的 Release。
@@ -70,7 +85,7 @@ bash Scripts/build-macos.sh
 open "dist/SIM AI Assistant.app"
 ```
 
-脚本将执行 `swift test`、`swift build -c release`，组装 `.app`，做本机临时签名并生成 `dist/SIM-AI-Assistant-v0.1.2-macos-arm64.zip`。**临时签名并不等于 Apple 正式公证；不提供面向公众分发的已签名安装包。**
+脚本将执行 `swift test`、`swift build -c release`，组装 `.app`，做本机临时签名并生成 `dist/SIM-AI-Assistant-v0.1.3-macos-arm64.zip`。**临时签名并不等于 Apple 正式公证；不提供面向公众分发的已签名安装包。**
 
 若只做编译检查：
 

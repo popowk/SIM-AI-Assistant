@@ -20,14 +20,17 @@ final class AssistantModel: ObservableObject {
     @Published var phoneObservationElapsed = 0
     @Published var adbStatus = "未检测 ADB"
     @Published var adbChecking = false
+    @Published var adbInstalling = false
+    @Published var apkInstallStatus = "尚未安装伴侣 APK"
+    @Published var selectedADBPath = UserDefaults.standard.string(forKey: "SIMAI_ADB_PATH") ?? ""
     @Published var cleanupPreviewText = ""
     @Published var isAudioTestRunning = false
     @Published var alertText: String?
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.1.2"
-    let buildNumber = "3"
+    let version = "0.1.3"
+    let buildNumber = "4"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -209,8 +212,9 @@ final class AssistantModel: ObservableObject {
         guard !adbChecking else { return }
         adbChecking = true
         adbStatus = "检测 ADB 中……"
+        let selectedPath = selectedADBPath
         Task.detached(priority: .userInitiated) { [weak self] in
-            let result = ADBInspector.inspect()
+            let result = ADBInspector.inspect(at: selectedPath)
             await MainActor.run {
                 guard let self else { return }
                 self.adbChecking = false
@@ -220,6 +224,69 @@ final class AssistantModel: ObservableObject {
                               "authorizedCount": "\(result.authorized)",
                               "unauthorizedCount": "\(result.unauthorized)",
                               "offlineCount": "\(result.offline)"])
+            }
+        }
+    }
+
+
+    var embeddedAPKAvailable: Bool {
+        guard let bundle = Bundle.main.resourceURL else { return false }
+        return FileManager.default.fileExists(
+            atPath: bundle.appendingPathComponent("SIMAI-Companion.apk").path)
+    }
+
+    func selectADB() {
+        let panel = NSOpenPanel()
+        panel.title = "选择 Android SDK platform-tools 文件夹中的 adb"
+        panel.message = "请选中 adb 可执行文件，而不是文件夹。路径只保存在本机偏好设置中。"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = true
+        panel.prompt = "使用此 adb"
+        if panel.runModal() == .OK, let url = panel.url {
+            guard url.lastPathComponent == "adb",
+                  FileManager.default.isExecutableFile(atPath: url.path) else {
+                alertText = "所选文件必须是可执行的 adb，请选择 platform-tools/adb。"
+                return
+            }
+            selectedADBPath = url.path
+            UserDefaults.standard.set(url.path, forKey: "SIMAI_ADB_PATH")
+            log(.info, .system, "用户手动设置 ADB 路径（路径不写入诊断日志）")
+            inspectADB()
+        }
+    }
+
+    func resetADBSelection() {
+        selectedADBPath = ""
+        UserDefaults.standard.removeObject(forKey: "SIMAI_ADB_PATH")
+        log(.info, .system, "ADB 切换为自动路径检测")
+        inspectADB()
+    }
+
+    func installAndroidCompanion() {
+        guard !adbInstalling else { return }
+        guard let resource = Bundle.main.resourceURL?.appendingPathComponent("SIMAI-Companion.apk"),
+              FileManager.default.fileExists(atPath: resource.path) else {
+            alertText = "当前 App 未包含 Android 伴侣 APK；请下载 GitHub 最新完整测试包。"
+            return
+        }
+        adbInstalling = true
+        apkInstallStatus = "正在通过 ADB 安装/覆盖手机应用……"
+        let adb = selectedADBPath
+        log(.info, .system, "用户确认开始安装或覆盖 Android 伴侣 APK",
+            details: ["version": "0.1.0"])
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let outcome = ADBInspector.install(at: adb, apk: resource)
+            await MainActor.run {
+                guard let self else { return }
+                self.adbInstalling = false
+                self.apkInstallStatus = outcome.status
+                self.log(outcome.succeeded ? .info : .warn, .system,
+                    outcome.succeeded ? "Android APK 安装成功" : "Android APK 安装失败",
+                    details: ["success": "\(outcome.succeeded)"])
+                self.alertText = outcome.status
+                self.inspectADB()
             }
         }
     }

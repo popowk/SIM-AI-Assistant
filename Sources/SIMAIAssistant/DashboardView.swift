@@ -9,6 +9,7 @@ struct DashboardView: View {
     @State private var confirmLoopback = false
     @State private var cleanupDays = 7
     @State private var confirmLogCleanup = false
+    @State private var confirmAPKInstall = false
 
     var body: some View {
         ScrollView {
@@ -44,6 +45,13 @@ struct DashboardView: View {
             Button("取消", role: .cancel) { }
         } message: {
             Text(model.cleanupPreviewText + "\n操作不可撤销，仅影响 SIM AI Assistant 的历史 JSONL 日志，不清除系统 OSLog。")
+        }
+        .confirmationDialog("安装或覆盖 Android 伴侣 APK？",
+                            isPresented: $confirmAPKInstall, titleVisibility: .visible) {
+            Button("确认安装 / 覆盖") { model.installAndroidCompanion() }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("使用所选 ADB，通过 USB 安装内置的测试 APK（adb install -r），仅作用于唯一已授权的 Android 设备。不会卸载旧应用；签名不一致时会失败并保留旧数据。")
         }
         .sheet(isPresented: $previewExport) {
             ExportPreviewView()
@@ -135,20 +143,41 @@ struct DashboardView: View {
 
 
     private var adbPanel: some View {
-        panel("Android · ADB 连接自检", symbol: "cable.connector") {
-            Text(model.adbStatus)
-                .font(.subheadline).foregroundStyle(.secondary)
+        panel("Android · ADB / APK 管理", symbol: "cable.connector") {
+            Text(model.selectedADBPath.isEmpty ? "ADB 路径：自动搜索" : "ADB 路径：\(model.selectedADBPath)")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+                .textSelection(.enabled)
+            HStack {
+                Button("手动选择 adb") { model.selectADB() }
+                Button("恢复自动检测") { model.resetADBSelection() }
+                    .disabled(model.selectedADBPath.isEmpty)
+            }
+            .buttonStyle(.bordered)
             HStack {
                 Button("检测 USB / ADB") { model.inspectADB() }
-                    .disabled(model.adbChecking)
-                Button("下载官方 Platform-Tools") {
+                    .disabled(model.adbChecking || model.adbInstalling)
+                Button("官方 Platform-Tools") {
                     if let url = URL(string: "https://developer.android.com/tools/releases/platform-tools") {
                         NSWorkspace.shared.open(url)
                     }
                 }
             }
-            .buttonStyle(.bordered)
-            Text("仅统计已授权/未授权/离线设备数量，不读取序列号、号码或音频。ADB 连接不改变 Mac 蓝牙设置。来电事件需后续 Android 伴侣 APK。")
+            Text(model.adbStatus).font(.caption).foregroundStyle(.secondary)
+            Divider()
+            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.1.0" : "当前构建未包含")")
+                .font(.caption)
+            Button {
+                confirmAPKInstall = true
+            } label: {
+                Label(model.adbInstalling ? "正在安装 APK…" : "一键安装 / 覆盖 APK",
+                      systemImage: "square.and.arrow.down")
+            }
+            .disabled(model.adbInstalling || !model.embeddedAPKAvailable)
+            .buttonStyle(.borderedProminent)
+            Text(model.apkInstallStatus).font(.caption).foregroundStyle(.secondary)
+            Text("安装仅在你确认后执行；会要求手机已经授权 USB 调试。签名不匹配时不会卸载旧 App。电话状态由手机上的伴侣 App 授权与监听，Mac 目前尚未读取实时来电。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -283,7 +312,7 @@ struct DashboardView: View {
             Text("V0.1 仅提供诊断、模拟测试与人工 Voice 启动；真实 HFP/电话控制待设备验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.1.2 (3)").font(.caption.monospaced()).foregroundStyle(.secondary)
+            Text("0.1.3 (4)").font(.caption.monospaced()).foregroundStyle(.secondary)
         }
     }
 
