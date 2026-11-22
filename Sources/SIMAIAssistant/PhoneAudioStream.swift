@@ -13,6 +13,7 @@ enum LiveAudioEvent {
     case active
     case handshakeAttempts(Int)
     case metrics(received: Int, sent: Int, dropped: Int, micUnderflows: Int, micOverflows: Int, txLate: Int, micBufferedMs: Int, voiceRouteDropped: Int)
+    case aiReturnMetrics(captured: Int, monitorDropped: Int, uplinkUnderflow: Int)
     case finished(String)
 }
 
@@ -168,6 +169,134 @@ private final class LiveMacSpeaker {
     }
 }
 
+
+/// Separate, opt-in return path for ChatGPT output. BlackHole 16ch must be
+/// selected as the ChatGPT playback device. The monitor goes only to an
+/// explicitly chosen physical output; the phone uplink is off by default.
+/// Samples live in fixed in-memory rings and are not written to logs/disk.
+private final class LiveAIReplyCapture {
+    let phoneQueue = RealtimeAudioBuffer()
+    private let monitorQueue = RealtimeAudioBuffer()
+    private let engine = AVAudioEngine()
+    private let monitor: LiveMacSpeaker
+    private let lock = NSLock()
+    private var stopped = false
+    private var capturedSamples = 0
+
+    init(virtualInput: AudioDeviceID, physicalOutput: AudioDeviceID) throws {
+        self.monitor = try LiveMacSpeaker(deviceID: physicalOutput)
+        let input = engine.inputNode
+        guard let unit = input.audioUnit else {
+            monitor.stop()
+            throw LiveAudioFailure.reason("AI_RETURN_NO_INPUT_UNIT")
+        }
+        var selected = virtualInput
+        let size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                                    kAudioUnitScope_Global, 0, &selected, size) == noErr else {
+            monitor.stop()
+            throw LiveAudioFailure.reason("AI_RETURN_INPUT_SELECT_FAILED")
+        }
+        var actual: AudioDeviceID = 0
+        var actualSize = size
+        guard AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
+                                    kAudioUnitScope_Global, 0, &actual, &actualSize) == noErr,
+              actual == selected else {
+            monitor.stop()
+            throw LiveAudioFailure.reason("AI_RETURN_INPUT_MISMATCH")
+        }
+
+        let source = input.inputFormat(forBus: 0)
+        guard source.sampleRate > 0, source.channelCount > 0,
+              let target = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                         sampleRate: 16000, channels: 1,
+                                         interleaved: false),
+              let converter = AVAudioConverter(from: source, to: target),
+              let converted = AVAudioPCMBuffer(pcmFormat: target,
+                                               frameCapacity: 4096) else {
+            monitor.stop()
+            throw LiveAudioFailure.reason("AI_RETURN_FORMAT_UNSUPPORTED")
+        }
+        phoneQueue.setCaptureEnabled(true)
+        monitorQueue.setCaptureEnabled(true)
+        // Do not capture the default mic or any other application. Input
+        // device identity was explicitly set and read back above.
+        input.installTap(onBus: 0, bufferSize: 1024, format: source) {
+            [weak self, converter, converted] buffer, _ in
+            guard let self else { return }
+            converted.frameLength = 0
+            var supplied = false
+            var err: NSError?
+            _ = converter.convert(to: converted, error: &err) { _, status in
+                if supplied {
+                    status.pointee = .noDataNow
+                    return nil
+                }
+                supplied = true
+                status.pointee = .haveData
+                return buffer
+            }
+            guard err == nil, converted.frameLength > 0,
+                  let data = converted.floatChannelData?[0] else { return }
+            let count = Int(converted.frameLength)
+            self.phoneQueue.appendFloatSamples(data, count: count)
+            self.monitorQueue.appendFloatSamples(data, count: count)
+            self.lock.lock()
+            self.capturedSamples += count
+            self.lock.unlock()
+        }
+        do {
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            phoneQueue.setCaptureEnabled(false)
+            monitorQueue.setCaptureEnabled(false)
+            monitor.stop()
+            throw LiveAudioFailure.reason("AI_RETURN_CAPTURE_START")
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.monitorLoop()
+        }
+    }
+
+    private func monitorLoop() {
+        var pacer = AudioFramePacer()
+        while true {
+            lock.lock()
+            let isStopped = stopped
+            lock.unlock()
+            if isStopped { break }
+            let wait = pacer.waitNanoseconds(now: DispatchTime.now().uptimeNanoseconds)
+            if wait > 0 {
+                usleep(useconds_t(max(100, min(20_000, wait / 1_000))))
+                continue
+            }
+            monitor.feed(monitorQueue.nextFrame())
+        }
+    }
+
+    func nextPhoneFrame() -> [UInt8] { phoneQueue.nextFrame() }
+
+    func statistics() -> (captured: Int, monitorDropped: Int, uplinkUnderflow: Int) {
+        lock.lock()
+        let samples = capturedSamples
+        lock.unlock()
+        return (samples / 320, monitor.droppedFrames(), phoneQueue.statistics().underflowFrames)
+    }
+
+    func stop() {
+        lock.lock()
+        if stopped { lock.unlock(); return }
+        stopped = true
+        lock.unlock()
+        phoneQueue.setCaptureEnabled(false)
+        monitorQueue.setCaptureEnabled(false)
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        monitor.stop()
+    }
+}
+
 /// Transport: ADB TCP forwarding to an Android app_process shell helper.
 /// The phone's call-state HTTP endpoint is NOT involved in audio delivery.
 final class PhoneAudioStream {
@@ -178,12 +307,17 @@ final class PhoneAudioStream {
     private var socketFD: Int32 = -1
     private var helper: Process?
     private var chatGPTVirtualMic: LiveMacSpeaker?
+    private var aiReplyCapture: LiveAIReplyCapture?
+    private var aiReplyToPhone = false
+    private let physicalMonitorOutput: AudioDeviceID?
     private var setup: ADBAudioStreamSetup?
     private var active = false
     private let onEvent: (LiveAudioEvent) -> Void
     private let maxDuration: TimeInterval = 180
 
-    init(onEvent: @escaping (LiveAudioEvent) -> Void) {
+    init(physicalMonitorOutput: AudioDeviceID? = nil,
+         onEvent: @escaping (LiveAudioEvent) -> Void) {
+        self.physicalMonitorOutput = physicalMonitorOutput
         self.onEvent = onEvent
         self.microphone = LiveMacMicrophone(queue: microphoneQueue)
     }
@@ -202,6 +336,10 @@ final class PhoneAudioStream {
     func setMicrophone(_ enabled: Bool) throws {
         if enabled {
             guard isActive else { throw LiveAudioFailure.reason("AUDIO_NOT_ACTIVE") }
+            gate.lock()
+            let aiForwarding = aiReplyToPhone
+            gate.unlock()
+            guard !aiForwarding else { throw LiveAudioFailure.reason("AI_RETURN_ALREADY_FORWARDING") }
             try microphone.start()
         } else {
             microphone.stop()
@@ -239,6 +377,67 @@ final class PhoneAudioStream {
         previous?.stop()
     }
 
+    /// The monitor is safe by default: AI audio can be heard locally but
+    /// cannot reach the phone unless a second distinct consent action occurs.
+    func setAIReplyMonitoring(_ enabled: Bool, physicalOutputID: AudioDeviceID? = nil) throws {
+        if !enabled {
+            gate.lock()
+            aiReplyToPhone = false
+            let previous = aiReplyCapture
+            aiReplyCapture = nil
+            gate.unlock()
+            previous?.stop()
+            return
+        }
+        guard isActive else { throw LiveAudioFailure.reason("AI_RETURN_CALL_INACTIVE") }
+        let devices = AudioInspector().inspect().devices
+        let virtual = devices.filter {
+            $0.displayName.caseInsensitiveCompare("BlackHole 16ch") == .orderedSame
+        }
+        guard virtual.count == 1, let virtualID = UInt32(virtual[0].id) else {
+            throw LiveAudioFailure.reason("AI_RETURN_BLACKHOLE_16CH_MISSING")
+        }
+        guard let outputID = physicalOutputID ?? physicalMonitorOutput,
+              let outputDevice = devices.first(where: { UInt32($0.id) == outputID }),
+              !outputDevice.displayName.localizedCaseInsensitiveContains("BlackHole"),
+              !outputDevice.displayName.localizedCaseInsensitiveContains("aggregate"),
+              !outputDevice.displayName.localizedCaseInsensitiveContains("multi-output"),
+              outputID != virtualID else {
+            throw LiveAudioFailure.reason("AI_RETURN_PHYSICAL_OUTPUT_REQUIRED")
+        }
+        let capture = try LiveAIReplyCapture(virtualInput: AudioDeviceID(virtualID),
+                                             physicalOutput: AudioDeviceID(outputID))
+        gate.lock()
+        let available = active && !closed
+        let previous = aiReplyCapture
+        if available {
+            aiReplyToPhone = false
+            aiReplyCapture = capture
+        }
+        gate.unlock()
+        guard available else {
+            capture.stop()
+            throw LiveAudioFailure.reason("AI_RETURN_CALL_ENDED")
+        }
+        previous?.stop()
+    }
+
+    func setAIReplyToPhone(_ enabled: Bool) throws {
+        guard isActive else { throw LiveAudioFailure.reason("AI_RETURN_CALL_INACTIVE") }
+        if enabled {
+            gate.lock()
+            let ready = aiReplyCapture != nil
+            gate.unlock()
+            guard ready else { throw LiveAudioFailure.reason("AI_RETURN_MONITOR_REQUIRED") }
+            // Mutually exclusive with the user's Mac microphone. Do not mix
+            // desktop output, microphone and AI speech into one PSTN uplink.
+            microphone.stop()
+        }
+        gate.lock()
+        aiReplyToPhone = enabled
+        gate.unlock()
+    }
+
     func stop() {
         gate.lock()
         closed = true
@@ -265,6 +464,9 @@ final class PhoneAudioStream {
             helper = nil
             let virtualMic = chatGPTVirtualMic
             chatGPTVirtualMic = nil
+            let aiCapture = aiReplyCapture
+            aiReplyCapture = nil
+            aiReplyToPhone = false
             let session = setup
             setup = nil
             gate.unlock()
@@ -273,6 +475,7 @@ final class PhoneAudioStream {
                 _ = Darwin.close(fd)
             }
             virtualMic?.stop()
+            aiCapture?.stop()
             if let process, process.isRunning { process.terminate() }
             if let session { ADBInspector.closeAudioStream(session) }
             DispatchQueue.main.async { [weak self] in self?.microphone.stop() }
@@ -390,7 +593,17 @@ final class PhoneAudioStream {
         report(.status("实时音频服务握手完成（\(attempts) 次连接尝试）"))
 
         let speaker: LiveMacSpeaker
-        do { speaker = try LiveMacSpeaker() }
+        do {
+            // If the system output is virtual, a physical monitor must be
+            // selected explicitly; never play the carrier downlink to the
+            // GPT return channel or create a feedback loop.
+            if physicalMonitorOutput == nil && AudioInspector().inspect().devices.contains(where: {
+                $0.isDefaultOutput && $0.displayName.localizedCaseInsensitiveContains("BlackHole")
+            }) {
+                throw LiveAudioFailure.reason("PHONE_PHYSICAL_OUTPUT_REQUIRED")
+            }
+            speaker = try LiveMacSpeaker(deviceID: physicalMonitorOutput)
+        }
         catch { reason = "MAC_SPEAKER_START"; return }
         defer { speaker.stop() }
 
@@ -437,6 +650,15 @@ final class PhoneAudioStream {
     private func reportMetrics(received: Int, speaker: LiveMacSpeaker) {
         let mic = microphoneQueue.statistics()
         let sending = sentStatistics()
+        gate.lock()
+        let capture = aiReplyCapture
+        gate.unlock()
+        if let capture {
+            let stats = capture.statistics()
+            report(.aiReturnMetrics(captured: stats.captured,
+                                    monitorDropped: stats.monitorDropped,
+                                    uplinkUnderflow: stats.uplinkUnderflow))
+        }
         report(.metrics(received: received, sent: sending.sent,
                         dropped: speaker.droppedFrames(),
                         micUnderflows: mic.underflowFrames,
@@ -463,7 +685,16 @@ final class PhoneAudioStream {
                 usleep(useconds_t(max(100, min(20_000, waitNs / 1_000))))
                 continue
             }
-            let data = microphoneQueue.nextFrame()
+            gate.lock()
+            let forwardAI = aiReplyToPhone
+            let capture = aiReplyCapture
+            gate.unlock()
+            let data: [UInt8]
+            if forwardAI, let capture {
+                data = capture.nextPhoneFrame()
+            } else {
+                data = microphoneQueue.nextFrame()
+            }
             guard Self.sendAll(fd, data) else { break }
             gate.lock()
             sent += 1
