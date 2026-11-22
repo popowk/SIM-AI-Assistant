@@ -74,8 +74,8 @@ jobs:
         with:
           name: SIM-AI-Assistant-macOS-arm64
           path: |
-            dist/SIM-AI-Assistant-v0.3.4-macos-arm64.zip
-            dist/SIM-AI-Assistant-v0.3.4-macos-arm64.zip.sha256
+            dist/SIM-AI-Assistant-v0.4.0-macos-arm64.zip
+            dist/SIM-AI-Assistant-v0.4.0-macos-arm64.zip.sha256
             dist/SIMAI-Audio-Probe.jar
             dist/SIMAI-Companion-v0.2.2-debug.apk
             dist/SIMAI-Companion-v0.2.2-debug.apk.sha256
@@ -91,11 +91,11 @@ jobs:
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest --target "$(git rev-parse HEAD)" \
               --title "SIM AI Assistant · 最新测试版" --prerelease \
-              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.3.4 音质优化：固定容量麦克风环形队列、单调时钟发送、上行欠载与发送延迟诊断；实时音频期间暂停状态轮询。"
+              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.0 ChatGPT Voice 单向输入：电话下行经独立 BlackHole 2ch 虚拟麦克风转发；双重知情同意，不修改系统默认音频设备，不发送 AI 回复到电话。"
           fi
           gh release upload dev-latest \
-            dist/SIM-AI-Assistant-v0.3.4-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.3.4-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.0-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.0-macos-arm64.zip.sha256 \
             dist/SIMAI-Audio-Probe.jar \
             dist/SIMAI-Companion-v0.2.2-debug.apk \
             dist/SIMAI-Companion-v0.2.2-debug.apk.sha256 --clobber
@@ -107,8 +107,8 @@ jobs:
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/SIM-AI-Assistant-v0.3.4-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.3.4-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.0-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.0-macos-arm64.zip.sha256 \
             dist/SIMAI-Companion-v0.2.2-debug.apk \
             dist/SIMAI-Companion-v0.2.2-debug.apk.sha256 \
             dist/SIMAI-Audio-Probe.jar \
