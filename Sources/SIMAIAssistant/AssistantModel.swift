@@ -61,6 +61,8 @@ final class AssistantModel: ObservableObject {
     @Published var blackHoleInstallerBusy = false
     @Published var blackHoleInstallerStatus = "检测 BlackHole 2ch / 16ch 状态后可直接获取官方安装程序，无需 Homebrew"
     @Published var aiReplyMonitorEnabled = false
+    @Published var allowCallerMonitorDuringAI =
+        UserDefaults.standard.bool(forKey: "SIMAI_MIX_CALLER_AND_GPT_LOCAL")
     @Published var aiReplyToPhoneEnabled = false
     @Published var aiReplyReturnStatus = "尚未启动 GPT 回复监听"
     @Published var aiReplyReceivedFrames = 0
@@ -1331,6 +1333,17 @@ final class AssistantModel: ObservableObject {
         }
     }
 
+    /// The caller-to-GPT signal is never muted by this setting. It controls
+    /// only whether the Mac's physical speaker plays the caller in parallel
+    /// with ChatGPT's reply, which could sound like delayed echo.
+    func setAllowCallerMonitorDuringAI(_ enabled: Bool) {
+        allowCallerMonitorDuringAI = enabled
+        UserDefaults.standard.set(enabled, forKey: "SIMAI_MIX_CALLER_AND_GPT_LOCAL")
+        voiceStream?.setCallerMonitorEnabled(enabled || !aiReplyMonitorEnabled)
+        log(.info, .audio, "已调整 Mac 本地双路监听",
+            details: ["localCallerMonitor": enabled ? "ON" : "OFF_WHILE_AI"])
+    }
+
     /// ChatGPT must output to BlackHole 16ch. Mac speakers/headphones are
     /// chosen separately and never replaced by a virtual device.
     func setAIReplyMonitor(_ enabled: Bool) {
@@ -1349,12 +1362,17 @@ final class AssistantModel: ObservableObject {
                 try voiceStream.setAIReplyMonitoring(true, physicalOutputID: physicalID)
                 aiReplyMonitorEnabled = true
                 aiReplyToPhoneEnabled = false
-                aiReplyReturnStatus = "监听已开启：GPT 输出 BlackHole 16ch → Mac 选定耳机，电话回传仍关闭"
+                voiceStream.setCallerMonitorEnabled(allowCallerMonitorDuringAI)
+                aiReplyReturnStatus = allowCallerMonitorDuringAI
+                    ? "正在同时监听电话与 GPT，若听到回音可关闭双路监听"
+                    : "本地防回音：只监听 GPT 回复；电话对方仍正常送入 GPT"
                 log(.info, .audio, "用户主动开启独立 GPT 回复监听",
-                    details: ["route": "BLACKHOLE16_TO_PHYSICAL", "phoneForward": "off"])
+                    details: ["route": "BLACKHOLE16_TO_PHYSICAL", "phoneForward": "off",
+                              "callerMonitor": allowCallerMonitorDuringAI ? "ON" : "OFF"])
             } catch {
                 aiReplyMonitorEnabled = false
                 aiReplyToPhoneEnabled = false
+                voiceStream.setCallerMonitorEnabled(true)
                 restoreAutomaticGPTOutput()
                 aiReplyReturnStatus = "监听启动失败，请核对 BlackHole 16ch 和输出设备；失败细节请导出诊断"
                 let ns = error as NSError
@@ -1370,6 +1388,7 @@ final class AssistantModel: ObservableObject {
             do { try voiceStream.setAIReplyMonitoring(false) } catch {}
             aiReplyMonitorEnabled = false
             aiReplyToPhoneEnabled = false
+            voiceStream.setCallerMonitorEnabled(true)
             restoreAutomaticGPTOutput()
             aiReplyReturnStatus = "已关闭 GPT 回复监听及电话回传"
             log(.info, .audio, "用户关闭 GPT 回复监听与电话回传",
