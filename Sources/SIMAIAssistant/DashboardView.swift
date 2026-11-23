@@ -152,7 +152,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("电话音频 + GPT Voice + 人工接听 · V0.4.8")
+                Text("电话音频 + GPT Voice + 自动值守路由 · V0.4.9")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -312,8 +312,29 @@ struct DashboardView: View {
     }
 
     private var phoneAnswerPanel: some View {
-        panel("AI 接电话 · 当前阶段的人工接听与双向语音", symbol: "phone.arrow.up.right") {
-            Text("现阶段保留 vivo 原有拨号 App。点击下方按钮可通过已授权 ADB 请求 Android 接听正在响铃的来电；不会改变默认拨号应用，也不自动启动 ChatGPT Plus Voice。")
+        panel("电话 AI 自动值守 · 接听与音频状态机", symbol: "phone.arrow.up.right") {
+            Toggle("自动接听与连接电话音频（默认开启）", isOn: Binding(
+                get: { model.autoCallEnabled },
+                set: { model.setAutoCallEnabled($0) }
+            ))
+            Text("安装并首次授权后，无需每次来电手动点击：监听到 RINGING 就自动请求接听，确认 OFFHOOK 才启动 PCM，结束后自动释放。为避免接起后无人回答，必须先准备好语音助手会话；仅有 BlackHole 不等于 GPT 已在线。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button(model.voiceSessionPrepared ? "已预备自动值守" : "确认官方 Voice 已启动，预备自动值守") {
+                    model.setVoiceSessionPrepared(true)
+                }
+                .disabled(!model.autoCallEnabled || model.voiceSessionPrepared)
+                .buttonStyle(.borderedProminent)
+                Button("退出自动值守") { model.setVoiceSessionPrepared(false) }
+                    .disabled(!model.voiceSessionPrepared)
+                    .buttonStyle(.bordered)
+            }
+            Text(model.autoCallStatus).font(.caption.weight(.medium))
+            Text("ChatGPT Plus 官方 Voice 无法由第三方程序自动启动或验证会话；当前自动模式只能复用已启动的 Voice。若要求开机后完全无人干预，还需要另接可编程的语音模型服务或本地模型，不能以 Plus 订阅实现。")
+                .font(.caption).foregroundStyle(.orange)
+            Divider()
+            Text("人工控制与备用接听").font(.headline)
+            Text("仍保留原生 vivo 拨号和人工点击路径，供异常时使用。")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Text("手机状态：\(model.livePhoneState)")
@@ -667,7 +688,7 @@ struct DashboardView: View {
             Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.4.8 (25)").font(.caption.monospaced())
+            Text("0.4.9 (26)").font(.caption.monospaced())
         }
     }
 
