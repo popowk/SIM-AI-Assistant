@@ -47,7 +47,7 @@ private struct MenuBarCommands: View {
             model.restoreAutomaticGPTOutput()
         }
         Divider()
-        Text("v0.4.12 · 自动虚拟麦克风与精简界面")
+        Text("v0.4.13 · 持续音频播放缓冲")
         Button("退出 SIM AI Assistant") {
             model.shutdownForAppExit()
             NSApp.terminate(nil)
