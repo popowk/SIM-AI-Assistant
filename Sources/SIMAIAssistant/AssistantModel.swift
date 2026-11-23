@@ -197,7 +197,8 @@ final class AssistantModel: ObservableObject {
                 }
                 if self.resumeAIForwardAfterIsolationRestored &&
                    self.liveVoiceActive && self.livePhoneState == "OFFHOOK" &&
-                   self.aiReplyMonitorEnabled && self.embeddedVoiceBrowser.microphoneActive {
+                   self.aiReplyMonitorEnabled && self.embeddedVoiceBrowser.microphoneActive &&
+                   self.isSystemOutputSafeForIsolatedReturn() {
                     self.resumeAIForwardAfterIsolationRestored = false
                     self.setAIReplyToPhone(true)
                 }
@@ -440,6 +441,17 @@ final class AssistantModel: ObservableObject {
         }
     }
 
+    private func checkIsolatedReturnSafety() {
+        guard useEmbeddedVoiceBrowser && isolatedChatGPTOutputEnabled &&
+              (liveVoiceActive || liveVoiceStarting) else { return }
+        if !isSystemOutputSafeForIsolatedReturn() && aiReplyToPhoneEnabled {
+            resumeAIForwardAfterIsolationRestored = false
+            setAIReplyToPhone(false)
+            log(.warn, .audio, "系统默认输出变为虚拟/聚合设备，已暂停电话 GPT 回传",
+                details: ["reason": "VIDEO_AUDIO_LEAK_GUARD"])
+        }
+    }
+
     private func checkEmbeddedVoiceHealth() {
         guard useEmbeddedVoiceBrowser else { return }
         // Never auto-start Voice merely because a WebKit page is loaded at idle.
@@ -603,6 +615,21 @@ final class AssistantModel: ObservableObject {
         }
     }
 
+    /// Safety: while we are capturing BlackHole 16ch for the caller,
+    /// the system default output must NOT be BlackHole or a multi-output
+    /// aggregate containing it. Otherwise a playing video could leak into
+    /// the PSTN even if the ChatGPT webpage also has a per-page sink.
+    private func isSystemOutputSafeForIsolatedReturn() -> Bool {
+        let current = AudioInspector().inspect().devices.first(where: {
+            $0.isDefaultOutput
+        })
+        guard let current else { return false }
+        let name = current.displayName
+        return !name.localizedCaseInsensitiveContains("BlackHole") &&
+               !name.localizedCaseInsensitiveContains("aggregate") &&
+               !name.localizedCaseInsensitiveContains("multi-output")
+    }
+
     /// Configure both the OS microphone and output, fail closed when either
     /// side cannot be changed. No UI automation of official ChatGPT Voice.
     @discardableResult
@@ -614,6 +641,13 @@ final class AssistantModel: ObservableObject {
         guard prepareAutomaticGPTInput() else { return false }
         if useEmbeddedVoiceBrowser && isolatedChatGPTOutputEnabled {
             refresh()
+            guard isSystemOutputSafeForIsolatedReturn() else {
+                automaticGPTOutputStatus =
+                    "为防视频声音进入电话：系统默认输出必须是实际耳机／扬声器，不能是 BlackHole／聚合设备"
+                log(.warn, .audio, "网页隔离模式拒绝不安全的系统默认声音输出",
+                    details: ["reason": "ISOLATED_SYSTEM_OUTPUT_UNSAFE"])
+                return false
+            }
             guard AudioInspector.isUsableMonitorOutput(selectedVoiceMonitorOutputID) else {
                 automaticGPTOutputStatus = "找不到有效耳机／扬声器；无法安全监听隔离的 GPT 声音"
                 log(.warn, .audio, "独立 GPT 音频路由缺少有效监听设备",
@@ -998,6 +1032,7 @@ final class AssistantModel: ObservableObject {
                 self?.pollLiveBridge()
                 self?.refreshPendingBlackHoleInstall()
                 self?.checkEmbeddedVoiceHealth()
+                self?.checkIsolatedReturnSafety()
             }
         }
         // Never race two independent "adb devices" launches on startup.
