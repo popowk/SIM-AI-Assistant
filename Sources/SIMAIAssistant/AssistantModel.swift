@@ -107,8 +107,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.26"
-    let buildNumber = "43"
+    let version = "0.4.27"
+    let buildNumber = "44"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -2293,18 +2293,14 @@ final class AssistantModel: ObservableObject {
         let path = selectedADBPath
         Task { [weak self] in
             guard let self else { return }
-            // Never build an extra slow ADB forward on every incoming call:
-            // the current listener already furnished the RINGING event.
-            let temporaryLink: ADBBridgeLink?
-            if existingLink == nil {
-                let attempt = await Task.detached(priority: .userInitiated) {
-                    ADBInspector.openBridge(at: path)
-                }.value
-                temporaryLink = attempt.link
-            } else {
-                temporaryLink = nil
-            }
-            guard let link = existingLink ?? temporaryLink else {
+            // Regression correction from the verified v0.4.21 path: never
+            // reuse a potentially stale/blocked polling TCP forward to answer
+            // a cellular call. Create a distinct authenticated ADB forward.
+            let dedicated = await Task.detached(priority: .userInitiated) {
+                ADBInspector.openBridge(at: path)
+            }.value.link
+            let temporaryLink = dedicated
+            guard let link = dedicated ?? existingLink else {
                 if automatic { self.automaticAnswerRequested = false }
                 self.answerCallBusy = false
                 self.answerCallStatus = "无法连接手机电话监听服务；请确认 Companion 已启动且只有一台已授权手机"
@@ -2312,9 +2308,12 @@ final class AssistantModel: ObservableObject {
                          details: ["reason": "MANUAL_ANSWER_BRIDGE_UNAVAILABLE"])
                 return
             }
+            self.log(.info, .call, "已选择接听专用 ADB 转发通道",
+                     details: ["diagnosis": dedicated == nil
+                        ? "ANSWER_SHARED_BRIDGE_ONLY" : "ANSWER_DEDICATED_BRIDGE"])
             defer {
-                // The shared status listener owns its forward. Only clean up
-                // a one-off forward we created for a manual/unconnected case.
+                // Shared status polling keeps its separate forward. This
+                // temporary answer-only forward is always removed after use.
                 if let disposable = temporaryLink {
                     Task.detached(priority: .utility) {
                         ADBInspector.closeBridge(at: path, link: disposable)
@@ -2328,7 +2327,7 @@ final class AssistantModel: ObservableObject {
             }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            request.timeoutInterval = 4
+            request.timeoutInterval = 6
             request.cachePolicy = .reloadIgnoringLocalCacheData
             request.setValue(link.token, forHTTPHeaderField: "X-SIMAI-Token")
             request.setValue("0", forHTTPHeaderField: "Content-Length")
@@ -2337,27 +2336,17 @@ final class AssistantModel: ObservableObject {
                 request.setValue(String(expectedRingSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
             }
             let config = URLSessionConfiguration.ephemeral
-            config.timeoutIntervalForRequest = 4
+            config.timeoutIntervalForRequest = 6
             let session = URLSession(configuration: config)
             defer { session.invalidateAndCancel() }
-            // ADB_FILE indicates the HTTP listener is already unreliable.
-            // Prioritize the independent private-file path during ringing.
-            var earlyFallback = ""
-            if automatic && self.bridgeUsingFileFallback &&
-               !expectedRingSession.isEmpty && expectedRingSequence > 0 {
-                earlyFallback = await Task.detached(priority: .userInitiated) {
-                    ADBInspector.answerRingingViaPrivateLocalShell(
-                        at: path, expectedSession: expectedRingSession,
-                        expectedSequence: expectedRingSequence,
-                        expectedSerial: link.serial)
-                }.value
-                if earlyFallback == "ANSWER_FALLBACK_REQUESTED" &&
-                   self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession) {
-                    return
-                }
-                self.log(.warn, .call, "独立接听通道未确认，尝试 HTTP",
-                         details: ["fallback": earlyFallback])
-            }
+            // Restore the successfully tested v0.4.21 order:
+            // 1. a fresh authenticated ADB HTTP answer request;
+            // 2. independent guarded Android fallback only if the fresh
+            // transport fails and the same ring is still active.
+            // A file fallback can consume an entire ringtone window while
+            // emitting NO_ACK; never run it *before* this HTTP call.
+            self.log(.info, .call, "尝试已验证的 HTTP 直接接听路径",
+                     details: ["diagnosis": "ANSWER_HTTP_FIRST"])
             do {
                 let (body, response) = try await session.data(for: request)
                 let http = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -2402,25 +2391,17 @@ final class AssistantModel: ObservableObject {
                                        "http": "\(http)"])
                 }
             } catch {
-                // ADB file snapshots have remained available on this vivo
-                // while forwarded HTTP repeatedly timed out. If and ONLY IF
-                // the *same* ringing session/sequence is still present,
-                // issue a single bounded request through the Companion's
-                // authenticated Android-local socket. No simulated headset
-                // hook or arbitrary call-control key is ever sent.
+                // The direct fresh-forward HTTP command failed. Only now try
+                // a single session/sequence-guarded Android-local fallback.
+                // Never send arbitrary headset keys or answer another ring.
                 if automatic && !expectedRingSession.isEmpty &&
                    expectedRingSequence > 0 {
-                    let result: String
-                    if earlyFallback.isEmpty {
-                        result = await Task.detached(priority: .userInitiated) {
-                            ADBInspector.answerRingingViaPrivateLocalShell(
-                                at: path, expectedSession: expectedRingSession,
-                                expectedSequence: expectedRingSequence,
-                                expectedSerial: link.serial)
-                        }.value
-                    } else {
-                        result = earlyFallback
-                    }
+                    let result = await Task.detached(priority: .userInitiated) {
+                        ADBInspector.answerRingingViaPrivateLocalShell(
+                            at: path, expectedSession: expectedRingSession,
+                            expectedSequence: expectedRingSequence,
+                            expectedSerial: link.serial)
+                    }.value
                     if result == "ANSWER_FALLBACK_REQUESTED" &&
                        self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession) {
                         return
