@@ -199,7 +199,7 @@ private final class LiveMacSpeaker {
             }
             var callback = AURenderCallbackStruct(
                 inputProc: { refCon, _, _, _, frameCount, ioData in
-                    guard let refCon, let ioData else { return noErr }
+                    guard let ioData else { return noErr }
                     return Unmanaged<LiveMacSpeaker>.fromOpaque(refCon)
                         .takeUnretainedValue().render(frames: Int(frameCount), to: ioData)
                 },
