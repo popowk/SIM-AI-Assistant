@@ -96,6 +96,7 @@ final class AssistantModel: ObservableObject {
     private var autoCallAudioRequested = false
     private var screenControlProcess: Process?
     private var voiceSessionID = ""
+    private var pendingBlackHoleInstallChannels: Int?
     private var bridgeTimer: Timer?
     private var wakeObserver: NSObjectProtocol?
     private var nextADBScanAt = Date.distantPast
@@ -205,7 +206,8 @@ final class AssistantModel: ObservableObject {
                 guard let self else { return }
                 self.blackHoleInstallerBusy = false
                 if NSWorkspace.shared.open(file) {
-                    self.blackHoleInstallerStatus = "BlackHole \(channels)ch 安装器已打开。请在 macOS 安装器中确认管理员授权，安装后按提示重启，再点击「重新自检」。"
+                    self.pendingBlackHoleInstallChannels = channels
+                    self.blackHoleInstallerStatus = "BlackHole \(channels)ch 安装器已打开。请完成 macOS 管理员授权；程序会自动检测安装结果，可能仍需重启 Mac。"
                 } else {
                     self.blackHoleInstallerStatus = "安装包已通过校验但系统安装器未打开。请检查 macOS 安全提示并重试。"
                 }
@@ -227,6 +229,19 @@ final class AssistantModel: ObservableObject {
                     details: ["channels": "\(channels)", "category": "OFFICIAL_PKG_SETUP_FAILED"])
             }
         }
+    }
+
+    private func refreshPendingBlackHoleInstall() {
+        guard let channels = pendingBlackHoleInstallChannels else { return }
+        let snapshot = audioInspector.inspect()
+        guard snapshot.devices.contains(where: {
+            $0.displayName.caseInsensitiveCompare("BlackHole \(channels)ch") == .orderedSame
+        }) else { return }
+        pendingBlackHoleInstallChannels = nil
+        audio = snapshot
+        blackHoleInstallerStatus = "BlackHole \(channels)ch 已被 macOS 识别，可直接使用自动声音路由"
+        log(.info, .audio, "已检测到新安装的虚拟音频设备",
+            details: ["channels": "\(channels)"])
     }
 
     func refresh() {
@@ -423,6 +438,7 @@ final class AssistantModel: ObservableObject {
             Task { @MainActor [weak self] in
                 self?.autoInspectADBIfNeeded()
                 self?.pollLiveBridge()
+                self?.refreshPendingBlackHoleInstall()
             }
         }
         autoInspectADBIfNeeded(force: true)
