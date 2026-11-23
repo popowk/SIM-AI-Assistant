@@ -571,6 +571,14 @@ final class AssistantModel: ObservableObject {
     func shutdownForAppExit() {
         // Closing the app must stop forwarding caller audio before changing
         // the global sound device. Also closes scrcpy as before.
+        // ADB forwards survive Mac process exit in the adb server. Release
+        // only our own dynamic port synchronously before termination.
+        bridgeTimer?.invalidate()
+        bridgeTimer = nil
+        if let link = bridgeLink {
+            ADBInspector.closeBridge(at: selectedADBPath, link: link)
+            bridgeLink = nil
+        }
         if liveVoiceStarting || liveVoiceActive { stopLiveVoice() }
         if aiReplyToPhoneEnabled || aiReplyMonitorEnabled || chatGPTVoiceRouteEnabled {
             stopGPTTwoWayPhoneBridge()
@@ -963,11 +971,17 @@ final class AssistantModel: ObservableObject {
         let generation = bridgeGeneration
         Task.detached(priority: .utility) { [weak self] in
             let code = ADBInspector.wakePhoneMonitorIfDesired(at: adb)
+            if code == "PHONE_MONITOR_WAKE_REQUESTED" {
+                // Android needs a brief moment to initialize its persistent
+                // snapshot and loopback listener before the first Mac poll.
+                Thread.sleep(forTimeInterval: 0.5)
+            }
             await MainActor.run {
                 guard let self else { return }
                 self.initialPhoneMonitorWarmup = false
                 guard generation == self.bridgeGeneration,
                       self.liveSyncEnabled else { return }
+                self.nextPhoneMonitorWakeAt = Date().addingTimeInterval(20)
                 self.log(code == "PHONE_MONITOR_WAKE_REQUESTED" ? .info : .warn,
                          .call, "手机电话监听启动预热",
                          details: ["recovery": code])
