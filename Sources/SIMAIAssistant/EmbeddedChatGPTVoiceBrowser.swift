@@ -3,6 +3,7 @@ import Foundation
 import AppKit
 import SwiftUI
 import WebKit
+import SIMAICore
 
 /// An opt-in, *experimental* browser for the public ChatGPT website.
 /// No passwords, cookies, auth tokens, chat messages, speech, or page HTML
@@ -14,6 +15,50 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     @Published private(set) var loaded = false
     @Published var automaticVoiceButtonEnabled =
         UserDefaults.standard.object(forKey: "SIMAI_EMBEDDED_VOICE_AUTOCLICK") as? Bool ?? true
+    @Published var destinationDraft =
+        UserDefaults.standard.string(forKey: "SIMAI_CHATGPT_FIXED_URL") ?? ChatGPTDestination.home
+    @Published private(set) var rememberMicrophoneApproval =
+        UserDefaults.standard.object(forKey: "SIMAI_REMEMBER_CHATGPT_MIC") as? Bool ?? true
+    private let micApprovalKey = "SIMAI_CHATGPT_MIC_PREVIOUSLY_APPROVED"
+
+    var configuredURL: URL {
+        ChatGPTDestination.validated(
+            UserDefaults.standard.string(forKey: "SIMAI_CHATGPT_FIXED_URL") ?? ""
+        ) ?? URL(string: ChatGPTDestination.home)!
+    }
+
+    /// Saving is limited to official HTTPS ChatGPT pages. No content, tokens
+    /// or conversation text are inspected or included in diagnostics.
+    @discardableResult
+    func saveDestination() -> Bool {
+        guard let selected = ChatGPTDestination.validated(destinationDraft) else {
+            status = "网址不合规：仅支持 chatgpt.com 的 HTTPS 页面，不允许账号信息或查询参数"
+            return false
+        }
+        let previous = configuredURL
+        UserDefaults.standard.set(selected.absoluteString, forKey: "SIMAI_CHATGPT_FIXED_URL")
+        destinationDraft = selected.absoluteString
+        if loaded && !microphoneActive && previous != selected {
+            webView.load(URLRequest(url: selected))
+            status = "已保存固定网址并重新打开指定 ChatGPT 页面"
+        } else {
+            status = microphoneActive
+                ? "固定网址已保存；当前 Voice 不受影响，下次打开自动使用"
+                : "固定网址已保存；后续来电自动从这个地址启动"
+        }
+        return true
+    }
+
+    func setRememberMicrophoneApproval(_ enabled: Bool) {
+        rememberMicrophoneApproval = enabled
+        UserDefaults.standard.set(enabled, forKey: "SIMAI_REMEMBER_CHATGPT_MIC")
+        if !enabled {
+            UserDefaults.standard.removeObject(forKey: micApprovalKey)
+            status = "不再记住网站麦克风许可；下次使用会重新请求确认"
+        } else {
+            status = "已开启许可记忆；在网页首次同意麦克风后才自动记住"
+        }
+    }
 
     // Merely constructing WKWebView can allocate WebKit processes. Keep
     // the whole web view lazy until an incoming call or manual sign-in.
@@ -39,11 +84,11 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
 
     func loadIfNeeded() {
         guard !loaded else { return }
-        guard let url = URL(string: "https://chatgpt.com/") else { return }
+        let url = configuredURL
         loaded = true
         webView.load(URLRequest(url: url,
                                 cachePolicy: .useProtocolCachePolicy))
-        status = "正在载入 chatgpt.com；首次使用请在网页自行登录"
+        status = "正在载入已保存的 ChatGPT 页面；首次使用请自行登录"
     }
 
     func reload() {
@@ -82,6 +127,11 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         let active = webView.microphoneCaptureState == .active
         guard active != microphoneActive else { return }
         microphoneActive = active
+        if active && isOfficialPage && rememberMicrophoneApproval {
+            // Save only after WebKit confirms a real active capture resulting
+            // from the site's permission flow; never pre-grant on first use.
+            UserDefaults.standard.set(true, forKey: micApprovalKey)
+        }
         status = active
             ? "WebKit 已确认 chatgpt.com 正在采集麦克风；不代表 GPT 已收到有效声音"
             : "网页麦克风采集已停止；新的来电不会自动接听"
@@ -224,12 +274,23 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
                  decisionHandler: @escaping (WKPermissionDecision) -> Void) {
         // The user must authorize capture in the WebKit/macOS permission
         // prompt. Never automatically grant microphone to an auth provider.
-        if origin.protocol == "https" && origin.host == "chatgpt.com" {
-            decisionHandler(.prompt)
-            onDiagnostic?("VOICE_MIC_PERMISSION_PROMPT")
+        if origin.protocol == "https" && origin.host == "chatgpt.com" &&
+           type == .microphone {
+            if rememberMicrophoneApproval &&
+               UserDefaults.standard.bool(forKey: micApprovalKey) {
+                // A prior explicit site permission and successful WebKit
+                // microphone capture is required. The macOS TCC permission
+                // remains authoritative and users can revoke this in the UI.
+                decisionHandler(.grant)
+                onDiagnostic?("VOICE_MIC_PREVIOUSLY_APPROVED")
+            } else {
+                decisionHandler(.prompt)
+                onDiagnostic?("VOICE_MIC_PERMISSION_PROMPT")
+            }
         } else {
+            // Never silently authorize camera capture or third-party hosts.
             decisionHandler(.deny)
-            onDiagnostic?("VOICE_MIC_UNTRUSTED_ORIGIN_DENIED")
+            onDiagnostic?("VOICE_MEDIA_PERMISSION_RESTRICTED")
         }
     }
 
@@ -266,9 +327,21 @@ struct EmbeddedChatGPTVoiceWindow: View {
                 Button("实验性启动 Voice") { model.tryStartEmbeddedVoice() }
                     .disabled(!browser.loaded)
                 Button("外部浏览器打开") {
-                    NSWorkspace.shared.open(URL(string: "https://chatgpt.com/")!)
+                    NSWorkspace.shared.open(browser.configuredURL)
                 }
             }
+            HStack {
+                TextField("固定 ChatGPT 网址（例如自定义 GPT 或已有对话）",
+                          text: $browser.destinationDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("固定 ChatGPT 页面地址")
+                Button("保存网址") { browser.saveDestination() }
+                    .buttonStyle(.borderedProminent)
+            }
+            Toggle("记住已确认的 ChatGPT 麦克风许可", isOn: Binding(
+                get: { browser.rememberMicrophoneApproval },
+                set: { browser.setRememberMicrophoneApproval($0) }
+            ))
             Toggle("登录后自动尝试启动 Voice（实验）", isOn: Binding(
                 get: { browser.automaticVoiceButtonEnabled },
                 set: { model.setEmbeddedVoiceAutoStart($0) }
@@ -276,7 +349,7 @@ struct EmbeddedChatGPTVoiceWindow: View {
             Text(browser.status)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("只保存在本机 WebKit 网站数据中登录。不会获取密码、Cookie、Token 或对话内容。首次麦克风授权须由你确认；Google 登录可能拒绝内嵌浏览器。网页改版或无用户手势时，自动点击可能失败。")
+            Text("固定网址仅允许官方 chatgpt.com（可选自定义 GPT／会话），不读取提示词。首次麦克风许可仍由你确认，成功采集后可记住网站许可；macOS 系统授权可能仍需确认。关掉记忆开关即可撤销应用内记忆。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             EmbeddedChatGPTWebView(controller: browser)
