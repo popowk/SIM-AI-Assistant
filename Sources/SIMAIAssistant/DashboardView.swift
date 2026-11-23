@@ -25,6 +25,7 @@ struct DashboardView: View {
     @State private var confirmBlackHoleDownload = false
     @State private var showAdvancedTools = false
     @State private var showFeishuSettings = false
+    @State private var didRestoreEmbeddedVoiceWindow = false
 
     var body: some View {
         ScrollView {
@@ -51,6 +52,13 @@ struct DashboardView: View {
             .padding(22)
         }
         .frame(minWidth: 740, minHeight: 540)
+        .onAppear {
+            // Only reopen on app/window startup after the user previously
+            // opted into the embedded browser. Login stays in WebKit storage.
+            guard model.useEmbeddedVoiceBrowser && !didRestoreEmbeddedVoiceWindow else { return }
+            didRestoreEmbeddedVoiceWindow = true
+            openWindow(id: "embedded-voice")
+        }
         .confirmationDialog("测试通话下行音频？", isPresented: $confirmDownlink, titleVisibility: .visible) {
             Button("已取得同意，开始 2 秒下行电平测试") {
                 model.runPhoneAudioProbe(.downlink)
