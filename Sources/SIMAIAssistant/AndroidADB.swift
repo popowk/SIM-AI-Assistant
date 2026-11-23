@@ -524,6 +524,12 @@ enum ADBInspector {
               snapshot.state == "RINGING",
               snapshot.events.last(where: { $0.seq == expectedSequence })?.state == "RINGING"
         else { return "ANSWER_FALLBACK_RING_CHANGED" }
+        if snapshot.answerPermissionGranted == false {
+            return "ANSWER_FALLBACK_PERMISSION_REQUIRED"
+        }
+        if snapshot.privateAnswerPollerActive == false {
+            return "ANSWER_FALLBACK_WORKER_INACTIVE"
+        }
         guard let adb = executable(at: selected) else {
             return "ANSWER_FALLBACK_ADB_MISSING"
         }
@@ -555,13 +561,40 @@ enum ADBInspector {
                 if fields.count == 3,
                    fields[0] == expectedSession,
                    fields[1] == String(expectedSequence) {
-                    return fields[2] == "ANSWER_REQUESTED"
-                        ? "ANSWER_FALLBACK_REQUESTED"
-                        : "ANSWER_FALLBACK_REJECTED"
+                    switch fields[2] {
+                    case "ANSWER_REQUESTED": return "ANSWER_FALLBACK_REQUESTED"
+                    case "PERMISSION_REQUIRED": return "ANSWER_FALLBACK_PERMISSION_REQUIRED"
+                    case "RING_CHANGED", "NOT_RINGING": return "ANSWER_FALLBACK_RING_CHANGED"
+                    default: return "ANSWER_FALLBACK_REJECTED"
+                    }
                 }
             default: break
             }
             Thread.sleep(forTimeInterval: 0.3)
+        }
+        // Some vivo builds fail to expose the one-shot result file via ADB
+        // even though the foreground monitor processed the command. The
+        // existing AtomicFile state snapshot is an independent confirmation.
+        let diagnostic = readPrivateStateSnapshot(at: selected)
+        if let current = diagnostic.snapshot, current.session == expectedSession {
+            if current.privateAnswerSequence == expectedSequence {
+                switch current.privateAnswerResult {
+                case "ANSWER_REQUESTED": return "ANSWER_FALLBACK_REQUESTED"
+                case "PERMISSION_REQUIRED": return "ANSWER_FALLBACK_PERMISSION_REQUIRED"
+                case "RING_CHANGED", "NOT_RINGING": return "ANSWER_FALLBACK_RING_CHANGED"
+                case .some: return "ANSWER_FALLBACK_REJECTED"
+                case .none: break
+                }
+            }
+            if current.answerPermissionGranted == false {
+                return "ANSWER_FALLBACK_PERMISSION_REQUIRED"
+            }
+            if current.privateAnswerPollerActive == false {
+                return "ANSWER_FALLBACK_WORKER_INACTIVE"
+            }
+            if current.state != "RINGING" || current.seq != expectedSequence {
+                return "ANSWER_FALLBACK_RING_CHANGED"
+            }
         }
         return "ANSWER_FALLBACK_NO_ACK"
     }
