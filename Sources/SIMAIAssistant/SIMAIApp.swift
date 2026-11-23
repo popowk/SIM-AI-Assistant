@@ -55,7 +55,7 @@ private struct MenuBarCommands: View {
             model.restoreAutomaticGPTOutput()
         }
         Divider()
-        Text("v0.4.15 · 按需 Voice 轻量待命")
+        Text("v0.4.16 · 按需 Voice 轻量待命")
         Button("退出 SIM AI Assistant") {
             model.shutdownForAppExit()
             NSApp.terminate(nil)
