@@ -358,9 +358,17 @@ final class AssistantModel: ObservableObject {
             }
         } else {
             if automaticAnswerAcknowledged && autoVoiceCaptureObserved &&
-               livePhoneState == "OFFHOOK" &&
-               embeddedVoiceBrowser.voiceSessionActuallyEnded {
-                scheduleAutomaticHangupAfterVoiceEnds()
+               livePhoneState == "OFFHOOK" {
+                // A 4-second grace period avoids treating a temporary mute,
+                // capture pause or WebKit hiccup as an ended Voice session.
+                voiceSessionPrepared = false
+                if embeddedVoiceBrowser.voiceSessionActuallyEnded {
+                    scheduleAutomaticHangupAfterVoiceEnds()
+                    embeddedVoiceStatus = "Voice 已结束，确认 4 秒后请求手机挂断"
+                } else {
+                    embeddedVoiceStatus = "Voice 麦克风暂时静音；不会误挂电话"
+                }
+                return
             }
             if voiceSessionPrepared || aiReplyToPhoneEnabled {
                 log(.warn, .audio, "Voice 采集停止，撤销自动接听及 GPT 回传",
