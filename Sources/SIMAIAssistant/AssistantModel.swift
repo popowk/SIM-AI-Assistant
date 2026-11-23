@@ -54,9 +54,12 @@ final class AssistantModel: ObservableObject {
     @Published var chatGPTVoiceRouteEnabled = false
     @Published var chatGPTVoiceRouteStatus = "尚未开启（仅将电话下行送入 ChatGPT）"
     @Published var chatGPTVoiceRouteDropped = 0
+    private var monitorSelectionIsAutomatic = false
     @Published var selectedVoiceMonitorOutputID = "" {
         didSet {
-            if !selectedVoiceMonitorOutputID.isEmpty {
+            // A temporary Bluetooth/HDMI disconnect must NOT overwrite the
+            // user's saved physical monitor UID with a fallback speaker.
+            if !monitorSelectionIsAutomatic && !selectedVoiceMonitorOutputID.isEmpty {
                 AudioInspector.saveMonitorSelection(selectedVoiceMonitorOutputID)
             }
         }
@@ -403,7 +406,9 @@ final class AssistantModel: ObservableObject {
         if let recommended = AudioInspector.recommendedMonitorOutput(
             from: audio, previousID: selectedVoiceMonitorOutputID
         ), recommended != selectedVoiceMonitorOutputID {
+            monitorSelectionIsAutomatic = true
             selectedVoiceMonitorOutputID = recommended
+            monitorSelectionIsAutomatic = false
             log(.info, .audio, "已自动恢复有效的 Mac 通话监听设备",
                 details: ["selection": "PHYSICAL_OUTPUT_UID_OR_FALLBACK"])
         }
