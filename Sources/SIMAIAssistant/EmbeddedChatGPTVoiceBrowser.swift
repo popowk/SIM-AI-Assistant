@@ -501,9 +501,13 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
                 guard let self, self.loaded else { return }
                 let code = error == nil ? (value as? String ?? "MIC_CHECK_FAILED")
                                         : "MIC_CHECK_FAILED"
-                let frameFresh = self.lastVerifiedMicrophoneFrameAt != .distantPast &&
-                    Date().timeIntervalSince(self.lastVerifiedMicrophoneFrameAt) < 8
-                let verified = code == "BLACKHOLE2_CAPTURE_VERIFIED" || frameFresh
+                let frameAge: TimeInterval? =
+                    self.lastVerifiedMicrophoneFrameAt == .distantPast ? nil
+                    : Date().timeIntervalSince(self.lastVerifiedMicrophoneFrameAt)
+                let frameFresh = frameAge.map { $0 >= 0 && $0 < 8 } ?? false
+                let verified = VoiceMicrophoneRoutePolicy.verified(
+                    mainFrameCode: code, childFrameLastSignalAge: frameAge
+                )
                 self.updateIsolatedMicrophoneReady(verified)
                 if frameFresh && code != "BLACKHOLE2_CAPTURE_VERIFIED" {
                     self.isolatedMicrophoneStatus =
