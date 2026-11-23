@@ -377,7 +377,9 @@ struct DashboardView: View {
                     .font(.caption)
                 Text(model.embeddedVoiceBrowser.isolatedMicrophoneStatus)
                     .font(.caption).foregroundStyle(.secondary)
-                Text(model.embeddedVoiceBrowser.microphoneSignalStatus)
+                Text(model.livePhoneState == "OFFHOOK" && model.liveVoiceActive
+                     ? model.embeddedVoiceBrowser.microphoneSignalStatus
+                     : "未接通电话或 PCM 未建立，网页麦克风静音属于预期；接通后再检测实际声音")
                     .font(.caption).foregroundStyle(.secondary)
                 Label(model.embeddedVoiceBrowser.isolatedOutputReady
                         ? "网页独立音频已配置" : "网页独立音频待就绪",
