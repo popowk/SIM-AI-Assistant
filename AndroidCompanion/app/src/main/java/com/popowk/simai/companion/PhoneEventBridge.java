@@ -55,6 +55,10 @@ final class PhoneEventBridge {
     private final File privateAnswerRequest;
     private final File privateAnswerResult;
     private ScheduledExecutorService privateAnswerPoller;
+    // Anonymous health/status markers, never phone numbers or request tokens.
+    private volatile long lastPrivateAnswerPollAt = 0;
+    private volatile int lastPrivateAnswerSequence = 0;
+    private volatile String lastPrivateAnswerResult = "NO_REQUEST";
 
     private static final class CallEvent {
         final int seq;
@@ -178,12 +182,15 @@ final class PhoneEventBridge {
 
     /** One-shot answer path independent of Android's HTTP listener. */
     private void processPrivateAnswerRequest() {
+        lastPrivateAnswerPollAt = System.currentTimeMillis();
         if (!active || !privateAnswerRequest.isFile()) return;
         String request;
         try (FileInputStream input = new FileInputStream(privateAnswerRequest)) {
             if (privateAnswerRequest.length() > 128 ||
                     System.currentTimeMillis() - privateAnswerRequest.lastModified() > 10000) {
                 privateAnswerRequest.delete();
+                lastPrivateAnswerResult = "REQUEST_STALE";
+                persistSnapshot();
                 return;
             }
             byte[] bytes = new byte[128];
@@ -194,13 +201,30 @@ final class PhoneEventBridge {
             }
             request = new String(bytes, 0, count, StandardCharsets.US_ASCII).trim();
         } catch (Exception unavailable) { return; }
-        if (!privateAnswerRequest.delete()) return;
+        if (!privateAnswerRequest.delete()) {
+            lastPrivateAnswerResult = "REQUEST_DELETE_FAILED";
+            persistSnapshot();
+            return;
+        }
         String[] parts = request.split("\\|", -1);
-        if (parts.length != 2 || !parts[0].matches("[a-fA-F0-9-]{36}")) return;
+        if (parts.length != 2 || !parts[0].matches("[a-fA-F0-9-]{36}")) {
+            lastPrivateAnswerResult = "REQUEST_INVALID";
+            persistSnapshot();
+            return;
+        }
         int ringSequence;
         try { ringSequence = Integer.parseInt(parts[1]); }
-        catch (NumberFormatException invalid) { return; }
+        catch (NumberFormatException invalid) {
+            lastPrivateAnswerResult = "REQUEST_INVALID";
+            persistSnapshot();
+            return;
+        }
         String result = acceptGuardedPrivateAnswer(parts[0], ringSequence);
+        lastPrivateAnswerSequence = ringSequence;
+        lastPrivateAnswerResult = result;
+        // Persist an independent acknowledgement in the established ADB_FILE
+        // snapshot even if the separate result file cannot be read on vivo.
+        persistSnapshot();
         String acknowledgement = parts[0] + "|" + parts[1] + "|" + result + "\n";
         File temp = new File(context.getFilesDir(), "bridge-answer-result.tmp");
         try (FileOutputStream output = new FileOutputStream(temp, false)) {
@@ -459,6 +483,14 @@ final class PhoneEventBridge {
         body.put("state", lastState);
         body.put("seq", sequence);
         body.put("updatedAt", System.currentTimeMillis());
+        body.put("answerPermissionGranted",
+                context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
+                    == PackageManager.PERMISSION_GRANTED);
+        body.put("privateAnswerPollerActive",
+                active && lastPrivateAnswerPollAt > 0 &&
+                System.currentTimeMillis() - lastPrivateAnswerPollAt < 5000);
+        body.put("privateAnswerSequence", lastPrivateAnswerSequence);
+        body.put("privateAnswerResult", lastPrivateAnswerResult);
         JSONArray rows = new JSONArray();
         for (CallEvent event : events) {
             if (event.seq <= since) continue;
