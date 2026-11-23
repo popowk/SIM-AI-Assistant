@@ -12,7 +12,7 @@ enum LiveAudioEvent {
     case status(String)
     case active
     case handshakeAttempts(Int)
-    case metrics(received: Int, sent: Int, dropped: Int, micUnderflows: Int, micOverflows: Int, txLate: Int, micBufferedMs: Int, voiceRouteDropped: Int)
+    case metrics(received: Int, sent: Int, dropped: Int, micUnderflows: Int, micOverflows: Int, txLate: Int, micBufferedMs: Int, voiceRouteDropped: Int, monitorRendered: Int, virtualRendered: Int)
     case aiReturnMetrics(captured: Int, monitorDropped: Int, uplinkUnderflow: Int, peakRMS: Double)
     case downlinkSignal(peakRMS: Double)
     case finished(String)
@@ -745,7 +745,9 @@ final class PhoneAudioStream {
                         micOverflows: mic.overflowFrames,
                         txLate: sending.late,
                         micBufferedMs: mic.bufferedMilliseconds,
-                        voiceRouteDropped: virtualMicDroppedFrames()))
+                        voiceRouteDropped: virtualMicDroppedFrames(),
+                        monitorRendered: speaker.renderedFrames(),
+                        virtualRendered: virtualMicRenderedFrames()))
     }
 
     private func virtualMicDroppedFrames() -> Int {
@@ -753,6 +755,13 @@ final class PhoneAudioStream {
         let output = chatGPTVirtualMic
         gate.unlock()
         return output?.droppedFrames() ?? 0
+    }
+
+    private func virtualMicRenderedFrames() -> Int {
+        gate.lock()
+        let output = chatGPTVirtualMic
+        gate.unlock()
+        return output?.renderedFrames() ?? 0
     }
 
     private func sendLoop(fd: Int32, since: Date) {
