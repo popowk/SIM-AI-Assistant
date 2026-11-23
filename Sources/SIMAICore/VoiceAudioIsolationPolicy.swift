@@ -7,11 +7,12 @@ public enum VoiceAudioIsolationPolicy {
     public static func browserReady(
         embedded: Bool,
         microphoneCapturing: Bool,
+        isolatedMicrophoneVerified: Bool,
         isolationEnabled: Bool,
         isolatedMediaRouted: Bool
     ) -> Bool {
         if !embedded { return true }
-        guard microphoneCapturing else { return false }
+        guard microphoneCapturing && isolatedMicrophoneVerified else { return false }
         return !isolationEnabled || isolatedMediaRouted
     }
 }

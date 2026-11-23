@@ -121,7 +121,7 @@ final class PhoneEventBridge {
             if (active) {
                 synchronized (PhoneEventBridge.this) { persistSnapshot(); }
             }
-        }, 15, 15, TimeUnit.SECONDS);
+        }, 10, 10, TimeUnit.SECONDS);
         worker = new Thread(this::serve, "SIMAI-CallEventBridge");
         worker.setDaemon(true);
         worker.start();

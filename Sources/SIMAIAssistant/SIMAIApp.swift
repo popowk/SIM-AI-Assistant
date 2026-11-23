@@ -47,10 +47,10 @@ private struct MenuBarCommands: View {
         }
         Divider()
         Button("恢复 Mac 原声音输出") {
-            model.restoreAutomaticGPTOutput()
+            model.restoreAutomaticGPTOutput(forceInput: true, userRequested: true)
         }
         Divider()
-        Text("v0.4.19 · 按需 Voice 轻量待命")
+        Text("v0.4.20 · 按需 Voice 轻量待命")
         Button("退出 SIM AI Assistant") {
             model.shutdownForAppExit()
             NSApp.terminate(nil)

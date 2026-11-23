@@ -6,15 +6,17 @@ final class SIMAICoreTests: XCTestCase {
 
     func testVideoSafeRoutingNeverAnswersWithoutIsolatedVoiceOutput() {
         XCTAssertFalse(VoiceAudioIsolationPolicy.browserReady(embedded: true, microphoneCapturing: false,
-                             isolationEnabled: true, isolatedMediaRouted: false))
+                             isolatedMicrophoneVerified: false, isolationEnabled: true, isolatedMediaRouted: false))
         XCTAssertFalse(VoiceAudioIsolationPolicy.browserReady(embedded: true, microphoneCapturing: true,
-                             isolationEnabled: true, isolatedMediaRouted: false))
+                             isolatedMicrophoneVerified: false, isolationEnabled: true, isolatedMediaRouted: false))
+        XCTAssertFalse(VoiceAudioIsolationPolicy.browserReady(embedded: true, microphoneCapturing: true,
+                             isolatedMicrophoneVerified: false, isolationEnabled: true, isolatedMediaRouted: true))
         XCTAssertTrue(VoiceAudioIsolationPolicy.browserReady(embedded: true, microphoneCapturing: true,
-                            isolationEnabled: true, isolatedMediaRouted: true))
+                            isolatedMicrophoneVerified: true, isolationEnabled: true, isolatedMediaRouted: true))
         XCTAssertTrue(VoiceAudioIsolationPolicy.browserReady(embedded: true, microphoneCapturing: true,
-                            isolationEnabled: false, isolatedMediaRouted: false))
+                            isolatedMicrophoneVerified: true, isolationEnabled: false, isolatedMediaRouted: false))
         XCTAssertTrue(VoiceAudioIsolationPolicy.browserReady(embedded: false, microphoneCapturing: false,
-                            isolationEnabled: false, isolatedMediaRouted: false))
+                            isolatedMicrophoneVerified: false, isolationEnabled: false, isolatedMediaRouted: false))
     }
 
 

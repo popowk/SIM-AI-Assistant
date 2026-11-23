@@ -705,7 +705,21 @@ enum ADBInspector {
                                "com.popowk.simai.companion/.CallMonitorService"], timeout: 8) {
         case .completed(0, _): return "PHONE_MONITOR_WAKE_REQUESTED"
         case .timedOut: return "PHONE_MONITOR_WAKE_TIMEOUT"
-        default: return "PHONE_MONITOR_WAKE_DENIED"
+        default:
+            // Android 12+ and some vivo OEM variants reject starting a
+            // foreground service directly when Companion is backgrounded.
+            // After verifying that the user did NOT disable monitoring,
+            // launch only the installed Companion Activity. Its existing
+            // onCreate/onResume flow starts the foreground monitor from a
+            // foreground context, without changing permissions or defaults.
+            // This is best effort: OEM background-activity limits still win.
+            switch run(adb, args: ["-s", serial, "shell", "am", "start",
+                                   "-n", "com.popowk.simai.companion/.MainActivity"],
+                       timeout: 8) {
+            case .completed(0, _): return "PHONE_MONITOR_ACTIVITY_WAKE_REQUESTED"
+            case .timedOut: return "PHONE_MONITOR_ACTIVITY_WAKE_TIMEOUT"
+            default: return "PHONE_MONITOR_WAKE_DENIED"
+            }
         }
     }
 
