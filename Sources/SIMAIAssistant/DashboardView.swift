@@ -377,6 +377,8 @@ struct DashboardView: View {
                     .font(.caption)
                 Text(model.embeddedVoiceBrowser.isolatedMicrophoneStatus)
                     .font(.caption).foregroundStyle(.secondary)
+                Text(model.embeddedVoiceBrowser.microphoneSignalStatus)
+                    .font(.caption).foregroundStyle(.secondary)
                 Label(model.embeddedVoiceBrowser.isolatedOutputReady
                         ? "网页独立音频已配置" : "网页独立音频待就绪",
                       systemImage: model.embeddedVoiceBrowser.isolatedOutputReady
