@@ -345,6 +345,14 @@ final class AssistantModel: ObservableObject {
         }
         refresh()
         startLiveSyncTimer()
+        // Load the signed-in page ahead of calls without starting Voice or
+        // opening the window. This avoids spending 10-15 ringing seconds on
+        // navigation. Actual voice recording still requires ring/preflight.
+        if autoCallEnabled && useEmbeddedVoiceBrowser {
+            embeddedVoiceBrowser.loadIfNeeded()
+            log(.info, .audio, "自动值守已预载 ChatGPT 登录页面（未开启麦克风）",
+                details: ["stage": "VOICE_PAGE_PREWARMED_IDLE"])
+        }
     }
 
     var system: SystemSnapshot {
@@ -1125,7 +1133,12 @@ final class AssistantModel: ObservableObject {
             } else {
                 restoreAutomaticGPTOutput(forceInput: true)
             }
-            autoCallStatus = "空闲轻量待命 · 下次来电再启动 Voice"
+            // Keep only the official web page warm; no idle microphone,
+            // PSTN audio or GPT reply forwarding is activated.
+            if autoCallEnabled && useEmbeddedVoiceBrowser {
+                embeddedVoiceBrowser.loadIfNeeded()
+            }
+            autoCallStatus = "空闲已预载页面 · 来电时再启动 Voice"
         } else if state == "OFFHOOK" && automaticAnswerAcknowledged &&
                   bridgeCursor.session == automaticAnswerSession {
             automaticOffhookSequence = bridgeCursor.lastSequence
