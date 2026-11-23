@@ -54,7 +54,17 @@ final class AssistantModel: ObservableObject {
     @Published var chatGPTVoiceRouteEnabled = false
     @Published var chatGPTVoiceRouteStatus = "尚未开启（仅将电话下行送入 ChatGPT）"
     @Published var chatGPTVoiceRouteDropped = 0
-    @Published var selectedVoiceMonitorOutputID = ""
+    @Published var selectedVoiceMonitorOutputID = "" {
+        didSet {
+            if !selectedVoiceMonitorOutputID.isEmpty {
+                AudioInspector.saveMonitorSelection(selectedVoiceMonitorOutputID)
+            }
+        }
+    }
+    /// Prefer route isolation inside our WKWebView. Do not globally replace
+    /// the Mac speaker when the user is watching videos or using other apps.
+    @Published var isolatedChatGPTOutputEnabled =
+        UserDefaults.standard.object(forKey: "SIMAI_ISOLATED_WEB_OUTPUT") as? Bool ?? true
     @Published var automaticGPTOutputEnabled =
         UserDefaults.standard.object(forKey: "SIMAI_AUTO_GPT_OUTPUT") as? Bool ?? true
     @Published var automaticGPTOutputStatus = "自动虚拟音频路由待命；GPT 输入 BlackHole 2ch、输出 BlackHole 16ch"
@@ -93,14 +103,52 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.17"
-    let buildNumber = "34"
+    let version = "0.4.18"
+    let buildNumber = "35"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
     private let voiceOutputRouter = AutoVoiceOutputRouter()
     private let voiceInputRouter = AutoVoiceInputRouter()
     let embeddedVoiceBrowser = EmbeddedChatGPTVoiceBrowser()
+    private var embeddedVoiceWindow: NSWindow?
+
+    /// Application-owned browser window. Unlike the old Dashboard.onReceive,
+    /// this stays available while the diagnostics window is closed or a
+    /// video is playing full-screen. Only manual opens activate the Mac app.
+    func showEmbeddedVoiceWindow(activate: Bool = true) {
+        let window: NSWindow
+        if let existing = embeddedVoiceWindow {
+            window = existing
+        } else {
+            let created = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1040, height: 760),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered, defer: false)
+            created.title = "ChatGPT Voice · 内嵌浏览器"
+            created.isReleasedWhenClosed = false
+            created.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            created.contentView = NSHostingView(rootView:
+                EmbeddedChatGPTVoiceWindow(browser: embeddedVoiceBrowser)
+                    .environmentObject(self))
+            created.center()
+            embeddedVoiceWindow = created
+            window = created
+        }
+        if activate {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            // Do not steal focus from the video player; WebKit still has a
+            // live, on-screen NSView for the Voice start button and WebRTC.
+            window.orderFront(nil)
+        }
+        embeddedVoiceBrowser.loadIfNeeded()
+    }
+
+    func hideEmbeddedVoiceWindow() {
+        embeddedVoiceWindow?.orderOut(nil)
+    }
     private let microphoneProbe = MicrophoneLevelProbe()
     private var voiceStream: PhoneAudioStream?
     private var autoCallState = AutoCallStateMachine()
@@ -122,6 +170,7 @@ final class AssistantModel: ObservableObject {
     private var autoHangupBusy = false
     private var autoHangupAttempted = false
     private var resumeAIForwardAfterVoicePause = false
+    private var resumeAIForwardAfterIsolationRestored = false
     private var screenControlProcess: Process?
     private var voiceSessionID = ""
     private var pendingBlackHoleInstallChannels: Int?
@@ -174,6 +223,34 @@ final class AssistantModel: ObservableObject {
             automaticGPTOutputStatus = "已检查上次异常结束的音频输入／输出，并尝试恢复"
             log(.info, .audio, "自动虚拟音频设备启动恢复",
                 details: ["inputCode": recoveredInput, "outputCode": recoveredOutput])
+        }
+        embeddedVoiceBrowser.setIsolatedAudioOutputEnabled(isolatedChatGPTOutputEnabled)
+        embeddedVoiceBrowser.onIsolatedOutputChange = { [weak self] ready in
+            guard let self else { return }
+            if ready {
+                self.automaticGPTOutputStatus =
+                    "ChatGPT 网页已配置独立输出到 BlackHole 16ch；视频保持原路"
+                if self.incomingVoicePending && self.embeddedVoiceBrowser.microphoneActive {
+                    self.onEmbeddedVoiceCapture(true)
+                }
+                if self.resumeAIForwardAfterIsolationRestored &&
+                   self.liveVoiceActive && self.livePhoneState == "OFFHOOK" &&
+                   self.aiReplyMonitorEnabled && self.embeddedVoiceBrowser.microphoneActive &&
+                   self.isSystemOutputSafeForIsolatedReturn() {
+                    self.resumeAIForwardAfterIsolationRestored = false
+                    self.setAIReplyToPhone(true)
+                }
+            } else if self.isolatedChatGPTOutputEnabled {
+                if self.aiReplyToPhoneEnabled {
+                    self.resumeAIForwardAfterIsolationRestored = true
+                    self.setAIReplyToPhone(false)
+                    self.log(.warn, .audio,
+                        "网页隔离音频路由丢失，已暂停 GPT 电话回传",
+                        details: ["reason": "ISOLATED_ROUTE_LOST"])
+                }
+                self.automaticGPTOutputStatus =
+                    "网页隔离尚未就绪；视频不会进入电话，上行回传已安全暂停"
+            }
         }
         embeddedVoiceBrowser.onMicrophoneChange = { [weak self] active in
             self?.onEmbeddedVoiceCapture(active)
@@ -282,16 +359,16 @@ final class AssistantModel: ObservableObject {
 
     func refresh() {
         audio = audioInspector.inspect()
-        // Choose an already active real output device by default, if one
-        // exists. Never change the macOS system output or select BlackHole.
-        if selectedVoiceMonitorOutputID.isEmpty,
-           let output = audio.devices.first(where: {
-               $0.isDefaultOutput &&
-               !$0.displayName.localizedCaseInsensitiveContains("BlackHole") &&
-               !$0.displayName.localizedCaseInsensitiveContains("aggregate") &&
-               !$0.displayName.localizedCaseInsensitiveContains("multi-output")
-           }) {
-            selectedVoiceMonitorOutputID = output.id
+        // A playback device can change while watching video (Bluetooth,
+        // HDMI, AirPlay). CoreAudio numeric IDs are not stable. Prefer the
+        // saved physical hardware UID, otherwise use a real output device
+        // with an actual stream. Never select a microphone as the monitor.
+        if let recommended = AudioInspector.recommendedMonitorOutput(
+            from: audio, previousID: selectedVoiceMonitorOutputID
+        ), recommended != selectedVoiceMonitorOutputID {
+            selectedVoiceMonitorOutputID = recommended
+            log(.info, .audio, "已自动恢复有效的 Mac 通话监听设备",
+                details: ["selection": "PHYSICAL_OUTPUT_UID_OR_FALLBACK"])
         }
         if audio.microphonePermission == "已拒绝" {
             log(.warn, .audio, "麦克风权限被拒绝", code: .microphoneDenied)
@@ -354,6 +431,8 @@ final class AssistantModel: ObservableObject {
             }
             embeddedVoiceStatus = "WebKit 已采集麦克风；电话实测才能确认 GPT 听懂语音"
             if incomingVoicePending && incomingPreflightPassed &&
+               (!isolatedChatGPTOutputEnabled ||
+                embeddedVoiceBrowser.isolatedOutputReady) &&
                livePhoneState == "RINGING" && !incomingVoiceBlockedUntilIdle {
                 setVoiceSessionPrepared(true)
                 if voiceSessionPrepared {
@@ -397,6 +476,17 @@ final class AssistantModel: ObservableObject {
             if !liveVoiceActive && !incomingVoicePending {
                 restoreAutomaticGPTOutput(forceInput: true)
             }
+        }
+    }
+
+    private func checkIsolatedReturnSafety() {
+        guard useEmbeddedVoiceBrowser && isolatedChatGPTOutputEnabled &&
+              (liveVoiceActive || liveVoiceStarting) else { return }
+        if !isSystemOutputSafeForIsolatedReturn() && aiReplyToPhoneEnabled {
+            resumeAIForwardAfterIsolationRestored = false
+            setAIReplyToPhone(false)
+            log(.warn, .audio, "系统默认输出变为虚拟/聚合设备，已暂停电话 GPT 回传",
+                details: ["reason": "VIDEO_AUDIO_LEAK_GUARD"])
         }
     }
 
@@ -451,6 +541,7 @@ final class AssistantModel: ObservableObject {
         guard autoCallEnabled && useEmbeddedVoiceBrowser,
               !incomingVoicePending && !incomingVoiceBlockedUntilIdle,
               !incomingPreflightRunning && !voiceSessionPrepared else { return }
+        refresh()
         let problems = automaticVoiceReadinessIssues()
         if !problems.isEmpty {
             incomingVoiceBlockedUntilIdle = true
@@ -491,9 +582,7 @@ final class AssistantModel: ObservableObject {
                 }
                 self.incomingPreflightPassed = true
                 self.autoCallStatus = "音频预检成功：正在加载网页并启动 Voice"
-                self.embeddedVoiceBrowser.loadIfNeeded()
-                NotificationCenter.default.post(
-                    name: Notification.Name("SIMAI_OPEN_VOICE_ON_RINGING"), object: nil)
+                self.showEmbeddedVoiceWindow(activate: false)
                 self.checkEmbeddedVoiceHealth()
             }
         }
@@ -501,6 +590,26 @@ final class AssistantModel: ObservableObject {
 
     /// This setting only arms an already running official Voice session.
     /// There is no official ChatGPT Plus API for unattended voice creation.
+    func setIsolatedChatGPTOutputEnabled(_ enabled: Bool) {
+        guard !liveVoiceActive && !liveVoiceStarting &&
+              !incomingVoicePending else {
+            automaticGPTOutputStatus = "当前通话运行中，请通话结束后切换声音隔离模式"
+            return
+        }
+        isolatedChatGPTOutputEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "SIMAI_ISOLATED_WEB_OUTPUT")
+        embeddedVoiceBrowser.setIsolatedAudioOutputEnabled(enabled)
+        if enabled {
+            // This program owned the legacy default route: restore it now.
+            // Video, music and desktop sounds must continue on their own
+            // system-selected speaker.
+            _ = voiceOutputRouter.restore()
+        }
+        automaticGPTOutputStatus = enabled
+            ? "独立音频模式：仅 ChatGPT 网页输出到 BlackHole 16ch，不改系统扬声器"
+            : "传统全局模式：可能连视频声音一起切入 BlackHole，仅供兼容测试"
+    }
+
     func setAutomaticGPTOutputEnabled(_ enabled: Bool) {
         automaticGPTOutputEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "SIMAI_AUTO_GPT_OUTPUT")
@@ -542,6 +651,21 @@ final class AssistantModel: ObservableObject {
         }
     }
 
+    /// Safety: while we are capturing BlackHole 16ch for the caller,
+    /// the system default output must NOT be BlackHole or a multi-output
+    /// aggregate containing it. Otherwise a playing video could leak into
+    /// the PSTN even if the ChatGPT webpage also has a per-page sink.
+    private func isSystemOutputSafeForIsolatedReturn() -> Bool {
+        let current = AudioInspector().inspect().devices.first(where: {
+            $0.isDefaultOutput
+        })
+        guard let current else { return false }
+        let name = current.displayName
+        return !name.localizedCaseInsensitiveContains("BlackHole") &&
+               !name.localizedCaseInsensitiveContains("aggregate") &&
+               !name.localizedCaseInsensitiveContains("multi-output")
+    }
+
     /// Configure both the OS microphone and output, fail closed when either
     /// side cannot be changed. No UI automation of official ChatGPT Voice.
     @discardableResult
@@ -551,6 +675,30 @@ final class AssistantModel: ObservableObject {
             return true
         }
         guard prepareAutomaticGPTInput() else { return false }
+        if useEmbeddedVoiceBrowser && isolatedChatGPTOutputEnabled {
+            refresh()
+            guard isSystemOutputSafeForIsolatedReturn() else {
+                automaticGPTOutputStatus =
+                    "为防视频声音进入电话：系统默认输出必须是实际耳机／扬声器，不能是 BlackHole／聚合设备"
+                log(.warn, .audio, "网页隔离模式拒绝不安全的系统默认声音输出",
+                    details: ["reason": "ISOLATED_SYSTEM_OUTPUT_UNSAFE"])
+                return false
+            }
+            guard AudioInspector.isUsableMonitorOutput(selectedVoiceMonitorOutputID) else {
+                automaticGPTOutputStatus = "找不到有效耳机／扬声器；无法安全监听隔离的 GPT 声音"
+                log(.warn, .audio, "独立 GPT 音频路由缺少有效监听设备",
+                    details: ["reason": "ISOLATED_MONITOR_OUTPUT_UNAVAILABLE"])
+                return false
+            }
+            // Do NOT switch macOS default output. The embedded browser must
+            // independently route its actual remote audio element via
+            // WebKit setSinkId. Until the route is confirmed, auto-answer
+            // is blocked and unrelated video audio stays out of the phone.
+            automaticGPTOutputStatus = embeddedVoiceBrowser.isolatedOutputReady
+                ? "GPT 独立输出已准备；视频保留原声卡"
+                : "视频安全隔离待验证；等待 ChatGPT 网页单独连接 BlackHole 16ch"
+            return true
+        }
         let code = voiceOutputRouter.activate(physicalMonitorID: selectedVoiceMonitorOutputID)
         switch code {
         case "ROUTE_ACTIVE", "ROUTE_ALREADY_MANAGED", "ROUTE_ALREADY_VIRTUAL_MANUAL":
@@ -612,6 +760,8 @@ final class AssistantModel: ObservableObject {
             stopGPTTwoWayPhoneBridge()
         }
         voiceSessionPrepared = false
+        embeddedVoiceBrowser.releaseForIdle()
+        hideEmbeddedVoiceWindow()
         restoreAutomaticGPTOutput(forceInput: true)
         closePhoneScreenControl()
     }
@@ -753,6 +903,7 @@ final class AssistantModel: ObservableObject {
             automaticOffhookSequence = 0
             autoVoiceCaptureObserved = false
             resumeAIForwardAfterVoicePause = false
+            resumeAIForwardAfterIsolationRestored = false
             autoCallState.reset()
             voiceSessionPrepared = false
             incomingVoicePending = false
@@ -796,6 +947,9 @@ final class AssistantModel: ObservableObject {
     private func automaticVoiceReadinessIssues() -> [String] {
         var problems: [String] = []
         if !liveSyncEnabled { problems.append("请打开电话状态同步") }
+        if !automaticGPTOutputEnabled {
+            problems.append("无人值守必须开启 GPT 自动音频配置")
+        }
         if !embeddedAudioProbeAvailable { problems.append("缺少电话 PCM Helper") }
         if !audio.devices.contains(where: { $0.displayName.caseInsensitiveCompare("BlackHole 2ch") == .orderedSame }) {
             problems.append("缺少 BlackHole 2ch")
@@ -803,7 +957,9 @@ final class AssistantModel: ObservableObject {
         if !audio.devices.contains(where: { $0.displayName.caseInsensitiveCompare("BlackHole 16ch") == .orderedSame }) {
             problems.append("缺少 BlackHole 16ch")
         }
-        if selectedVoiceMonitorOutputID.isEmpty { problems.append("未选择实际监听耳机") }
+        if !AudioInspector.isUsableMonitorOutput(selectedVoiceMonitorOutputID) {
+            problems.append("未找到有效的物理监听输出")
+        }
         return problems
     }
 
@@ -826,6 +982,7 @@ final class AssistantModel: ObservableObject {
             autoHangupBusy = false
             autoHangupAttempted = false
             resumeAIForwardAfterVoicePause = false
+            resumeAIForwardAfterIsolationRestored = false
             incomingVoicePending = false
             incomingPreflightRunning = false
             incomingPreflightPassed = false
@@ -834,8 +991,7 @@ final class AssistantModel: ObservableObject {
             voiceSessionPrepared = false
             if useEmbeddedVoiceBrowser && embeddedVoiceBrowser.loaded {
                 embeddedVoiceBrowser.releaseForIdle()
-                NotificationCenter.default.post(
-                    name: Notification.Name("SIMAI_CLOSE_VOICE_AFTER_CALL"), object: nil)
+                hideEmbeddedVoiceWindow()
             }
             if liveVoiceActive || liveVoiceStarting {
                 stopLiveVoice()
@@ -860,7 +1016,12 @@ final class AssistantModel: ObservableObject {
         }
         // Fail closed if the official Voice UI was not pre-armed this session.
         // Checking for virtual devices cannot prove that ChatGPT is listening.
-        let browserReady = !useEmbeddedVoiceBrowser || embeddedVoiceCaptureActive
+        let browserReady = VoiceAudioIsolationPolicy.browserReady(
+            embedded: useEmbeddedVoiceBrowser,
+            microphoneCapturing: embeddedVoiceCaptureActive,
+            isolationEnabled: isolatedChatGPTOutputEnabled,
+            isolatedMediaRouted: embeddedVoiceBrowser.isolatedOutputReady
+        )
         let armed = autoCallEnabled && voiceSessionPrepared && browserReady &&
             automaticVoiceReadinessIssues().isEmpty && !adbInstalling &&
             !audioProbeBusy
@@ -908,6 +1069,7 @@ final class AssistantModel: ObservableObject {
                 self?.pollLiveBridge()
                 self?.refreshPendingBlackHoleInstall()
                 self?.checkEmbeddedVoiceHealth()
+                self?.checkIsolatedReturnSafety()
             }
         }
         // Never race two independent "adb devices" launches on startup.

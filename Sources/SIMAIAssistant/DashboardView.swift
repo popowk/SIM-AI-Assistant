@@ -5,7 +5,6 @@ import SIMAICore
 
 struct DashboardView: View {
     @EnvironmentObject private var model: AssistantModel
-    @Environment(\.openWindow) private var openWindow
 
     @State private var previewExport = false
     @State private var confirmDownlink = false
@@ -52,15 +51,7 @@ struct DashboardView: View {
             .padding(22)
         }
         .frame(minWidth: 740, minHeight: 540)
-        .onReceive(NotificationCenter.default.publisher(
-            for: Notification.Name("SIMAI_OPEN_VOICE_ON_RINGING"))) { _ in
-            openWindow(id: "embedded-voice")
-        }
-        .onReceive(NotificationCenter.default.publisher(
-            for: Notification.Name("SIMAI_CLOSE_VOICE_AFTER_CALL"))) { _ in
-            NSApp.windows.filter { $0.title == "ChatGPT Voice · 内嵌浏览器" }
-                .forEach { $0.close() }
-        }
+
         .confirmationDialog("测试通话下行音频？", isPresented: $confirmDownlink, titleVisibility: .visible) {
             Button("已取得同意，开始 2 秒下行电平测试") {
                 model.runPhoneAudioProbe(.downlink)
@@ -353,7 +344,7 @@ struct DashboardView: View {
                 get: { model.autoCallEnabled },
                 set: { model.setAutoCallEnabled($0) }
             ))
-            Toggle("自动配置 GPT 虚拟麦克风及扬声器", isOn: Binding(
+            Toggle("自动配置 GPT 输入及音频路由", isOn: Binding(
                 get: { model.automaticGPTOutputEnabled },
                 set: { model.setAutomaticGPTOutputEnabled($0) }
             ))
@@ -368,17 +359,35 @@ struct DashboardView: View {
             .font(.headline)
             Text("这是内嵌浏览器的网站权限设置：开启后网页不再反复询问麦克风，关闭后每次询问。macOS 系统隐私权限仍需单独授权。")
                 .font(.caption).foregroundStyle(.secondary)
+            Toggle("视频兼容：只隔离 ChatGPT 声音（不切换 Mac 总输出）", isOn: Binding(
+                get: { model.isolatedChatGPTOutputEnabled },
+                set: { model.setIsolatedChatGPTOutputEnabled($0) }
+            ))
+            .font(.headline)
+            Text(model.isolatedChatGPTOutputEnabled
+                ? "默认开启。视频和其他软件保持原有声音输出；ChatGPT 网页单独连接 BlackHole 16ch。只有网页确认独立输出后才自动接听，无法验证就不接听。"
+                : "传统模式会修改 Mac 总输出，播放中的视频也可能进入电话通道；仅用于设备兼容性测试。")
+                .font(.caption).foregroundStyle(.secondary)
+            if model.isolatedChatGPTOutputEnabled {
+                Label(model.embeddedVoiceBrowser.isolatedOutputReady
+                        ? "网页独立音频已配置" : "网页独立音频待就绪",
+                      systemImage: model.embeddedVoiceBrowser.isolatedOutputReady
+                          ? "checkmark.shield" : "speaker.slash")
+                    .font(.caption)
+                Text(model.embeddedVoiceBrowser.isolatedOutputStatus)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Toggle("Mac 同时监听来电者与 GPT（关闭可减少回音）", isOn: Binding(
                 get: { model.allowCallerMonitorDuringAI },
                 set: { model.setAllowCallerMonitorDuringAI($0) }
             ))
-            Text("默认只监听 GPT 的返回声音，但来电者仍会送往 BlackHole 2ch 和 GPT，双方电话语音传输不受影响。")
+            Text("来电者始终走 BlackHole 2ch 送往 GPT；视频兼容模式只对 ChatGPT 网页音频设置 BlackHole 16ch，电脑上的视频不会进入电话。")
+                .font(.caption).foregroundStyle(.secondary)
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("打开内嵌 ChatGPT 登录与 Voice") {
                     model.setEmbeddedVoiceBrowserEnabled(true)
-                    openWindow(id: "embedded-voice")
-                    NSApp.activate(ignoringOtherApps: true)
+                    model.showEmbeddedVoiceWindow(activate: true)
                 }
                 .buttonStyle(.borderedProminent)
                 if model.useEmbeddedVoiceBrowser {
@@ -393,7 +402,7 @@ struct DashboardView: View {
             if model.useEmbeddedVoiceBrowser {
                 Text(model.embeddedVoiceStatus)
                     .font(.caption.weight(.medium))
-                Text("点击「打开内嵌 ChatGPT」可设置固定网址。上方直接选择是否始终允许网站麦克风；Voice 结束后，本程序自动接听的电话将尝试同步挂断。")
+                Text("建议开启视频兼容隔离模式：视频保留原声卡，ChatGPT 仅通过独立 WebKit 声音元素输出到 BlackHole；网页无法提供隔离能力时不自动接听。")
                     .font(.caption).foregroundStyle(.secondary)
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -471,7 +480,7 @@ struct DashboardView: View {
                 Text(model.blackHoleInstallerStatus)
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Picker("通话监听耳机／扬声器", selection: $model.selectedVoiceMonitorOutputID) {
+            Picker("通话监听耳机／扬声器（自动恢复设备）", selection: $model.selectedVoiceMonitorOutputID) {
                 Text("请选择真实输出设备").tag("")
                 ForEach(model.audio.devices.filter {
                     !$0.displayName.localizedCaseInsensitiveContains("BlackHole") &&
@@ -734,7 +743,9 @@ struct DashboardView: View {
                 }
             }
             .disabled(model.aiReplyMonitorEnabled)
-            Text("只需选择真实耳机作为监听目标。启用上方「自动切换 BlackHole 16ch」后，SIM AI 会在 GPT 电话会话中自动切换 macOS 输出，结束后尝试恢复；不必在这个下拉框中选择 BlackHole。")
+            Text(model.isolatedChatGPTOutputEnabled
+                ? "视频兼容模式下，本机默认扬声器不切换。通话耳机按硬件 UID 保存，蓝牙/显示器重新连接会自动重选；ChatGPT 独立使用 BlackHole 16ch。"
+                : "传统全局模式仅供兼容测试：会切换 Mac 默认声音到 BlackHole 16ch，可能将视频一起路由到电话；请勿在播放视频时使用。")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("开始在耳机监听 GPT") { confirmAIReplyMonitor = true }

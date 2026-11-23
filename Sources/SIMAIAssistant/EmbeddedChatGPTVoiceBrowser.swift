@@ -13,6 +13,24 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     @Published private(set) var status = "首次使用请在内嵌网页自行登录 ChatGPT"
     @Published private(set) var microphoneActive = false
     @Published private(set) var loaded = false
+    @Published private(set) var isolatedAudioOutputEnabled = true
+    @Published private(set) var isolatedOutputReady = false
+    @Published private(set) var isolatedOutputStatus = "等待 Voice 网页创建独立声音通道"
+    var onIsolatedOutputChange: ((Bool) -> Void)?
+    private var isolateCheckBusy = false
+    private var lastIsolationCheck = Date.distantPast
+
+    func setIsolatedAudioOutputEnabled(_ enabled: Bool) {
+        isolatedAudioOutputEnabled = enabled
+        if !enabled { updateIsolatedOutputReady(false) }
+        else if loaded { routeCurrentVoiceAudioIfNeeded(force: true) }
+    }
+
+    private func updateIsolatedOutputReady(_ ready: Bool) {
+        guard isolatedOutputReady != ready else { return }
+        isolatedOutputReady = ready
+        onIsolatedOutputChange?(ready)
+    }
     @Published var automaticVoiceButtonEnabled =
         UserDefaults.standard.object(forKey: "SIMAI_EMBEDDED_VOICE_AUTOCLICK") as? Bool ?? true
     @Published var destinationDraft =
@@ -81,6 +99,34 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         configuration.websiteDataStore = .default()
         // Media autoplay is not equivalent to microphone permission.
         configuration.mediaTypesRequiringUserActionForPlayback = []
+        // Route only this WKWebView's audio elements, NOT the whole Mac.
+        // When a target sink is known, postpone HTMLMediaElement.play()
+        // until the device has been selected. Failure does not fall back
+        // to system output, protecting unrelated movie audio.
+        let isolatedMediaScript = #"""
+        (() => {
+          if (location.protocol !== 'https:' || location.hostname !== 'chatgpt.com') return;
+          if (window.__simaiAudioIsolationInstalled) return;
+          window.__simaiAudioIsolationInstalled = true;
+          window.__simaiAudioSinkID = '';
+          window.__simaiAudioElements = new Set();
+          const nativePlay = HTMLMediaElement.prototype.play;
+          HTMLMediaElement.prototype.play = function(...args) {
+            if (window.__simaiAudioElements.size < 200) {
+              window.__simaiAudioElements.add(this);
+            }
+            const sink = window.__simaiAudioSinkID;
+            if (sink && typeof this.setSinkId === 'function') {
+              return Promise.resolve(this.setSinkId(sink))
+                .then(() => nativePlay.apply(this, args));
+            }
+            return nativePlay.apply(this, args);
+          };
+        })();
+        """#
+        configuration.userContentController.addUserScript(WKUserScript(
+            source: isolatedMediaScript, injectionTime: .atDocumentStart,
+            forMainFrameOnly: true))
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = self
         view.uiDelegate = self
@@ -124,6 +170,9 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         guard loaded else { return }
         loaded = false
         lastStartAttempt = .distantPast
+        lastIsolationCheck = .distantPast
+        isolateCheckBusy = false
+        updateIsolatedOutputReady(false)
         webView.stopLoading()
         previousCaptureState = .none
         webView.loadHTMLString("", baseURL: nil)
@@ -163,7 +212,104 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
                 ? "Voice 麦克风已静音，语音会话不等于结束"
                 : "Voice 已停止使用麦克风；正在判断是否应同步挂断电话"
         onDiagnostic?(active ? "VOICE_WEBKIT_CAPTURE_ACTIVE" : "VOICE_WEBKIT_CAPTURE_INACTIVE")
+        if active && isolatedAudioOutputEnabled {
+            routeCurrentVoiceAudioIfNeeded(force: true)
+        } else if !active {
+            updateIsolatedOutputReady(false)
+        }
         onMicrophoneChange?(active)
+    }
+
+    /// Best effort per-page speaker selection supported by macOS WebKit.
+    /// This inspects ONLY audio device labels and active media elements; it
+    /// does not read ChatGPT text, cookies, microphone samples or WebRTC data.
+    /// We never claim a working route based only on an available API.
+    func routeCurrentVoiceAudioIfNeeded(force: Bool = false) {
+        guard loaded, isolatedAudioOutputEnabled, isOfficialPage,
+              microphoneActive, !isolateCheckBusy,
+              force || Date().timeIntervalSince(lastIsolationCheck) >= 2 else { return }
+        isolateCheckBusy = true
+        lastIsolationCheck = Date()
+        let functionBody = #"""
+        if (location.protocol !== 'https:' || location.hostname !== 'chatgpt.com') {
+          return {code:'ORIGIN_NOT_ALLOWED'};
+        }
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+          return {code:'MEDIA_DEVICES_UNAVAILABLE'};
+        }
+        if (typeof HTMLMediaElement.prototype.setSinkId !== 'function') {
+          return {code:'SET_SINK_UNSUPPORTED'};
+        }
+        let devices;
+        try { devices = await navigator.mediaDevices.enumerateDevices(); }
+        catch (_) { return {code:'ENUMERATE_OUTPUT_FAILED'}; }
+        const target = devices.find(d => d.kind === 'audiooutput'
+          && (d.label || '').toLowerCase().includes('blackhole 16ch'));
+        if (!target || !target.deviceId) {
+          return {code:'BLACKHOLE16_NOT_LISTED'};
+        }
+        // Includes detached Audio() objects which registered at play().
+        window.__simaiAudioSinkID = target.deviceId;
+        const set = new Set([
+          ...document.querySelectorAll('audio, video'),
+          ...(window.__simaiAudioElements || [])
+        ]);
+        let count = 0, unsupported = 0, failed = 0;
+        for (const node of set) {
+          if (!(node instanceof HTMLMediaElement)) continue;
+          const tracks = node.srcObject && typeof node.srcObject.getAudioTracks === 'function'
+            ? node.srcObject.getAudioTracks() : [];
+          // Only a real audio stream/playing media can confirm Voice output.
+          if (!tracks.length && (node.paused || node.readyState === 0)) continue;
+          if (typeof node.setSinkId !== 'function') { unsupported++; continue; }
+          try {
+            await node.setSinkId(target.deviceId);
+            if (node.sinkId === target.deviceId) count++;
+          } catch (_) { failed++; }
+        }
+        if (count > 0 && failed === 0 && unsupported === 0) {
+          return {code:'ISOLATED_WEB_MEDIA_ROUTED'};
+        }
+        if (failed || unsupported) return {code:'OUTPUT_SELECTION_REJECTED'};
+        return {code:'VOICE_REMOTE_MEDIA_NOT_READY'};
+        """#
+        webView.callAsyncJavaScript(functionBody, arguments: [:], in: nil,
+                                    in: .page) { [weak self] result in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.isolateCheckBusy = false
+                guard self.loaded && self.isolatedAudioOutputEnabled else { return }
+                let code: String
+                switch result {
+                case .success(let value):
+                    code = (value as? [String: Any])?["code"] as? String ??
+                        "ISOLATED_OUTPUT_UNKNOWN"
+                case .failure:
+                    code = "ISOLATED_OUTPUT_SCRIPT_UNSUPPORTED"
+                }
+                let ready = code == "ISOLATED_WEB_MEDIA_ROUTED"
+                self.updateIsolatedOutputReady(ready)
+                if ready {
+                    self.isolatedOutputStatus =
+                        "GPT 网页音频独立输出至 BlackHole 16ch；系统视频不切换"
+                } else {
+                    let descriptions: [String: String] = [
+                        "BLACKHOLE16_NOT_LISTED": "网页未列出 BlackHole 16ch；请确认已安装并授予麦克风权限",
+                        "SET_SINK_UNSUPPORTED": "WebKit 不支持该页面的单独输出选择",
+                        "VOICE_REMOTE_MEDIA_NOT_READY": "等待 Voice 网页创建可独立路由的声音流",
+                        "OUTPUT_SELECTION_REJECTED": "ChatGPT 网页拒绝单独输出；不会改变系统扬声器或自动接听",
+                        "ISOLATED_OUTPUT_SCRIPT_UNSUPPORTED": "网页独立音频路由检查失败",
+                    ]
+                    self.isolatedOutputStatus = descriptions[code] ??
+                        "独立 GPT 输出未就绪（" + code + "）"
+                }
+                // Only a finite list of fixed diagnostics; never include
+                // device IDs, media URLs, transcripts or website content.
+                if ready || force {
+                    self.onDiagnostic?(code)
+                }
+            }
+        }
     }
 
     /// Called by the existing once-per-2s app health loop. Avoid frequent
@@ -171,6 +317,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     func healthCheck(prepareAudio: () -> Bool) {
         guard loaded else { return }
         checkMicrophoneCapture()
+        if isolatedAudioOutputEnabled { routeCurrentVoiceAudioIfNeeded() }
         guard automaticVoiceButtonEnabled && isOfficialPage &&
               !microphoneActive &&
               Date().timeIntervalSince(lastStartAttempt) > 10 else { return }
@@ -243,6 +390,8 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard loaded else { return }
+        updateIsolatedOutputReady(false)
+        lastIsolationCheck = .distantPast
         status = isOfficialPage
             ? "ChatGPT 页面已加载；可以在这里登录或开启 Voice"
             : "正在完成网页登录；部分 Google／SSO 方式不支持内嵌浏览器"
@@ -375,6 +524,20 @@ struct EmbeddedChatGPTVoiceWindow: View {
                 get: { browser.automaticVoiceButtonEnabled },
                 set: { model.setEmbeddedVoiceAutoStart($0) }
             ))
+            if browser.isolatedAudioOutputEnabled {
+                HStack {
+                    Label(browser.isolatedOutputReady ? "独立音频路由已就绪" : "独立音频路由待验证",
+                          systemImage: browser.isolatedOutputReady
+                              ? "checkmark.shield" : "speaker.slash")
+                        .font(.caption.weight(.medium))
+                    Button("检查 GPT 独立声音输出") {
+                        browser.checkMicrophoneCapture()
+                        browser.routeCurrentVoiceAudioIfNeeded(force: true)
+                    }
+                }
+                Text(browser.isolatedOutputStatus)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Text(browser.status)
                 .font(.caption)
                 .foregroundStyle(.secondary)
