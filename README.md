@@ -1,4 +1,4 @@
-# SIM AI Assistant · V0.4.10（GPT 声音输出自动切换与恢复）
+# SIM AI Assistant · V0.4.11（BlackHole 官方驱动一键安装）
 
 **设备目标**：vivo S9e / Android 13 / 中国联通实体 SIM + Apple Silicon Mac / macOS 26.6.2。
 **源代码**：https://github.com/popowk/SIM-AI-Assistant
@@ -11,6 +11,13 @@
 - Mac 本地音频设备检查、麦克风电平、扬声器试听和设备恢复。
 - 诊断 ZIP、匿名事件日志、1/7/14 天清理与「清空全部（含今天）」。
 
+## V0.4.11 · 在软件中一键获取官方 BlackHole 安装程序（2026-11-23）
+
+- **不需要 Homebrew**：当 Mac 未检测到 BlackHole 16ch 或 2ch 时，SIM AI Assistant「第四阶段 · GPT 回复监听」直接显示「一键安装 BlackHole 16ch」或「安装 BlackHole 2ch」。点击后先提示用户从官方来源下载，确认后应用直接经 HTTPS 访问 Existential Audio 官方下载站，自动下载对应 0.7.1 安装包。
+- **安装前安全校验**：应用校验所下载包的固定 SHA-256，与 Homebrew 官方 Cask 记录一致，检查非空合理大小；任何校验失败均不会打开安装程序。仅把用户自行请求的官方安装包保存在个人 App Support 的 OfficialDriverDownloads 目录，不会放入 SIM AI Assistant 的发行 ZIP 或 GitHub release。
+- **macOS 授权安装**：校验后使用系统 Installer 打开官方 `.pkg`，用户在 macOS 安装程序中授予必要的管理员权限。不能跳过系统授权、不能静默安装、不能假定已安装就是可用。系统音频服务可能要求重启 Mac。用户安装过程中程序会在后台短时轮询音频设备，识别到 BlackHole 时自动更新状态。
+- **为什么没有打进 ZIP**：BlackHole 源码是 GPLv3，但官网明确规定官方编译二进制、名称和相关商标的第三方分发需要另外授权。因此产品集成的是官方下载、固定校验和系统安装器引导，**不是重新分发官方驱动二进制**。许可参考 https://github.com/ExistentialAudio/BlackHole/blob/master/LICENSE。
+- **不改手机**：本次仅更新 Mac V0.4.11 Build 28，手机 Companion V0.3.5、电话状态、短信转飞书和现有 GPT 双向音频协议都不变。
 ## V0.4.10 · BlackHole 16ch 自动输出切换与安全恢复（2026-11-23）
 
 ### 改进点（仅 Mac，Android APK 无变化）
