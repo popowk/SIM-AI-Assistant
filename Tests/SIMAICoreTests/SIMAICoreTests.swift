@@ -20,6 +20,19 @@ final class SIMAICoreTests: XCTestCase {
     }
 
 
+    func testPhoneHangupClosesOnlyAutoAnsweredVoiceBrowser() {
+        XCTAssertTrue(AutoCallVoiceShutdownPolicy.closeOnAudioEnd(
+            reason: "AUDIO_REMOTE_CLOSED", automaticAudioSession: true))
+        XCTAssertFalse(AutoCallVoiceShutdownPolicy.closeOnAudioEnd(
+            reason: "AUDIO_REMOTE_CLOSED", automaticAudioSession: false))
+        XCTAssertFalse(AutoCallVoiceShutdownPolicy.closeOnAudioEnd(
+            reason: "USER_STOPPED", automaticAudioSession: true))
+        XCTAssertTrue(AutoCallVoiceShutdownPolicy.closeOnPhoneIdle(
+            autoAnswerAcknowledged: true))
+        XCTAssertFalse(AutoCallVoiceShutdownPolicy.closeOnPhoneIdle(
+            autoAnswerAcknowledged: false))
+    }
+
     func testChatGPTIframeVerifiedMicrophoneDoesNotStayWaitingForever() {
         // Reproduces the 20:46 failure: WebKit capture was active but the
         // main page remained WAITING_FOR_CAPTURE while audio was in a frame.
