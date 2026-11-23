@@ -136,7 +136,10 @@ private final class LiveMacSpeaker {
               let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 320),
               let output = pcm.floatChannelData?[0] else { return }
         gate.lock()
-        if stopped || pending >= 18 {
+        // Bound queued audio to about 500ms. The old .dataPlayedBack
+        // completion may be delayed by hardware playback latency even when
+        // AVAudioEngine has rendered the buffer, causing false saturation.
+        if stopped || pending >= 25 {
             dropped += 1
             gate.unlock()
             return
@@ -148,9 +151,10 @@ private final class LiveMacSpeaker {
             let value = UInt16(bytes[i * 2]) | UInt16(bytes[i * 2 + 1]) << 8
             output[i] = Float(Int16(bitPattern: value)) / 32768
         }
-        // Count completion at actual playback, not merely buffer consumption,
-        // so pending measures the speaker backlog more accurately.
-        player.scheduleBuffer(pcm, completionCallbackType: .dataPlayedBack,
+        // Count completed rendering rather than hardware playback. The latter
+        // can lag by device/output latency and falsely treat a healthy stream
+        // as a stuck 20ms frame queue, silently discarding most caller audio.
+        player.scheduleBuffer(pcm, completionCallbackType: .dataRendered,
                               completionHandler: { [weak self] _ in
             guard let self else { return }
             self.gate.lock()
