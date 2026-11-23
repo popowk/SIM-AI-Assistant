@@ -875,6 +875,9 @@ final class AssistantModel: ObservableObject {
     private func automaticVoiceReadinessIssues() -> [String] {
         var problems: [String] = []
         if !liveSyncEnabled { problems.append("请打开电话状态同步") }
+        if !automaticGPTOutputEnabled {
+            problems.append("无人值守必须开启 GPT 自动音频配置")
+        }
         if !embeddedAudioProbeAvailable { problems.append("缺少电话 PCM Helper") }
         if !audio.devices.contains(where: { $0.displayName.caseInsensitiveCompare("BlackHole 2ch") == .orderedSame }) {
             problems.append("缺少 BlackHole 2ch")
@@ -942,10 +945,12 @@ final class AssistantModel: ObservableObject {
         }
         // Fail closed if the official Voice UI was not pre-armed this session.
         // Checking for virtual devices cannot prove that ChatGPT is listening.
-        let browserReady = !useEmbeddedVoiceBrowser ||
-            (embeddedVoiceCaptureActive &&
-             (!isolatedChatGPTOutputEnabled ||
-              embeddedVoiceBrowser.isolatedOutputReady))
+        let browserReady = VoiceAudioIsolationPolicy.browserReady(
+            embedded: useEmbeddedVoiceBrowser,
+            microphoneCapturing: embeddedVoiceCaptureActive,
+            isolationEnabled: isolatedChatGPTOutputEnabled,
+            isolatedMediaRouted: embeddedVoiceBrowser.isolatedOutputReady
+        )
         let armed = autoCallEnabled && voiceSessionPrepared && browserReady &&
             automaticVoiceReadinessIssues().isEmpty && !adbInstalling &&
             !audioProbeBusy
