@@ -368,9 +368,42 @@ private final class LiveAIReplyCapture {
         // Only this named virtual device is tapped. If it is set as the
         // macOS system output, other applications may ALSO feed this device.
         // User is warned to silence other apps before enabling PSTN uplink.
+        // BlackHole 16ch is a multichannel virtual device. Previously
+        // converter.channelMap=[0] silently lost GPT if WebKit wrote stereo
+        // content to another channel pair. Choose the loudest real source
+        // channel from the virtual device before downmixing; this has no
+        // effect on the Mac's global output routing.
+        var selectedSourceChannel = 0
         input.installTap(onBus: 0, bufferSize: 1024, format: source) {
             [weak self, converter, converted] buffer, _ in
             guard let self else { return }
+            if let channels = buffer.floatChannelData {
+                let count = Int(buffer.frameLength)
+                let n = min(Int(buffer.format.channelCount), 16)
+                if count > 0 && n > 1 {
+                    var bestIndex = selectedSourceChannel
+                    var bestPower = 0.0
+                    for channel in 0..<n {
+                        var power = 0.0
+                        for frame in 0..<count {
+                            let sample = buffer.format.isInterleaved
+                                ? channels[0][frame * n + channel]
+                                : channels[channel][frame]
+                            power += Double(sample) * Double(sample)
+                        }
+                        if power > bestPower {
+                            bestPower = power
+                            bestIndex = channel
+                        }
+                    }
+                    // Require a measurable real signal before switching.
+                    if bestIndex != selectedSourceChannel &&
+                       bestPower / Double(count) > 0.000_009 {
+                        selectedSourceChannel = bestIndex
+                        converter.channelMap = [NSNumber(value: bestIndex)]
+                    }
+                }
+            }
             converted.frameLength = 0
             var supplied = false
             var err: NSError?
