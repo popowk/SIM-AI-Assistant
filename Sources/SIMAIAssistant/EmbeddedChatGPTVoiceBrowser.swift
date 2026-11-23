@@ -281,6 +281,11 @@ struct EmbeddedChatGPTVoiceWindow: View {
                 .foregroundStyle(.secondary)
             EmbeddedChatGPTWebView(controller: browser)
                 .onAppear { browser.loadIfNeeded() }
+                .onDisappear {
+                    if model.livePhoneState == "IDLE" {
+                        browser.releaseForIdle()
+                    }
+                }
                 .frame(minHeight: 500)
         }
         .padding(12)
