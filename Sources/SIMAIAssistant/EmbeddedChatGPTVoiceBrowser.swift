@@ -244,7 +244,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         try { devices = await navigator.mediaDevices.enumerateDevices(); }
         catch (_) { return {code:'ENUMERATE_OUTPUT_FAILED'}; }
         const target = devices.find(d => d.kind === 'audiooutput'
-          && /blackhole\\s*16ch/i.test(d.label || ''));
+          && (d.label || '').toLowerCase().includes('blackhole 16ch'));
         if (!target || !target.deviceId) {
           return {code:'BLACKHOLE16_NOT_LISTED'};
         }
