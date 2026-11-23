@@ -1,4 +1,6 @@
-# SIM AI Assistant · V0.4.17（启动免重连、Voice 结束联动挂断、网站麦克风授权）
+# SIM AI Assistant · V0.4.18（看视频也可尝试独立 GPT 音频隔离）
+
+> 默认开启「视频兼容：只隔离 ChatGPT 声音」：不再把整个 Mac 的默认输出切到 BlackHole 16ch；内嵌 ChatGPT 使用 WebKit 在支持时将实际网页音频元素独立路由至 BlackHole 16ch。若网页未提供可路由的音频元素、WebKit 没有列出设备或输出选择被拒绝，则自动接听保持关闭，防止视频声误入运营商通话。仅支持官方 chatgpt.com；不读取网页对话、凭据或媒体数据。每次耳机、蓝牙和视频输出设备改变后，监听目标会用 CoreAudio 设备 UID 恢复，而不是依赖会变化的临时设备编号。保留可手动启用的旧全局切换作兼容测试（视频播放时不要启用）；macOS v0.4.18 Build35，手机 Companion v0.3.6 未变。此方案需要在目标 Mac 上确认 Voice 使用 HTMLMediaElement 并可设置 setSinkId；Web Audio 或非标准播放链路不保证兼容。
 
 > 本版启动时按顺序扫描 ADB、预热已授权手机监听服务、建立状态同步，并在退出时释放本程序的端口转发，降低首次重连错误。针对本应用自动接听的电话，持续检测 Voice 麦克风采集；若超过 4 秒未恢复，通过带 Android 会话 ID 和 OFFHOOK 序列号校验的通道请求结束当前电话。新版 Companion 提供专用挂断接口；旧版 Companion 可尝试经严格状态校验的 ADB 挂断键兼容方式。内嵌 ChatGPT 浏览器和主面板均提供明确的「始终允许官方网站麦克风」开关，关闭即每次询问。系统级权限仍由 macOS 控制；无论是安卓挂断 API 还是键事件，均需 vivo S9e 实机验证。
 
