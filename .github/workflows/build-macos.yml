@@ -8,7 +8,7 @@ on:
 
 # Only the newest main build should publish the easy-download test release.
 concurrency:
-  group: simai-auto-blackhole-v0410-${{ github.ref }}
+  group: simai-microphone-v0412-${{ github.ref }}
   cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 permissions:
