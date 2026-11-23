@@ -1,6 +1,6 @@
 # Android Companion 固定签名与无损升级迁移说明
 
-版本：Mac V0.4.6 Build 23 / Android Companion V0.3.4 (versionCode 9)
+当前签名流程适用于 Mac V0.4.8 Build 25 / Android Companion V0.3.5 (versionCode 10)。
 
 ## 本次代码已实现
 
@@ -11,7 +11,7 @@
 
 ## 需要仓库管理员一次性准备（不能由公开 CI 自动发明私钥）
 
-在你信任且受控的本地 Mac 上创建并离线备份 Android 签名 keystore（只做一次；后续升级必须使用同一证书）。**如果旧签名 keystore 仍然可找到，请优先复用旧签名，不要生成新证书。**
+推荐直接在受信任 Mac 执行 `bash Scripts/setup-android-signing.sh`，脚本会创建或复用 keystore，通过本人已授权的 GitHub CLI 把四项 Secrets 上传。或者手动创建并离线备份 Android 签名 keystore（只做一次；后续升级必须使用同一证书）。**如果旧签名 keystore 仍然可找到，请优先复用旧签名，不要生成新证书。**
 
 可以使用 JDK 17 的 `keytool -genkeypair -keystore ~/simai-companion-private.jks -storetype PKCS12 -alias simai-companion -keyalg RSA -keysize 3072 -validity 36500`，按交互提示输入并妥善保存密码、备份 keystore。不能把它提交到 GitHub 代码仓库、公开日志、诊断 ZIP 或聊天。
 
