@@ -1,4 +1,8 @@
-# SIM AI Assistant · V0.4.14（内嵌 ChatGPT Voice 浏览器实验）
+# SIM AI Assistant · V0.4.15（来电按需启动 Voice · 轻量待命试验版）
+
+> 本版不添加开机自启动。Mac 应用需由用户打开并保持运行。平时仅保持 ADB 电话状态同步；RINGING 后先验证 HAL PCM 渲染，再加载 ChatGPT 网页并尝试启动 Voice。WebKit 麦克风采集活跃且通话仍在响铃时才请求 Android 自动接听。Voice 超时或音频预检失败则不接听，结束后卸载网页内容但保留登录状态。网页自动启动可能被官方站点拒绝。无法保证 GPT 实际听到语音，仍需实机验证。
+
+
 
 **设备目标**：vivo S9e / Android 13 / 中国联通实体 SIM + Apple Silicon Mac / macOS 26.6.2。
 **源代码**：https://github.com/popowk/SIM-AI-Assistant

@@ -15,22 +15,21 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     @Published var automaticVoiceButtonEnabled =
         UserDefaults.standard.object(forKey: "SIMAI_EMBEDDED_VOICE_AUTOCLICK") as? Bool ?? true
 
-    let webView: WKWebView
+    // Merely constructing WKWebView can allocate WebKit processes. Keep
+    // the whole web view lazy until an incoming call or manual sign-in.
+    lazy var webView: WKWebView = {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        // Media autoplay is not equivalent to microphone permission.
+        configuration.mediaTypesRequiringUserActionForPlayback = []
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.navigationDelegate = self
+        view.uiDelegate = self
+        return view
+    }()
     var onMicrophoneChange: ((Bool) -> Void)?
     var onDiagnostic: ((String) -> Void)?
     private var lastStartAttempt = Date.distantPast
-
-    override init() {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
-        // WebRTC can still require an OS prompt and a real browser gesture.
-        // This property only configures media autoplay, not mic authorization.
-        configuration.mediaTypesRequiringUserActionForPlayback = []
-        webView = WKWebView(frame: .zero, configuration: configuration)
-        super.init()
-        webView.navigationDelegate = self
-        webView.uiDelegate = self
-    }
 
     private var isOfficialPage: Bool {
         let url = webView.url
@@ -48,8 +47,25 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     }
 
     func reload() {
-        loadIfNeeded()
-        webView.reload()
+        if loaded { webView.reload() }
+        else { loadIfNeeded() }
+    }
+
+    /// Unload the official web application between calls to release page,
+    /// WebRTC and JavaScript resources. Persistent WebKit sign-in is kept;
+    /// WebKit may retain shared process memory until macOS reclaims it.
+    func releaseForIdle() {
+        guard loaded else { return }
+        loaded = false
+        lastStartAttempt = .distantPast
+        webView.stopLoading()
+        webView.loadHTMLString("", baseURL: nil)
+        if microphoneActive {
+            microphoneActive = false
+            onMicrophoneChange?(false)
+        }
+        status = "空闲省内存：ChatGPT 网页已卸载，登录数据保留"
+        onDiagnostic?("VOICE_PAGE_UNLOADED_IDLE")
     }
 
     func setAutomaticVoiceButton(_ enabled: Bool) {
@@ -80,7 +96,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         checkMicrophoneCapture()
         guard automaticVoiceButtonEnabled && isOfficialPage &&
               !microphoneActive &&
-              Date().timeIntervalSince(lastStartAttempt) > 75 else { return }
+              Date().timeIntervalSince(lastStartAttempt) > 10 else { return }
         guard prepareAudio() else {
             status = "BlackHole 2ch／16ch 未准备好；未点击 Voice"
             return
@@ -149,6 +165,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard loaded else { return }
         status = isOfficialPage
             ? "ChatGPT 页面已加载；可以在这里登录或开启 Voice"
             : "正在完成网页登录；部分 Google／SSO 方式不支持内嵌浏览器"
@@ -202,7 +219,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
 
     func webView(_ webView: WKWebView,
                  requestMediaCapturePermissionFor origin: WKSecurityOrigin,
-                 initiatedBy frame: WKFrameInfo,
+                 initiatedByFrame frame: WKFrameInfo,
                  type: WKMediaCaptureType,
                  decisionHandler: @escaping (WKPermissionDecision) -> Void) {
         // The user must authorize capture in the WebKit/macOS permission
@@ -263,6 +280,12 @@ struct EmbeddedChatGPTVoiceWindow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             EmbeddedChatGPTWebView(controller: browser)
+                .onAppear { browser.loadIfNeeded() }
+                .onDisappear {
+                    if model.livePhoneState == "IDLE" {
+                        browser.releaseForIdle()
+                    }
+                }
                 .frame(minHeight: 500)
         }
         .padding(12)

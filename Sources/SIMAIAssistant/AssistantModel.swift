@@ -31,7 +31,7 @@ final class AssistantModel: ObservableObject {
         UserDefaults.standard.object(forKey: "SIMAI_AUTO_CALL") as? Bool ?? true
     @Published var voiceSessionPrepared = false
     @Published var useEmbeddedVoiceBrowser =
-        UserDefaults.standard.object(forKey: "SIMAI_EMBEDDED_VOICE_MODE") as? Bool ?? false
+        UserDefaults.standard.object(forKey: "SIMAI_EMBEDDED_VOICE_MODE") as? Bool ?? true
     @Published var embeddedVoiceCaptureActive = false
     @Published var embeddedVoiceStatus = "内嵌 ChatGPT Voice 未启用；登录后将通过 WebKit 验证麦克风采集"
     @Published var autoCallStatus = "自动接听已设为默认，但需要先准备可用的语音会话，避免来电被接起后无人回答"
@@ -91,8 +91,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.14"
-    let buildNumber = "31"
+    let version = "0.4.15"
+    let buildNumber = "32"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -103,6 +103,12 @@ final class AssistantModel: ObservableObject {
     private var voiceStream: PhoneAudioStream?
     private var autoCallState = AutoCallStateMachine()
     private var autoCallAudioRequested = false
+    private var incomingVoicePending = false
+    private var incomingVoiceBlockedUntilIdle = false
+    private var incomingPreflightRunning = false
+    private var incomingPreflightPassed = false
+    private var incomingVoiceDeadline: Date?
+    private var previousObservedPhoneState = ""
     private var screenControlProcess: Process?
     private var voiceSessionID = ""
     private var pendingBlackHoleInstallChannels: Int?
@@ -283,13 +289,11 @@ final class AssistantModel: ObservableObject {
         useEmbeddedVoiceBrowser = enabled
         UserDefaults.standard.set(enabled, forKey: "SIMAI_EMBEDDED_VOICE_MODE")
         if enabled {
-            embeddedVoiceStatus = "内嵌浏览器模式已启用；请在独立窗口自行登录 ChatGPT"
-            embeddedVoiceBrowser.loadIfNeeded()
-            embeddedVoiceBrowser.checkMicrophoneCapture()
-            if embeddedVoiceBrowser.microphoneActive {
-                onEmbeddedVoiceCapture(true)
-            }
+            embeddedVoiceStatus = "轻量待命：只在手动打开或来电时加载 ChatGPT 网页"
         } else {
+            incomingVoicePending = false
+            incomingVoiceDeadline = nil
+            embeddedVoiceBrowser.releaseForIdle()
             embeddedVoiceCaptureActive = false
             voiceSessionPrepared = false
             autoCallState.reset()
@@ -323,32 +327,127 @@ final class AssistantModel: ObservableObject {
         embeddedVoiceCaptureActive = active
         guard useEmbeddedVoiceBrowser else { return }
         if active {
-            embeddedVoiceStatus = "已检测到内嵌网页正在采集麦克风；不代表 GPT 已听到真人说话"
-            if !voiceSessionPrepared {
+            embeddedVoiceStatus = "WebKit 已采集麦克风；电话实测才能确认 GPT 听懂语音"
+            if incomingVoicePending && incomingPreflightPassed &&
+               livePhoneState == "RINGING" && !incomingVoiceBlockedUntilIdle {
                 setVoiceSessionPrepared(true)
+                if voiceSessionPrepared {
+                    incomingVoicePending = false
+                    incomingVoiceDeadline = nil
+                    log(.info, .audio, "来电 Voice 与音频 HAL 预检已就绪",
+                        details: ["stage": "VOICE_CAPTURE_READY_AFTER_PREFLIGHT"])
+                    reactToAutomaticCallState("RINGING")
+                }
             }
-            log(.info, .audio, "网页真实音频采集激活，尝试预备自动接听",
-                details: ["capture": "ACTIVE"])
         } else {
-            embeddedVoiceStatus = "网页麦克风没有处于采集状态；已阻止新来电自动接听"
+            if voiceSessionPrepared || aiReplyToPhoneEnabled {
+                log(.warn, .audio, "Voice 采集停止，撤销自动接听及 GPT 回传",
+                    details: ["reason": "VOICE_CAPTURE_LOST"])
+            }
+            embeddedVoiceStatus = "Voice 麦克风未采集；自动接听未就绪"
             voiceSessionPrepared = false
             autoCallState.reset()
             if aiReplyToPhoneEnabled { stopGPTTwoWayPhoneBridge() }
-            if !liveVoiceActive { restoreAutomaticGPTOutput(forceInput: true) }
-            log(.warn, .audio, "ChatGPT 网页麦克风采集停止，已撤销自动接听",
-                details: ["capture": "INACTIVE"])
+            if !liveVoiceActive && !incomingVoicePending {
+                restoreAutomaticGPTOutput(forceInput: true)
+            }
         }
     }
 
     private func checkEmbeddedVoiceHealth() {
         guard useEmbeddedVoiceBrowser else { return }
+        // Never auto-start Voice merely because a WebKit page is loaded at idle.
+        guard incomingVoicePending else {
+            if liveVoiceActive { embeddedVoiceBrowser.checkMicrophoneCapture() }
+            return
+        }
+        if livePhoneState != "RINGING" {
+            // ADB may disconnect during a ringing session. Do not leave
+            // a live browser or virtual audio route running indefinitely.
+            incomingVoicePending = false
+            incomingVoiceBlockedUntilIdle = true
+            incomingPreflightPassed = false
+            incomingVoiceDeadline = nil
+            embeddedVoiceBrowser.releaseForIdle()
+            restoreAutomaticGPTOutput(forceInput: true)
+            log(.warn, .audio, "来电监听中断，放弃按需 Voice 启动",
+                details: ["reason": "VOICE_RINGING_STATE_LOST"])
+            return
+        }
+        if let deadline = incomingVoiceDeadline, Date() >= deadline {
+            incomingVoicePending = false
+            incomingVoiceBlockedUntilIdle = true
+            incomingPreflightPassed = false
+            voiceSessionPrepared = false
+            embeddedVoiceStatus = "Voice 启动超时：本次来电不自动接听"
+            log(.warn, .audio, "按需启动 Voice 超时，放弃本次接听",
+                details: ["reason": "ON_DEMAND_VOICE_TIMEOUT"])
+            embeddedVoiceBrowser.releaseForIdle()
+            restoreAutomaticGPTOutput(forceInput: true)
+            return
+        }
+        guard incomingPreflightPassed else { return }
         embeddedVoiceBrowser.healthCheck { [weak self] in
             guard let self else { return false }
-            guard self.autoCallEnabled, self.automaticGPTOutputEnabled else { return false }
-            self.refresh()
-            return self.prepareAutomaticGPTOutput()
+            return self.incomingVoicePending && self.incomingPreflightPassed &&
+                   self.livePhoneState == "RINGING"
         }
         embeddedVoiceBrowser.checkMicrophoneCapture()
+    }
+
+    /// While a call rings, first verify the HAL output can actually render
+    /// PCM on both the physical monitor and BlackHole 2ch. Only then load
+    /// the official Voice page and attempt to start its Voice UI.
+    private func beginOnDemandVoiceForRinging() {
+        guard autoCallEnabled && useEmbeddedVoiceBrowser,
+              !incomingVoicePending && !incomingVoiceBlockedUntilIdle,
+              !incomingPreflightRunning && !voiceSessionPrepared else { return }
+        let problems = automaticVoiceReadinessIssues()
+        if !problems.isEmpty {
+            incomingVoiceBlockedUntilIdle = true
+            autoCallStatus = "本次未自动接听：" + problems.joined(separator: "；")
+            return
+        }
+        guard prepareAutomaticGPTOutput() else {
+            incomingVoiceBlockedUntilIdle = true
+            autoCallStatus = "本次未自动接听：虚拟音频路由准备失败"
+            return
+        }
+        incomingVoicePending = true
+        incomingVoiceDeadline = Date().addingTimeInterval(25)
+        incomingPreflightRunning = true
+        incomingPreflightPassed = false
+        autoCallStatus = "检测到来电：正在验证声音输出，然后启动 Voice"
+        let monitor = UInt32(selectedVoiceMonitorOutputID)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let code = PhoneAudioStream.preflightOutputs(physicalOutputID: monitor)
+            await MainActor.run {
+                guard let self else { return }
+                self.incomingPreflightRunning = false
+                guard self.incomingVoicePending else { return }
+                guard self.livePhoneState == "RINGING" else {
+                    self.incomingVoicePending = false
+                    self.restoreAutomaticGPTOutput(forceInput: true)
+                    return
+                }
+                guard code == "PREFLIGHT_OK" else {
+                    self.incomingVoicePending = false
+                    self.incomingVoiceBlockedUntilIdle = true
+                    self.voiceSessionPrepared = false
+                    self.autoCallStatus = "未接听：音频实际渲染预检失败"
+                    self.log(.warn, .audio, "来电前音频输出预检失败",
+                             details: ["reason": code])
+                    self.restoreAutomaticGPTOutput(forceInput: true)
+                    return
+                }
+                self.incomingPreflightPassed = true
+                self.autoCallStatus = "音频预检成功：正在加载网页并启动 Voice"
+                self.embeddedVoiceBrowser.loadIfNeeded()
+                NotificationCenter.default.post(
+                    name: Notification.Name("SIMAI_OPEN_VOICE_ON_RINGING"), object: nil)
+                self.checkEmbeddedVoiceHealth()
+            }
+        }
     }
 
     /// This setting only arms an already running official Voice session.
@@ -466,6 +565,9 @@ final class AssistantModel: ObservableObject {
         if !enabled {
             autoCallState.reset()
             voiceSessionPrepared = false
+            incomingVoicePending = false
+            incomingVoiceBlockedUntilIdle = true
+            embeddedVoiceBrowser.releaseForIdle()
             stopGPTTwoWayPhoneBridge()
             restoreAutomaticGPTOutput(forceInput: true)
             autoCallStatus = "自动接听已关闭；不会接听后续来电"
@@ -475,9 +577,11 @@ final class AssistantModel: ObservableObject {
     }
 
     func setVoiceSessionPrepared(_ prepared: Bool) {
-        if prepared && useEmbeddedVoiceBrowser && !embeddedVoiceBrowser.microphoneActive {
+        if prepared && useEmbeddedVoiceBrowser &&
+           (!embeddedVoiceBrowser.microphoneActive || !incomingPreflightPassed ||
+            livePhoneState != "RINGING") {
             voiceSessionPrepared = false
-            autoCallStatus = "等待 WebKit 实际激活麦克风，防止 GPT 未启动就自动接听"
+            autoCallStatus = "等待响铃、音频预检及 WebKit 麦克风采集全部通过"
             return
         }
         if prepared { refresh() }
@@ -514,9 +618,34 @@ final class AssistantModel: ObservableObject {
     }
 
     private func reactToAutomaticCallState(_ state: String) {
-        // Recover after failed/aborted RINGING attempts with no PCM session.
-        if state == "IDLE", !liveVoiceActive && !liveVoiceStarting {
-            restoreAutomaticGPTOutput()
+        let newIdle = state == "IDLE" && previousObservedPhoneState != "IDLE" &&
+                      !previousObservedPhoneState.isEmpty
+        previousObservedPhoneState = state
+        if state == "RINGING" && !voiceSessionPrepared {
+            beginOnDemandVoiceForRinging()
+        }
+        if newIdle {
+            incomingVoicePending = false
+            incomingPreflightRunning = false
+            incomingPreflightPassed = false
+            incomingVoiceBlockedUntilIdle = false
+            incomingVoiceDeadline = nil
+            voiceSessionPrepared = false
+            if useEmbeddedVoiceBrowser && embeddedVoiceBrowser.loaded {
+                embeddedVoiceBrowser.releaseForIdle()
+                NotificationCenter.default.post(
+                    name: Notification.Name("SIMAI_CLOSE_VOICE_AFTER_CALL"), object: nil)
+            }
+            if !liveVoiceActive && !liveVoiceStarting {
+                restoreAutomaticGPTOutput(forceInput: true)
+            }
+            autoCallStatus = "空闲轻量待命 · 下次来电再启动 Voice"
+        } else if state == "OFFHOOK" && incomingVoicePending && !voiceSessionPrepared {
+            // Someone answered manually while Voice was being prepared.
+            incomingVoicePending = false
+            incomingVoiceBlockedUntilIdle = true
+            incomingVoiceDeadline = nil
+            autoCallStatus = "电话已手动接听；停止本次自动 Voice 启动"
         }
         // Fail closed if the official Voice UI was not pre-armed this session.
         // Checking for virtual devices cannot prove that ChatGPT is listening.
