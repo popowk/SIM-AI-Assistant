@@ -503,6 +503,50 @@ enum ADBInspector {
         }
     }
 
+    /// Shell-only secondary transport, independently permission-gated by Android.
+    /// Never trusts the adb broadcast's exit status: requires the exact ring
+    /// sequence and success code from the app's private state snapshot.
+    private static func answerViaGuardedADBBroadcast(
+        at selected: String?,
+        adb: URL,
+        serial: String,
+        expectedSession: String,
+        expectedSequence: Int
+    ) -> String {
+        let command = ["-s", serial, "shell", "am", "broadcast",
+                       "-a", "com.popowk.simai.companion.REQUEST_GUARDED_ANSWER",
+                       "-n", "com.popowk.simai.companion/.AnswerCommandReceiver",
+                       "--es", "session", expectedSession,
+                       "--ei", "sequence", String(expectedSequence)]
+        switch run(adb, args: command, timeout: 5) {
+        case .completed(0, _): break
+        case .completed: return "ANSWER_FALLBACK_BROADCAST_REJECTED"
+        case .timedOut: return "ANSWER_FALLBACK_BROADCAST_TIMEOUT"
+        case .launchFailed: return "ANSWER_FALLBACK_ADB_LAUNCH_FAILED"
+        }
+        for _ in 0..<3 {
+            let result = readPrivateStateSnapshot(
+                at: selected, authorizedSerial: serial)
+            if let snap = result.snapshot, snap.session == expectedSession {
+                if snap.privateAnswerSequence == expectedSequence {
+                    switch snap.privateAnswerResult {
+                    case "ANSWER_REQUESTED": return "ANSWER_FALLBACK_REQUESTED"
+                    case "PERMISSION_REQUIRED": return "ANSWER_FALLBACK_PERMISSION_REQUIRED"
+                    case "RING_CHANGED", "NOT_RINGING": return "ANSWER_FALLBACK_RING_CHANGED"
+                    case .some: return "ANSWER_FALLBACK_REJECTED"
+                    case .none: break
+                    }
+                }
+                if snap.state != "RINGING" ||
+                   snap.seq != expectedSequence {
+                    return "ANSWER_FALLBACK_RING_CHANGED"
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        return "ANSWER_FALLBACK_BROADCAST_NO_ACK"
+    }
+
     /// Independent Android-private one-shot answer fallback; no HTTP socket.
     /// Android validates both the current bridge session and ringing sequence.
     static func answerRingingViaPrivateLocalShell(
@@ -515,7 +559,8 @@ enum ADBInspector {
               expectedSequence > 0, !expectedSerial.isEmpty else {
             return "ANSWER_FALLBACK_NO_RING_GUARD"
         }
-        let state = readPrivateStateSnapshot(at: selected)
+        let state = readPrivateStateSnapshot(
+            at: selected, authorizedSerial: expectedSerial)
         guard let snapshot = state.snapshot else {
             return "ANSWER_FALLBACK_SNAPSHOT_UNAVAILABLE"
         }
@@ -541,6 +586,20 @@ enum ADBInspector {
         let authorized = devices.filter { $0.state == "device" }
         guard authorized.count == 1, authorized[0].serial == expectedSerial else {
             return "ANSWER_FALLBACK_DEVICE_CHANGED"
+        }
+        // APK v0.3.11 advertises this shell-only control path. Unlike the
+        // former file queue, it enters the live Android service immediately.
+        // Older APKs safely fall back to the existing private request file.
+        if snapshot.adbBroadcastAnswerAvailable == true {
+            let result = answerViaGuardedADBBroadcast(
+                at: selected, adb: adb, serial: expectedSerial,
+                expectedSession: expectedSession,
+                expectedSequence: expectedSequence)
+            if ["ANSWER_FALLBACK_REQUESTED",
+                "ANSWER_FALLBACK_PERMISSION_REQUIRED",
+                "ANSWER_FALLBACK_RING_CHANGED"].contains(result) {
+                return result
+            }
         }
         let script = "printf '%s|%s\\n' '\(expectedSession)' '\(expectedSequence)' > files/bridge-answer-request.tmp && mv files/bridge-answer-request.tmp files/bridge-answer-request"
         let escaped = "'" + script.replacingOccurrences(of: "'", with: "'\\''") + "'"
@@ -575,7 +634,8 @@ enum ADBInspector {
         // Some vivo builds fail to expose the one-shot result file via ADB
         // even though the foreground monitor processed the command. The
         // existing AtomicFile state snapshot is an independent confirmation.
-        let diagnostic = readPrivateStateSnapshot(at: selected)
+        let diagnostic = readPrivateStateSnapshot(
+            at: selected, authorizedSerial: expectedSerial)
         if let current = diagnostic.snapshot, current.session == expectedSession {
             if current.privateAnswerSequence == expectedSequence {
                 switch current.privateAnswerResult {
@@ -732,20 +792,29 @@ enum ADBInspector {
     /// Read a bounded, atomic JSON state snapshot from the already authorized
     /// Companion's private files. No HTTP, no ADB port forward, no raw output
     /// written to logs. Requires the debug APK's run-as access.
-    static func readPrivateStateSnapshot(at selected: String?) -> ADBSnapshotResult {
+    static func readPrivateStateSnapshot(
+        at selected: String?, authorizedSerial: String? = nil
+    ) -> ADBSnapshotResult {
         func failure(_ reason: String) -> ADBSnapshotResult {
             .init(snapshot: nil, reason: reason)
         }
         guard let adb = executable(at: selected) else { return failure("ADB_MISSING") }
-        let devices: [(serial: String, state: String)]
-        switch run(adb, args: ["devices"], timeout: 7) {
-        case .completed(0, let raw): devices = parseDevices(raw)
-        case .timedOut: return failure("ADB_ENUMERATION_TIMEOUT")
-        default: return failure("ADB_ENUMERATION_FAILED")
+        let serial: String
+        if let authorizedSerial, !authorizedSerial.isEmpty {
+            // This serial was obtained from an already-authorized single
+            // device bridge. adb -s fails closed if the device disconnects.
+            serial = authorizedSerial
+        } else {
+            let devices: [(serial: String, state: String)]
+            switch run(adb, args: ["devices"], timeout: 7) {
+            case .completed(0, let raw): devices = parseDevices(raw)
+            case .timedOut: return failure("ADB_ENUMERATION_TIMEOUT")
+            default: return failure("ADB_ENUMERATION_FAILED")
+            }
+            let authorized = devices.filter { $0.state == "device" }
+            guard authorized.count == 1 else { return failure("ADB_NOT_READY") }
+            serial = authorized[0].serial
         }
-        let authorized = devices.filter { $0.state == "device" }
-        guard authorized.count == 1 else { return failure("ADB_NOT_READY") }
-        let serial = authorized[0].serial
         switch run(adb, args: ["-s", serial, "shell", "run-as",
                                "com.popowk.simai.companion", "cat",
                                "files/bridge-snapshot.json"], timeout: 7) {
