@@ -32,9 +32,13 @@ private struct MenuBarCommands: View {
             model.openPhoneScreenControl()
         }
         Divider()
-        Text("v0.4.9 · 自动电话值守路由")
+        Button("恢复 Mac 原声音输出") {
+            model.restoreAutomaticGPTOutput()
+        }
+        Divider()
+        Text("v0.5.0 · 自动 BlackHole 输出切换")
         Button("退出 SIM AI Assistant") {
-            model.closePhoneScreenControl()
+            model.shutdownForAppExit()
             NSApp.terminate(nil)
         }
     }
