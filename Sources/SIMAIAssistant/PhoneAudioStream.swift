@@ -89,14 +89,22 @@ private final class LiveMacMicrophone {
     }
 }
 
+/// Continuously pull PCM from a bounded ring buffer instead of scheduling
+/// thousands of small AVAudioPlayerNode buffers. Those completion callbacks
+/// could stop draining under CoreAudio device routing and drop almost every
+/// 20ms phone frame even while the ADB stream remained healthy.
 private final class LiveMacSpeaker {
     private let engine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
-    private let format: AVAudioFormat
     private let gate = NSLock()
-    private var pending = 0
+    private let capacity = 320 * 50  // 1 second of 16kHz mono PCM
+    private var samples = [Float](repeating: 0, count: 320 * 50)
+    private var readIndex = 0
+    private var writeIndex = 0
+    private var queued = 0
     private var dropped = 0
+    private var rendered = 0
     private var stopped = false
+    private var source: AVAudioSourceNode?
 
     init(deviceID: AudioDeviceID? = nil) throws {
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
@@ -104,12 +112,18 @@ private final class LiveMacSpeaker {
                                          interleaved: false) else {
             throw LiveAudioFailure.reason("SPEAKER_FORMAT")
         }
-        self.format = format
-        engine.attach(player)
-        engine.connect(player, to: engine.mainMixerNode, format: format)
+        // AVAudioEngine pulls the amount of data needed by the actual device
+        // and performs any sample-rate conversion, without one playback
+        // completion handler per 20ms packet.
+        let node = AVAudioSourceNode(format: format) { [weak self] _, _, frameCount, audioData in
+            guard let self else { return noErr }
+            return self.render(frames: Int(frameCount), to: audioData)
+        }
+        source = node
+        engine.attach(node)
+        engine.connect(node, to: engine.mainMixerNode, format: format)
+
         if var target = deviceID {
-            // Route only the phone's downlink to the selected virtual device.
-            // Never change macOS system output or the user's headphones.
             guard let unit = engine.outputNode.audioUnit else {
                 throw LiveAudioFailure.reason("VOICE_ROUTE_NO_OUTPUT_UNIT")
             }
@@ -128,49 +142,72 @@ private final class LiveMacSpeaker {
             }
         }
         try engine.start()
-        player.play()
+    }
+
+    private func render(frames: Int, to audioData: UnsafeMutablePointer<AudioBufferList>) -> OSStatus {
+        let buffers = UnsafeMutableAudioBufferListPointer(audioData)
+        // Fill every output buffer so an underflow is guaranteed silence;
+        // never expose previously held or uninitialized sample data.
+        for buffer in buffers {
+            guard let ptr = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
+            ptr.update(repeating: 0, count: Int(buffer.mDataByteSize) / MemoryLayout<Float>.size)
+        }
+        guard let first = buffers.first,
+              let output = first.mData?.assumingMemoryBound(to: Float.self) else { return noErr }
+        let availableCapacity = Int(first.mDataByteSize) / MemoryLayout<Float>.size
+        let count = min(frames, availableCapacity)
+        gate.lock()
+        if !stopped {
+            for i in 0..<count {
+                if queued > 0 {
+                    output[i] = samples[readIndex]
+                    readIndex = (readIndex + 1) % capacity
+                    queued -= 1
+                }
+            }
+            rendered += count
+        }
+        gate.unlock()
+        return noErr
     }
 
     func feed(_ bytes: [UInt8]) {
-        guard bytes.count == 640,
-              let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 320),
-              let output = pcm.floatChannelData?[0] else { return }
+        guard bytes.count == 640 else { return }
         gate.lock()
-        // Bound queued audio to about 500ms. The old .dataPlayedBack
-        // completion may be delayed by hardware playback latency even when
-        // AVAudioEngine has rendered the buffer, causing false saturation.
-        if stopped || pending >= 25 {
+        defer { gate.unlock() }
+        guard !stopped else { return }
+        // Device restarts and brief Bluetooth interruptions cannot grow
+        // latency forever. Once full, drop only the oldest 20ms packet.
+        if queued + 320 > capacity {
+            readIndex = (readIndex + 320) % capacity
+            queued -= 320
             dropped += 1
-            gate.unlock()
-            return
         }
-        pending += 1
-        gate.unlock()
-        pcm.frameLength = 320
         for i in 0..<320 {
-            let value = UInt16(bytes[i * 2]) | UInt16(bytes[i * 2 + 1]) << 8
-            output[i] = Float(Int16(bitPattern: value)) / 32768
+            let value = UInt16(bytes[i * 2]) | (UInt16(bytes[i * 2 + 1]) << 8)
+            samples[writeIndex] = Float(Int16(bitPattern: value)) / 32768.0
+            writeIndex = (writeIndex + 1) % capacity
         }
-        // Count completed rendering rather than hardware playback. The latter
-        // can lag by device/output latency and falsely treat a healthy stream
-        // as a stuck 20ms frame queue, silently discarding most caller audio.
-        player.scheduleBuffer(pcm, completionCallbackType: .dataRendered,
-                              completionHandler: { [weak self] _ in
-            guard let self else { return }
-            self.gate.lock()
-            self.pending = max(0, self.pending - 1)
-            self.gate.unlock()
-        })
+        queued += 320
     }
+
     func droppedFrames() -> Int {
-        gate.lock(); defer { gate.unlock() }; return dropped
+        gate.lock(); defer { gate.unlock() }
+        return dropped
     }
+
+    func renderedFrames() -> Int {
+        gate.lock(); defer { gate.unlock() }
+        return rendered / 320
+    }
+
     func stop() {
         gate.lock()
         stopped = true
+        queued = 0
         gate.unlock()
-        player.stop()
         engine.stop()
+        source = nil
     }
 }
 
