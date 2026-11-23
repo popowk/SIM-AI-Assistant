@@ -1,4 +1,6 @@
-# SIM AI Assistant · V0.4.24（独立 Android 私有接听通道）
+# SIM AI Assistant · V0.4.25（接听权限和私有回执诊断）
+
+> Mac v0.4.25 Build42 / Companion v0.3.10：手机端明确报告 ANSWER_PHONE_CALLS 权限、私有接听服务状态及处理结果。独立接听回执文件失联时，Mac 可从同一来电的 AtomicFile 状态快照确认结果。若诊断报权限缺失，需在 Android 系统授权；仅凭 NO_ACK 不等于权限被拒绝。
 
 > v0.4.24 Build41 / Companion v0.3.9：已知 ADB_FILE 可读取手机状态、HTTP 不能接听时，优先通过 Android 私有一次性指令触发接听。双方校验当前来电会话与响铃序列，不使用 toybox nc 或按键模拟。升级需要重新安装 Mac 程序并用内置安装功能升级手机 APK；电话音频仍需 vivo 实机验证。
 
