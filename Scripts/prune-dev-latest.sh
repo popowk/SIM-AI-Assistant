@@ -3,10 +3,10 @@
 # Keep v0.4.14 temporarily as a rollback during real-call validation.
 set -euo pipefail
 
-repo="\${GITHUB_REPOSITORY:?GITHUB_REPOSITORY missing}"
-test -n "\${GH_TOKEN:-}" || { echo "GH_TOKEN missing"; exit 1; }
+repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY missing}"
+test -n "${GH_TOKEN:-}" || { echo "GH_TOKEN missing"; exit 1; }
 main_sha="$(gh api "repos/$repo/git/ref/heads/main" --jq '.object.sha')"
-if [[ "$main_sha" != "\${GITHUB_SHA:-}" ]]; then
+if [[ "$main_sha" != "${GITHUB_SHA:-}" ]]; then
   echo "Skip cleanup: another commit is already on main."
   exit 0
 fi
