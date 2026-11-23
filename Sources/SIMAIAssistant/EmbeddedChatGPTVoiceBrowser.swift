@@ -48,8 +48,25 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     }
 
     func reload() {
-        loadIfNeeded()
-        webView.reload()
+        if loaded { webView.reload() }
+        else { loadIfNeeded() }
+    }
+
+    /// Unload the official web application between calls to release page,
+    /// WebRTC and JavaScript resources. Persistent WebKit sign-in is kept;
+    /// WebKit may retain shared process memory until macOS reclaims it.
+    func releaseForIdle() {
+        guard loaded else { return }
+        loaded = false
+        lastStartAttempt = .distantPast
+        webView.stopLoading()
+        webView.loadHTMLString("", baseURL: nil)
+        if microphoneActive {
+            microphoneActive = false
+            onMicrophoneChange?(false)
+        }
+        status = "空闲省内存：ChatGPT 网页已卸载，登录数据保留"
+        onDiagnostic?("VOICE_PAGE_UNLOADED_IDLE")
     }
 
     func setAutomaticVoiceButton(_ enabled: Bool) {
@@ -263,6 +280,7 @@ struct EmbeddedChatGPTVoiceWindow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             EmbeddedChatGPTWebView(controller: browser)
+                .onAppear { browser.loadIfNeeded() }
                 .frame(minHeight: 500)
         }
         .padding(12)
