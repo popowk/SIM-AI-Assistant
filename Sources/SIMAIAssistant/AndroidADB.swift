@@ -503,6 +503,53 @@ enum ADBInspector {
         }
     }
 
+    /// One bounded fallback for ADB-forwarded HTTP timeouts: connect from
+    /// Android's own app UID to the Companion loopback. Never put its token
+    /// into the Mac command line, and never issue a blind call-toggle key.
+    static func answerRingingViaPrivateLocalShell(
+        at selected: String?,
+        expectedSession: String,
+        expectedSequence: Int
+    ) -> String {
+        guard !expectedSession.isEmpty, expectedSequence > 0 else {
+            return "ANSWER_FALLBACK_NO_RING_GUARD"
+        }
+        let result = readPrivateStateSnapshot(at: selected)
+        guard let snapshot = result.snapshot else {
+            return "ANSWER_FALLBACK_SNAPSHOT_UNAVAILABLE"
+        }
+        guard snapshot.session == expectedSession,
+              snapshot.seq == expectedSequence,
+              snapshot.state == "RINGING",
+              snapshot.events.last(where: { $0.seq == expectedSequence })?.state == "RINGING"
+        else { return "ANSWER_FALLBACK_RING_CHANGED" }
+        guard let adb = executable(at: selected) else {
+            return "ANSWER_FALLBACK_ADB_MISSING"
+        }
+        // The 64-byte credential is expanded inside Android's run-as only.
+        let script = #"""
+        token="$(cat files/bridge-token 2>/dev/null)"
+        test "__TOKEN_LENGTH__" -eq 64 || exit 4
+        printf 'POST /call/answer HTTP/1.1\r\nHost: localhost\r\nX-SIMAI-Token: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n' "$token" | toybox nc -w 3 127.0.0.1 18764
+        """#.replacingOccurrences(of: "__TOKEN_LENGTH__", with: "$" + "{#token}")
+            .replacingOccurrences(of: "\n", with: "; ")
+        let quoted = "'" + script.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let command = "run-as com.popowk.simai.companion sh -c " + quoted
+        switch run(adb, args: ["shell", command], timeout: 8) {
+        case .completed(0, let output):
+            return output.hasPrefix("HTTP/1.1 200") &&
+                   output.contains("\"answer_requested\"")
+                ? "ANSWER_FALLBACK_REQUESTED"
+                : "ANSWER_FALLBACK_REJECTED"
+        case .completed:
+            return "ANSWER_FALLBACK_SHELL_UNAVAILABLE"
+        case .timedOut:
+            return "ANSWER_FALLBACK_ADB_TIMEOUT"
+        case .launchFailed:
+            return "ANSWER_FALLBACK_ADB_LAUNCH_FAILED"
+        }
+    }
+
     /// Diagnoses three separate layers without exporting a serial, IP,
     /// authentication token, phone number or raw adb output:
     /// 1) ADB authorization, 2) ability to execute shell, 3) port forward.
