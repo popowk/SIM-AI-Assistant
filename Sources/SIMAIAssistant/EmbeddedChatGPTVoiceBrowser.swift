@@ -398,6 +398,21 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         else { loadIfNeeded() }
     }
 
+    /// A failed or finished PSTN call must NEVER navigate the visible
+    /// ChatGPT browser to blank HTML. Keep the website, Voice controls,
+    /// microphone permission and logged-in WebKit data in place for review
+    /// and for a subsequent call. Only an explicit user disable or app exit
+    /// may release the page.
+    func preservePageAfterCall(reason: String) {
+        guard loaded else { return }
+        status = reason == "TIMEOUT"
+            ? "本次来电 Voice 准备超时：未接听，ChatGPT 页面保留，可继续检查 Voice"
+            : "本次来电已结束，ChatGPT 页面已保留；不自动刷新或清空"
+        onDiagnostic?(reason == "TIMEOUT"
+                      ? "VOICE_START_TIMEOUT_PAGE_PRESERVED"
+                      : "VOICE_CALL_ENDED_PAGE_PRESERVED")
+    }
+
     /// Unload the official web application between calls to release page,
     /// WebRTC and JavaScript resources. Persistent WebKit sign-in is kept;
     /// WebKit may retain shared process memory until macOS reclaims it.
