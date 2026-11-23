@@ -1081,7 +1081,9 @@ final class AssistantModel: ObservableObject {
             // A phone can report IDLE before the audio stream's end callback.
             // Close only sessions our app acknowledged as auto-answered;
             // a manually opened ChatGPT tab is otherwise left alone.
-            if automaticAnswerAcknowledged {
+            if AutoCallVoiceShutdownPolicy.closeOnPhoneIdle(
+                autoAnswerAcknowledged: automaticAnswerAcknowledged
+            ) {
                 endAutoAnsweredVoiceBrowser(reason: "PHONE_IDLED")
             }
             // Reset the auto-answer guard as soon as the Android service
@@ -1842,8 +1844,10 @@ final class AssistantModel: ObservableObject {
                     // waiting only for IDLE leaves WebKit recording forever.
                     // Fail closed on a terminated auto-answered PCM stream,
                     // without attempting to hang up an uncertain phone call.
-                    if reason == "AUDIO_REMOTE_CLOSED" &&
-                       self.autoCallAudioRequested {
+                    if AutoCallVoiceShutdownPolicy.closeOnAudioEnd(
+                        reason: reason,
+                        automaticAudioSession: self.autoCallAudioRequested
+                    ) {
                         self.endAutoAnsweredVoiceBrowser(
                             reason: "AUTO_CALL_PCM_REMOTE_CLOSED")
                         self.autoCallStatus =
