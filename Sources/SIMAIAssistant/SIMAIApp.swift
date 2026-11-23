@@ -7,6 +7,7 @@ import AppKit
 private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         _ = AutoVoiceOutputRouter().restore()
+        _ = AutoVoiceInputRouter().restore()
     }
 }
 
