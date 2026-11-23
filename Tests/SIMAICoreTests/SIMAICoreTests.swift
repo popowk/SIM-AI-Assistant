@@ -31,6 +31,13 @@ final class SIMAICoreTests: XCTestCase {
             autoAnswerAcknowledged: true))
         XCTAssertFalse(AutoCallVoiceShutdownPolicy.closeOnPhoneIdle(
             autoAnswerAcknowledged: false))
+        // HTTP answer timeout must not leave a ring-started GPT microphone
+        // recording indefinitely when the phone returns directly to IDLE.
+        XCTAssertTrue(AutoCallVoiceShutdownPolicy.closeOnPhoneIdle(
+            autoAnswerAcknowledged: false, voiceStartedForRinging: true))
+        // Manually opened ChatGPT remains independent of unrelated calls.
+        XCTAssertFalse(AutoCallVoiceShutdownPolicy.closeOnPhoneIdle(
+            autoAnswerAcknowledged: false, voiceStartedForRinging: false))
     }
 
     func testChatGPTIframeVerifiedMicrophoneDoesNotStayWaitingForever() {
