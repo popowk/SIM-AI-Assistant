@@ -610,6 +610,46 @@ enum ADBInspector {
         }
     }
 
+    /// If an already-authorized phone's state service has gone stale, ask
+    /// Android to restart the SAME permission-gated foreground monitor.
+    /// Do not open its Activity or alter permissions. Respect an explicit
+    /// "stop monitoring" choice persisted by the Companion.
+    static func wakePhoneMonitorIfDesired(at selected: String?) -> String {
+        guard let adb = executable(at: selected) else { return "ADB_MISSING" }
+        let devices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 6) {
+        case .completed(0, let raw): devices = parseDevices(raw)
+        default: return "ADB_ENUMERATION_FAILED"
+        }
+        let authorized = devices.filter { $0.state == "device" }
+        guard authorized.count == 1 else { return "ADB_NOT_READY" }
+        let serial = authorized[0].serial
+
+        // The normal first-run default is monitoring enabled. An explicit
+        // user stop is stored as false and must never be overridden.
+        switch run(adb, args: ["-s", serial, "shell", "run-as",
+                               "com.popowk.simai.companion", "cat",
+                               "shared_prefs/simai_initial_setup.xml"], timeout: 6) {
+        case .completed(0, let prefs):
+            if prefs.contains("name=\"phone_state_monitor_desired\" value=\"false\"") ||
+               prefs.contains("name=\"phone_state_monitor_desired\" value='false'") {
+                return "PHONE_MONITOR_USER_DISABLED"
+            }
+        case .completed:
+            // A first install may not have created preferences yet. Existing
+            // Android READ_PHONE_STATE permission still gates the service.
+            break
+        default: return "ADB_PREFS_UNAVAILABLE"
+        }
+        switch run(adb, args: ["-s", serial, "shell", "am",
+                               "start-foreground-service", "-n",
+                               "com.popowk.simai.companion/.CallMonitorService"], timeout: 8) {
+        case .completed(0, _): return "PHONE_MONITOR_WAKE_REQUESTED"
+        case .timedOut: return "PHONE_MONITOR_WAKE_TIMEOUT"
+        default: return "PHONE_MONITOR_WAKE_DENIED"
+        }
+    }
+
     static func closeBridge(at selected: String?, link: ADBBridgeLink) {
         guard let adb = executable(at: selected) else { return }
         _ = run(adb, args: ["-s", link.serial, "forward", "--remove",
