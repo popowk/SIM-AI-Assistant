@@ -1652,6 +1652,12 @@ final class AssistantModel: ObservableObject {
                 granted ? "Android 已确认授予接听电话权限" : "Android 未授予接听电话权限",
                 details: ["diagnosis": granted ? "ANSWER_PERMISSION_GRANTED" : "ANSWER_PERMISSION_MISSING"])
         }
+        if let real = snapshot.realPhoneState, real != "UNKNOWN",
+           real != snapshot.state {
+            log(.warn, .call, "手机实际通话状态与缓存事件不一致",
+                details: ["diagnosis": "TELEPHONY_CALLBACK_DELAYED",
+                          "actual": real, "cache": snapshot.state])
+        }
         reactToAutomaticCallState(snapshot.state)
         adbTransportHealth = "ADB 已授权"
         adbShellHealth = "命令正常"
