@@ -14,6 +14,7 @@ enum LiveAudioEvent {
     case handshakeAttempts(Int)
     case metrics(received: Int, sent: Int, dropped: Int, micUnderflows: Int, micOverflows: Int, txLate: Int, micBufferedMs: Int, voiceRouteDropped: Int)
     case aiReturnMetrics(captured: Int, monitorDropped: Int, uplinkUnderflow: Int, peakRMS: Double)
+    case downlinkSignal(peakRMS: Double)
     case finished(String)
 }
 
@@ -642,11 +643,21 @@ final class PhoneAudioStream {
             sendLoop(fd: fd, since: started)
         }
         var received = 0
+        var downlinkPeakRMS = 0.0
         while !isClosed && Date().timeIntervalSince(started) < maxDuration {
             guard let frame = Self.readExact(fd, count: 640) else {
                 reason = "AUDIO_REMOTE_CLOSED"
                 break
             }
+            // Compute a non-content audio level only. No voice or samples
+            // are retained in diagnostics or transmitted outside this app.
+            var power = 0.0
+            for offset in stride(from: 0, to: frame.count, by: 2) {
+                let sample = UInt16(frame[offset]) | (UInt16(frame[offset + 1]) << 8)
+                let normalized = Double(Int16(bitPattern: sample)) / 32768.0
+                power += normalized * normalized
+            }
+            downlinkPeakRMS = max(downlinkPeakRMS, sqrt(power / 320.0))
             speaker.feed(frame)
             gate.lock()
             let virtualMic = chatGPTVirtualMic
@@ -654,9 +665,11 @@ final class PhoneAudioStream {
             virtualMic?.feed(frame)
             received += 1
             if received % 50 == 0 {
+                report(.downlinkSignal(peakRMS: downlinkPeakRMS))
                 reportMetrics(received: received, speaker: speaker)
             }
         }
+        report(.downlinkSignal(peakRMS: downlinkPeakRMS))
         reportMetrics(received: received, speaker: speaker)
         if isClosed { reason = "USER_STOPPED" }
         else if Date().timeIntervalSince(started) >= maxDuration { reason = "SESSION_LIMIT_180S" }
