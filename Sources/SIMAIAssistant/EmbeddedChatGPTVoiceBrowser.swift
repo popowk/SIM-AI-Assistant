@@ -166,6 +166,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard loaded else { return }
         status = isOfficialPage
             ? "ChatGPT 页面已加载；可以在这里登录或开启 Voice"
             : "正在完成网页登录；部分 Google／SSO 方式不支持内嵌浏览器"
@@ -219,7 +220,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
 
     func webView(_ webView: WKWebView,
                  requestMediaCapturePermissionFor origin: WKSecurityOrigin,
-                 initiatedBy frame: WKFrameInfo,
+                 initiatedByFrame frame: WKFrameInfo,
                  type: WKMediaCaptureType,
                  decisionHandler: @escaping (WKPermissionDecision) -> Void) {
         // The user must authorize capture in the WebKit/macOS permission
