@@ -132,6 +132,7 @@ final class AssistantModel: ObservableObject {
     private var autoHangupBusy = false
     private var autoHangupAttempted = false
     private var resumeAIForwardAfterVoicePause = false
+    private var resumeAIForwardAfterIsolationRestored = false
     private var screenControlProcess: Process?
     private var voiceSessionID = ""
     private var pendingBlackHoleInstallChannels: Int?
@@ -190,13 +191,26 @@ final class AssistantModel: ObservableObject {
             guard let self else { return }
             if ready {
                 self.automaticGPTOutputStatus =
-                    "ChatGPT 音频已独立送至 BlackHole 16ch；系统视频音频保持原路"
+                    "ChatGPT 网页已配置独立输出到 BlackHole 16ch；视频保持原路"
                 if self.incomingVoicePending && self.embeddedVoiceBrowser.microphoneActive {
                     self.onEmbeddedVoiceCapture(true)
                 }
+                if self.resumeAIForwardAfterIsolationRestored &&
+                   self.liveVoiceActive && self.livePhoneState == "OFFHOOK" &&
+                   self.aiReplyMonitorEnabled && self.embeddedVoiceBrowser.microphoneActive {
+                    self.resumeAIForwardAfterIsolationRestored = false
+                    self.setAIReplyToPhone(true)
+                }
             } else if self.isolatedChatGPTOutputEnabled {
+                if self.aiReplyToPhoneEnabled {
+                    self.resumeAIForwardAfterIsolationRestored = true
+                    self.setAIReplyToPhone(false)
+                    self.log(.warn, .audio,
+                        "网页隔离音频路由丢失，已暂停 GPT 电话回传",
+                        details: ["reason": "ISOLATED_ROUTE_LOST"])
+                }
                 self.automaticGPTOutputStatus =
-                    "网页隔离尚未就绪；不会把视频音频送入电话，也不会提前接听"
+                    "网页隔离尚未就绪；视频不会进入电话，上行回传已安全暂停"
             }
         }
         embeddedVoiceBrowser.onMicrophoneChange = { [weak self] active in
@@ -817,6 +831,7 @@ final class AssistantModel: ObservableObject {
             automaticOffhookSequence = 0
             autoVoiceCaptureObserved = false
             resumeAIForwardAfterVoicePause = false
+            resumeAIForwardAfterIsolationRestored = false
             autoCallState.reset()
             voiceSessionPrepared = false
             incomingVoicePending = false
@@ -892,6 +907,7 @@ final class AssistantModel: ObservableObject {
             autoHangupBusy = false
             autoHangupAttempted = false
             resumeAIForwardAfterVoicePause = false
+            resumeAIForwardAfterIsolationRestored = false
             incomingVoicePending = false
             incomingPreflightRunning = false
             incomingPreflightPassed = false
