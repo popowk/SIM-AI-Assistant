@@ -1,4 +1,4 @@
-# SIM AI Assistant · V0.4.6（Android 安全升级基础设施 + 通话转写规划）
+# SIM AI Assistant · V0.4.7（Mac ADB 手机屏幕控制 + Android 安全升级）
 
 **设备目标**：vivo S9e / Android 13 / 中国联通实体 SIM + Apple Silicon Mac / macOS 26.6.2。
 **源代码**：https://github.com/popowk/SIM-AI-Assistant
@@ -11,6 +11,21 @@
 - Mac 本地音频设备检查、麦克风电平、扬声器试听和设备恢复。
 - 诊断 ZIP、匿名事件日志、1/7/14 天清理与「清空全部（含今天）」。
 
+## V0.4.7 · Mac 通过 ADB 控制 vivo 手机屏幕（2026-11-23）
+
+- Mac 新增 **「手机屏幕操作」**：检测本机 scrcpy（开源 Android 镜像与控制工具）和 ADB，仅对**恰好一台已授权的 Android 手机**打开实时镜像窗口。使用 Mac 鼠标/键盘在手机界面完成安装确认、电话状态/短信权限等系统弹窗操作，无需一直去触摸手机屏幕。
+- 下载安装时会尝试自动打开 scrcpy 镜像，并同步运行原有 `adb install -r`。Mac 窗口提供「打开手机屏幕控制」「关闭屏幕控制」「打开手机权限设置」「复制 scrcpy 安装命令」及官方说明。`scrcpy` 不随 APK/Mac 应用捆绑，不会未经同意自动安装第三方软件。
+- 本机 Homebrew 安装命令：`brew install scrcpy`。确保 Mac 已安装 ADB；若已配置自定义 ADB 路径，scrcpy 会优先使用相同的 ADB。镜像只传到本机窗口，启动时禁用 scrcpy 音频；不录屏、不保存截图、不读取短信内容、不记录设备序列号。
+- 「打开手机权限设置」只通过 Android 系统 Intent 导航到 Companion 的系统应用详情页，**不执行 `pm grant`、`appops`、屏幕自动点击授权**。真正的电话、短信及系统安装授权仍须用户自己确认；普通系统页面可使用 Mac 鼠标点击，但首次 USB 调试信任提示和某些 vivo 特殊安全页面可能要求直接在手机上操作。
+- 如果未安装 scrcpy、ADB 未授权、连接多台手机，功能明确失败且不猜测设备；原来的安全 ADB 安装/飞书/PCM 链路不受影响。Mac 使用该工具属于本地第三方程序进程，不连接远程服务，不会自动解锁或绕过手机安全限制。
+- 保留 Android Companion V0.3.4（versionCode 9），**这次仅更新 Mac V0.4.7 Build 24**。旧 Android APK 若仍是临时 Debug 签名，签名不匹配不能靠屏幕控制解决，需要按 [安全签名迁移指南](docs/ANDROID_SIGNING_MIGRATION.md) 处理。
+
+### 使用步骤
+
+1. 在 Mac 上先安装 `scrcpy` 并确认 ADB 连通、仅有一台已授权 vivo 手机（第一次 USB 调试授权需在手机上点同意）。
+2. 启动新版 Mac 应用，在「Android · ADB / APK 管理」点击「打开手机屏幕控制」，应弹出独立的 vivo 实时画面窗口。
+3. 点击「一键安装 / 覆盖并初始化」。出现 vivo 安装确认、应用权限等提示后，在 scrcpy 窗口用鼠标点击。需打开应用设置时点击「打开手机权限设置」，再手动选择授权。
+4. 结束操作后点击「关闭屏幕控制」，避免在无需使用时继续暴露手机画面。若 scrcpy 退出，Mac 会在状态区域显示断线或正常关闭。
 ## V0.4.6 · Android 固定签名升级基础设施（2026-11-23）
 
 - 新 Android Companion V0.3.4（versionCode 9）。GitHub Actions 支持从四项仓库 Secret 安全地读取**同一固定 Android 签名证书**，编译仍为 Debug APK 以保留 ADB `run-as`，保证后续签名连续时可覆盖安装。
