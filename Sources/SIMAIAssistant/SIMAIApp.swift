@@ -25,7 +25,7 @@ struct SIMAIApp: App {
         }
         .defaultSize(width: 900, height: 720)
         Window("ChatGPT Voice · 内嵌浏览器", id: "embedded-voice") {
-            EmbeddedChatGPTVoiceWindow().environmentObject(model)
+            EmbeddedChatGPTVoiceWindow(browser: model.embeddedVoiceBrowser).environmentObject(model)
         }
         .defaultSize(width: 1100, height: 820)
     }
