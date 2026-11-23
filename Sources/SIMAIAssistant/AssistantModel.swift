@@ -82,6 +82,7 @@ final class AssistantModel: ObservableObject {
     @Published var aiReplyMonitorDropped = 0
     @Published var aiReplyUplinkUnderflow = 0
     @Published var aiReplyPeakRMS = 0.0
+    private var warnedSilentGPTReturn = false
     @Published var liveVoiceRxFrames = 0
     private var livePhysicalRenderFrames = 0
     private var liveVirtualRenderFrames = 0
@@ -151,11 +152,38 @@ final class AssistantModel: ObservableObject {
         embeddedVoiceBrowser.loadIfNeeded()
     }
 
-    func hideEmbeddedVoiceWindow() {
-        // Never hide a window the user explicitly opened just because a
-        // cellular call ended or failed to start.
-        guard !embeddedVoiceWindowOpenedByUser else { return }
+    func hideEmbeddedVoiceWindow(force: Bool = false) {
+        // User-opened login/debug pages survive ringing timeouts. However,
+        // a real auto-answered phone call must always close its Voice window
+        // when the PSTN audio stream ends, even if that window was previously
+        // opened manually. Hiding BEFORE releasing WebKit prevents the old
+        // visible white-page regression.
+        guard force || !embeddedVoiceWindowOpenedByUser else { return }
         embeddedVoiceWindow?.orderOut(nil)
+        if force { embeddedVoiceWindowOpenedByUser = false }
+    }
+
+    /// End only a call that SIM AI actually auto-answered. This is a local
+    /// safety shutdown; it never sends a blind Android end-call command and
+    /// never clears ChatGPT cookies or other user login data.
+    private func endAutoAnsweredVoiceBrowser(reason: String) {
+        guard useEmbeddedVoiceBrowser else { return }
+        voiceStopCheckGeneration += 1
+        incomingVoicePending = false
+        incomingVoiceDeadline = nil
+        incomingPreflightPassed = false
+        incomingVoiceBlockedUntilIdle = true
+        autoVoiceCaptureObserved = false
+        automaticAnswerAcknowledged = false
+        automaticAnswerRequested = false
+        resumeAIForwardAfterVoicePause = false
+        resumeAIForwardAfterIsolationRestored = false
+        resumeAIForwardAfterMicrophoneRestored = false
+        voiceSessionPrepared = false
+        hideEmbeddedVoiceWindow(force: true)
+        embeddedVoiceBrowser.releaseForIdle()
+        log(.info, .audio, "已在手机通话结束后关闭自动 Voice 网页及麦克风",
+            details: ["reason": reason])
     }
     private let microphoneProbe = MicrophoneLevelProbe()
     private var voiceStream: PhoneAudioStream?
@@ -1050,6 +1078,12 @@ final class AssistantModel: ObservableObject {
             beginOnDemandVoiceForRinging()
         }
         if newIdle {
+            // A phone can report IDLE before the audio stream's end callback.
+            // Close only sessions our app acknowledged as auto-answered;
+            // a manually opened ChatGPT tab is otherwise left alone.
+            if automaticAnswerAcknowledged {
+                endAutoAnsweredVoiceBrowser(reason: "PHONE_IDLED")
+            }
             // Reset the auto-answer guard as soon as the Android service
             // reports IDLE. Never carry termination authority into a later call.
             voiceStopCheckGeneration += 1
@@ -1070,6 +1104,8 @@ final class AssistantModel: ObservableObject {
             incomingVoiceDeadline = nil
             voiceSessionPrepared = false
             if useEmbeddedVoiceBrowser && embeddedVoiceBrowser.loaded {
+                // The live auto-answered Voice page was already closed above.
+                // Only preserve login/debug pages unrelated to auto-answer.
                 embeddedVoiceBrowser.preservePageAfterCall(reason: "IDLE")
                 hideEmbeddedVoiceWindow()
             }
@@ -1731,6 +1767,7 @@ final class AssistantModel: ObservableObject {
         aiReplyMonitorDropped = 0
         aiReplyUplinkUnderflow = 0
         aiReplyPeakRMS = 0
+        warnedSilentGPTReturn = false
         liveVoiceRxFrames = 0
         livePhysicalRenderFrames = 0
         liveVirtualRenderFrames = 0
@@ -1789,7 +1826,30 @@ final class AssistantModel: ObservableObject {
                     self.aiReplyMonitorDropped = monitorDropped
                     self.aiReplyUplinkUnderflow = uplinkUnderflow
                     self.aiReplyPeakRMS = peakRMS
+                    if !self.warnedSilentGPTReturn && captured >= 350 &&
+                       peakRMS < 0.001 && self.liveDownlinkPeakRMS > 0.01 &&
+                       self.chatGPTVoiceRouteEnabled {
+                        self.warnedSilentGPTReturn = true
+                        self.aiReplyReturnStatus =
+                            "电话声音已到 BlackHole 2ch，但 GPT 回复仍完全静音；请检查 Voice 是否识别语音或是否实际输出到 BlackHole 16ch"
+                        self.log(.warn, .audio, "检测到真实电话下行但 GPT 返回通道持续静音",
+                            details: ["reason": "GPT_ZERO_RETURN_WITH_PHONE_AUDIO"])
+                    }
                 case .finished(let reason):
+                    // The Android PCM helper independently watches the real
+                    // cellular AudioManager call mode. In the 21:53 report it
+                    // closed while the Companion snapshot still said OFFHOOK;
+                    // waiting only for IDLE leaves WebKit recording forever.
+                    // Fail closed on a terminated auto-answered PCM stream,
+                    // without attempting to hang up an uncertain phone call.
+                    if reason == "AUDIO_REMOTE_CLOSED" &&
+                       self.automaticAnswerAcknowledged &&
+                       self.autoCallAudioRequested {
+                        self.endAutoAnsweredVoiceBrowser(
+                            reason: "AUTO_CALL_PCM_REMOTE_CLOSED")
+                        self.autoCallStatus =
+                            "手机通话音频已断开，已停止 GPT Voice 并关闭自动浏览器"
+                    }
                     if reason == "SESSION_LIMIT_180S" &&
                        self.automaticAnswerAcknowledged &&
                        self.livePhoneState == "OFFHOOK" {
