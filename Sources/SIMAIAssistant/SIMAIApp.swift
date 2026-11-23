@@ -32,7 +32,7 @@ private struct MenuBarCommands: View {
             model.openPhoneScreenControl()
         }
         Divider()
-        Text("v0.4.8 · GPT 人工接听与双向语音")
+        Text("v0.4.9 · 自动电话值守路由")
         Button("退出 SIM AI Assistant") {
             model.closePhoneScreenControl()
             NSApp.terminate(nil)
