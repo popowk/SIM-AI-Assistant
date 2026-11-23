@@ -5,7 +5,6 @@ import SIMAICore
 
 struct DashboardView: View {
     @EnvironmentObject private var model: AssistantModel
-    @Environment(\.openWindow) private var openWindow
 
     @State private var previewExport = false
     @State private var confirmDownlink = false
@@ -52,15 +51,7 @@ struct DashboardView: View {
             .padding(22)
         }
         .frame(minWidth: 740, minHeight: 540)
-        .onReceive(NotificationCenter.default.publisher(
-            for: Notification.Name("SIMAI_OPEN_VOICE_ON_RINGING"))) { _ in
-            openWindow(id: "embedded-voice")
-        }
-        .onReceive(NotificationCenter.default.publisher(
-            for: Notification.Name("SIMAI_CLOSE_VOICE_AFTER_CALL"))) { _ in
-            NSApp.windows.filter { $0.title == "ChatGPT Voice · 内嵌浏览器" }
-                .forEach { $0.close() }
-        }
+
         .confirmationDialog("测试通话下行音频？", isPresented: $confirmDownlink, titleVisibility: .visible) {
             Button("已取得同意，开始 2 秒下行电平测试") {
                 model.runPhoneAudioProbe(.downlink)
@@ -396,8 +387,7 @@ struct DashboardView: View {
             HStack {
                 Button("打开内嵌 ChatGPT 登录与 Voice") {
                     model.setEmbeddedVoiceBrowserEnabled(true)
-                    openWindow(id: "embedded-voice")
-                    NSApp.activate(ignoringOtherApps: true)
+                    model.showEmbeddedVoiceWindow(activate: true)
                 }
                 .buttonStyle(.borderedProminent)
                 if model.useEmbeddedVoiceBrowser {
