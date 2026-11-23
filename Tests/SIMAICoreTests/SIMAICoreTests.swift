@@ -318,6 +318,29 @@ final class SIMAICoreTests: XCTestCase {
         XCTAssertFalse(older.isFresh(referenceMilliseconds: 1_000_010))
     }
 
+    func testOptionalAndroidAnswerPermissionAndPrivateAckDecode() throws {
+        let recent = """
+        {"schema":1,"session":"session-one","running":true,"state":"RINGING","seq":7,
+         "updatedAt":1000000,"events":[{"seq":7,"state":"RINGING","at":999990}],
+         "answerPermissionGranted":false,"privateAnswerPollerActive":true,
+         "privateAnswerSequence":7,"privateAnswerResult":"PERMISSION_REQUIRED"}
+        """
+        let snapshot = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: Data(recent.utf8))
+        XCTAssertEqual(snapshot.answerPermissionGranted, false)
+        XCTAssertEqual(snapshot.privateAnswerPollerActive, true)
+        XCTAssertEqual(snapshot.privateAnswerSequence, 7)
+        XCTAssertEqual(snapshot.privateAnswerResult, "PERMISSION_REQUIRED")
+
+        let older = """
+        {"schema":1,"session":"old-service","running":true,"state":"IDLE","seq":0,
+         "updatedAt":1000000,"events":[]}
+        """
+        let legacy = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: Data(older.utf8))
+        XCTAssertNil(legacy.answerPermissionGranted)
+        XCTAssertNil(legacy.privateAnswerPollerActive)
+        XCTAssertNil(legacy.privateAnswerResult)
+    }
+
     func testHTTPAndPrivateFileSnapshotsShareOneCursor() throws {
         let json = """
         {"schema":1,"session":"same-service","running":true,"state":"OFFHOOK","seq":2,
