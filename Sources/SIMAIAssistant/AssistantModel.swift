@@ -54,6 +54,8 @@ final class AssistantModel: ObservableObject {
     @Published var automaticGPTOutputEnabled =
         UserDefaults.standard.object(forKey: "SIMAI_AUTO_GPT_OUTPUT") as? Bool ?? true
     @Published var automaticGPTOutputStatus = "自动输出路由已待命；仅在 GPT 电话会话需要时切至 BlackHole 16ch"
+    @Published var blackHoleInstallerBusy = false
+    @Published var blackHoleInstallerStatus = "检测 BlackHole 2ch / 16ch 状态后可直接获取官方安装程序，无需 Homebrew"
     @Published var aiReplyMonitorEnabled = false
     @Published var aiReplyToPhoneEnabled = false
     @Published var aiReplyReturnStatus = "尚未启动 GPT 回复监听"
@@ -82,8 +84,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.10"
-    let buildNumber = "27"
+    let version = "0.4.11"
+    let buildNumber = "28"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -178,6 +180,52 @@ final class AssistantModel: ObservableObject {
         case .info: logger.info("\(event.message, privacy: .private)")
         case .warn: logger.warning("\(event.message, privacy: .private)")
         case .error: logger.error("\(event.message, privacy: .private)")
+        }
+    }
+
+    /// Download the vendor's unmodified .pkg after user confirmation.
+    /// The macOS Installer—not this application—requests administrator
+    /// approval. No silent installation or privileged shell command.
+    func openOfficialBlackHoleInstaller(channels: Int) {
+        guard !blackHoleInstallerBusy, channels == 2 || channels == 16 else { return }
+        refresh()
+        if audio.devices.contains(where: {
+            $0.displayName.caseInsensitiveCompare("BlackHole \(channels)ch") == .orderedSame
+        }) {
+            blackHoleInstallerStatus = "BlackHole \(channels)ch 已安装，无需重复安装"
+            return
+        }
+        blackHoleInstallerBusy = true
+        blackHoleInstallerStatus = "正在从开发者官网下载并验证 BlackHole \(channels)ch 官方安装包……"
+        log(.info, .audio, "用户主动获取 BlackHole 官方安装程序",
+            details: ["channels": "\(channels)"])
+        Task { [weak self] in
+            do {
+                let file = try await OfficialBlackHoleInstaller.prepareOfficialInstaller(channels: channels)
+                guard let self else { return }
+                self.blackHoleInstallerBusy = false
+                if NSWorkspace.shared.open(file) {
+                    self.blackHoleInstallerStatus = "BlackHole \(channels)ch 安装器已打开。请在 macOS 安装器中确认管理员授权，安装后按提示重启，再点击「重新自检」。"
+                } else {
+                    self.blackHoleInstallerStatus = "安装包已通过校验但系统安装器未打开。请检查 macOS 安全提示并重试。"
+                }
+            } catch {
+                guard let self else { return }
+                self.blackHoleInstallerBusy = false
+                let reason: String
+                if case OfficialBlackHoleInstaller.Failure.checksumMismatch = error {
+                    reason = "官方安装包 SHA-256 不匹配；已拒绝安装。请检查官网是否更新了版本"
+                } else if case OfficialBlackHoleInstaller.Failure.invalidResponse = error {
+                    reason = "官网返回了无效下载响应"
+                } else if case OfficialBlackHoleInstaller.Failure.oversizedFile = error {
+                    reason = "官网文件大小异常，已拒绝安装"
+                } else {
+                    reason = "下载或访问安装包失败；请检查网络、官方网页与磁盘空间"
+                }
+                self.blackHoleInstallerStatus = reason
+                self.log(.warn, .audio, "BlackHole 官方安装程序未能准备",
+                    details: ["channels": "\(channels)", "category": "OFFICIAL_PKG_SETUP_FAILED"])
+            }
         }
     }
 
