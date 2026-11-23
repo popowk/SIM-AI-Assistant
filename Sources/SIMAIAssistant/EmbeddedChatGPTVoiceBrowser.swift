@@ -5,6 +5,30 @@ import SwiftUI
 import WebKit
 import SIMAICore
 
+/// Receive only fixed, anonymous microphone-route codes from the official
+/// ChatGPT frame in which capture actually happens. The main frame's JS
+/// variables do not reflect getUserMedia called in an embedded frame.
+private final class SIMAIMicRouteSignalHandler: NSObject, WKScriptMessageHandler {
+    weak var browser: EmbeddedChatGPTVoiceBrowser?
+
+    func userContentController(_ userContentController: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        guard message.name == "simaiMicRoute" else { return }
+        let origin = message.frameInfo.securityOrigin
+        guard origin.protocol == "https",
+              origin.host == "chatgpt.com" ||
+                origin.host.hasSuffix(".chatgpt.com") else { return }
+        guard let code = message.body as? String,
+              ["BLACKHOLE2_CAPTURE_VERIFIED", "BLACKHOLE2_TRACK_ENDED",
+               "WRONG_CAPTURE_DEVICE", "BLACKHOLE2_NOT_VISIBLE",
+               "BLACKHOLE2_CAPTURE_FAILED"].contains(code) else { return }
+        let target = browser
+        Task { @MainActor [weak target] in
+            target?.receiveMicrophoneFrameSignal(code)
+        }
+    }
+}
+
 /// An opt-in, *experimental* browser for the public ChatGPT website.
 /// No passwords, cookies, auth tokens, chat messages, speech, or page HTML
 /// are read into this app or diagnostics. WebKit owns persistent sign-in.
@@ -19,6 +43,9 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     @Published private(set) var isolatedMicrophoneStatus = "等待确认 ChatGPT 实际录音设备为 BlackHole 2ch"
     var onIsolatedMicrophoneChange: ((Bool) -> Void)?
     private var lastMicrophoneRouteCheck = Date.distantPast
+    private var lastVerifiedMicrophoneFrameAt = Date.distantPast
+    private let microphoneSignalHandler = SIMAIMicRouteSignalHandler()
+
     @Published private(set) var playbackBlocked = false
     private var lastPlaybackCheck = Date.distantPast
     @Published private(set) var isolatedOutputStatus = "等待 Voice 网页创建独立声音通道"
@@ -30,6 +57,26 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         isolatedAudioOutputEnabled = enabled
         if !enabled { updateIsolatedOutputReady(false) }
         else if loaded { routeCurrentVoiceAudioIfNeeded(force: true) }
+    }
+
+    /// Called on the main actor from the authenticated WebKit frame where
+    /// a genuine BlackHole microphone track was checked. No device ID,
+    /// audio samples or page content are sent to the host process.
+    func receiveMicrophoneFrameSignal(_ code: String) {
+        guard loaded, microphoneActive, isOfficialPage else { return }
+        if code == "BLACKHOLE2_CAPTURE_VERIFIED" {
+            lastVerifiedMicrophoneFrameAt = Date()
+            isolatedMicrophoneStatus =
+                "已核对 ChatGPT Voice 的实际输入为 BlackHole 2ch（网页音轨）"
+            updateIsolatedMicrophoneReady(true)
+        } else {
+            lastVerifiedMicrophoneFrameAt = .distantPast
+            isolatedMicrophoneStatus = code == "BLACKHOLE2_TRACK_ENDED"
+                ? "ChatGPT 虚拟麦克风音轨已结束，等待重新建立"
+                : "GPT 麦克风音轨不符合 BlackHole 2ch，已拒绝自动接听"
+            updateIsolatedMicrophoneReady(false)
+            onDiagnostic?(code)
+        }
     }
 
     private func updateIsolatedMicrophoneReady(_ ready: Bool) {
@@ -109,6 +156,10 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     lazy var webView: WKWebView = {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
+        microphoneSignalHandler.browser = self
+        configuration.userContentController.add(microphoneSignalHandler,
+                                                 name: "simaiMicRoute")
+
         // Media autoplay is not equivalent to microphone permission.
         configuration.mediaTypesRequiringUserActionForPlayback = []
         // Route only this WKWebView's audio elements, NOT the whole Mac.
@@ -117,7 +168,9 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         // to system output, protecting unrelated movie audio.
         let isolatedMediaScript = #"""
         (() => {
-          if (location.protocol !== 'https:' || location.hostname !== 'chatgpt.com') return;
+          if (location.protocol !== 'https:' ||
+              !(location.hostname === 'chatgpt.com' ||
+                location.hostname.endsWith('.chatgpt.com'))) return;
           if (window.__simaiAudioIsolationInstalled) return;
           window.__simaiAudioIsolationInstalled = true;
           window.__simaiAudioSinkID = '';
@@ -127,6 +180,43 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
           // 2ch was selected. Constrain the actual official page getUserMedia
           // request, and refuse to hand a wrong input stream to the website.
           window.__simaiMicRouteCode = 'WAITING_FOR_CAPTURE';
+          // Signals from iframes are sent to the host via the normal WebKit
+          // message handler. We never read/ship audio, transcript, cookies,
+          // media URLs or the site's DOM.
+          const reportMic = code => {
+            try {
+              window.webkit.messageHandlers.simaiMicRoute.postMessage(code);
+            } catch (_) {}
+          };
+          let micHeartbeat = 0;
+          const observeVerifiedTracks = () => {
+            if (micHeartbeat) return;
+            micHeartbeat = setInterval(() => {
+              const live = [...window.__simaiMicTracks]
+                .some(t => t.readyState === 'live');
+              if (live) reportMic('BLACKHOLE2_CAPTURE_VERIFIED');
+              else {
+                clearInterval(micHeartbeat);
+                micHeartbeat = 0;
+                reportMic('BLACKHOLE2_TRACK_ENDED');
+              }
+            }, 2500);
+          };
+          const attachVerifiedTrack = track => {
+            if (!track || track.kind !== 'audio' ||
+                track.readyState !== 'live') return;
+            window.__simaiMicTracks.add(track);
+            track.addEventListener('ended', () => {
+              window.__simaiMicTracks.delete(track);
+              if (![...window.__simaiMicTracks].some(t => t.readyState === 'live')) {
+                reportMic('BLACKHOLE2_TRACK_ENDED');
+              }
+            });
+            window.__simaiMicRouteCode = 'BLACKHOLE2_CAPTURE_VERIFIED';
+            reportMic('BLACKHOLE2_CAPTURE_VERIFIED');
+            observeVerifiedTracks();
+          };
+
           window.__simaiMicTracks = new Set();
           if (navigator.mediaDevices &&
               typeof navigator.mediaDevices.getUserMedia === 'function') {
@@ -157,6 +247,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
                 stream = await immediateCapture;
               } catch (err) {
                 window.__simaiMicRouteCode = 'BLACKHOLE2_CAPTURE_FAILED';
+                reportMic('BLACKHOLE2_CAPTURE_FAILED');
                 throw err;
               }
               // WebKit reveals audio device labels after the site captures.
@@ -177,17 +268,62 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
                 tracks.forEach(t => t.stop());
                 window.__simaiMicRouteCode =
                   target ? 'WRONG_CAPTURE_DEVICE' : 'BLACKHOLE2_NOT_VISIBLE';
+                reportMic(window.__simaiMicRouteCode);
                 throw new DOMException('Expected BlackHole 2ch input', 'NotFoundError');
               }
-              tracks.forEach(t => {
-                window.__simaiMicTracks.add(t);
-                t.addEventListener('ended', () => window.__simaiMicTracks.delete(t));
-              });
-              window.__simaiMicRouteCode = 'BLACKHOLE2_CAPTURE_VERIFIED';
+              tracks.forEach(attachVerifiedTrack);
               return stream;
             };
           } else {
             window.__simaiMicRouteCode = 'VOICE_CAPTURE_UNSUPPORTED';
+          }
+
+          // Some WebRTC libraries obtain microphone tracks in another
+          // execution path and attach them directly to RTCPeerConnection.
+          // Observe that final local audio track too, without changing the
+          // library's original synchronous addTrack behavior.
+          const verifyOutgoingTrack = async track => {
+            if (!track || track.kind !== 'audio' ||
+                track.readyState !== 'live') return;
+            let available = [];
+            try { available = await navigator.mediaDevices.enumerateDevices(); }
+            catch (_) {}
+            const target = available.find(d => d.kind === 'audioinput' &&
+              (d.label || '').toLowerCase().includes('blackhole 2ch'));
+            const settings = track.getSettings ? track.getSettings() : {};
+            if (target && ((settings.deviceId &&
+                            settings.deviceId === target.deviceId) ||
+                           (track.label || '').toLowerCase().includes('blackhole 2ch'))) {
+              attachVerifiedTrack(track);
+            } else {
+              window.__simaiMicRouteCode =
+                target ? 'WRONG_CAPTURE_DEVICE' : 'BLACKHOLE2_NOT_VISIBLE';
+              reportMic(window.__simaiMicRouteCode);
+            }
+          };
+          if (typeof RTCPeerConnection === 'function' &&
+              typeof RTCPeerConnection.prototype.addTrack === 'function') {
+            const originalAddTrack = RTCPeerConnection.prototype.addTrack;
+            RTCPeerConnection.prototype.addTrack = function(track, ...streams) {
+              const sender = originalAddTrack.call(this, track, ...streams);
+              if (track && track.kind === 'audio') {
+                Promise.resolve().then(() => verifyOutgoingTrack(track))
+                  .catch(() => {});
+              }
+              return sender;
+            };
+          }
+          if (typeof RTCRtpSender === 'function' &&
+              typeof RTCRtpSender.prototype.replaceTrack === 'function') {
+            const originalReplaceTrack = RTCRtpSender.prototype.replaceTrack;
+            RTCRtpSender.prototype.replaceTrack = function(track) {
+              const result = originalReplaceTrack.call(this, track);
+              if (track && track.kind === 'audio') {
+                Promise.resolve(result).then(() => verifyOutgoingTrack(track))
+                  .catch(() => {});
+              }
+              return result;
+            };
           }
 
           // Preserve the site's real click user activation. The prior
@@ -225,7 +361,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         """#
         configuration.userContentController.addUserScript(WKUserScript(
             source: isolatedMediaScript, injectionTime: .atDocumentStart,
-            forMainFrameOnly: true))
+            forMainFrameOnly: false))
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = self
         view.uiDelegate = self
@@ -262,6 +398,21 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         else { loadIfNeeded() }
     }
 
+    /// A failed or finished PSTN call must NEVER navigate the visible
+    /// ChatGPT browser to blank HTML. Keep the website, Voice controls,
+    /// microphone permission and logged-in WebKit data in place for review
+    /// and for a subsequent call. Only an explicit user disable or app exit
+    /// may release the page.
+    func preservePageAfterCall(reason: String) {
+        guard loaded else { return }
+        status = reason == "TIMEOUT"
+            ? "本次来电 Voice 准备超时：未接听，ChatGPT 页面保留，可继续检查 Voice"
+            : "本次来电已结束，ChatGPT 页面已保留；不自动刷新或清空"
+        onDiagnostic?(reason == "TIMEOUT"
+                      ? "VOICE_START_TIMEOUT_PAGE_PRESERVED"
+                      : "VOICE_CALL_ENDED_PAGE_PRESERVED")
+    }
+
     /// Unload the official web application between calls to release page,
     /// WebRTC and JavaScript resources. Persistent WebKit sign-in is kept;
     /// WebKit may retain shared process memory until macOS reclaims it.
@@ -271,6 +422,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         lastStartAttempt = .distantPast
         lastIsolationCheck = .distantPast
         lastMicrophoneRouteCheck = .distantPast
+        lastVerifiedMicrophoneFrameAt = .distantPast
         updateIsolatedMicrophoneReady(false)
         lastPlaybackCheck = .distantPast
         playbackBlocked = false
@@ -349,8 +501,19 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
                 guard let self, self.loaded else { return }
                 let code = error == nil ? (value as? String ?? "MIC_CHECK_FAILED")
                                         : "MIC_CHECK_FAILED"
-                let verified = code == "BLACKHOLE2_CAPTURE_VERIFIED"
+                let frameAge: TimeInterval? =
+                    self.lastVerifiedMicrophoneFrameAt == .distantPast ? nil
+                    : Date().timeIntervalSince(self.lastVerifiedMicrophoneFrameAt)
+                let frameFresh = frameAge.map { $0 >= 0 && $0 < 8 } ?? false
+                let verified = VoiceMicrophoneRoutePolicy.verified(
+                    mainFrameCode: code, childFrameLastSignalAge: frameAge
+                )
                 self.updateIsolatedMicrophoneReady(verified)
+                if frameFresh && code != "BLACKHOLE2_CAPTURE_VERIFIED" {
+                    self.isolatedMicrophoneStatus =
+                        "BlackHole 2ch 实际采集已由 Voice 子页面验证"
+                    return
+                }
                 let message: [String: String] = [
                     "BLACKHOLE2_CAPTURE_VERIFIED": "ChatGPT 正在使用 BlackHole 2ch 采集电话声音",
                     "WAITING_FOR_CAPTURE": "等待 ChatGPT 网页开始录音",
@@ -560,10 +723,30 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         }
     }
 
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        // Helps distinguish an actual ChatGPT navigation from a programmatic
+        // release/timeout. Do not log URLs, cookies, or page content.
+        guard loaded else { return }
+        onDiagnostic?("VOICE_WEBVIEW_NAVIGATION_STARTED")
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // WebKit can crash/restart separately from the SIM AI process.
+        // Never silently navigate away during an active cellular call.
+        updateIsolatedOutputReady(false)
+        updateIsolatedMicrophoneReady(false)
+        status = "ChatGPT 网页进程已停止；请重新加载，程序不会在通话中擅自清空页面"
+        onDiagnostic?("VOICE_WEB_CONTENT_PROCESS_TERMINATED")
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard loaded else { return }
         updateIsolatedOutputReady(false)
-        updateIsolatedMicrophoneReady(false)
+        // Subframe navigations may complete after Voice has already started;
+        // do not discard another frame's recent verified microphone track.
+        if Date().timeIntervalSince(lastVerifiedMicrophoneFrameAt) > 8 {
+            updateIsolatedMicrophoneReady(false)
+        }
         lastIsolationCheck = .distantPast
         status = isOfficialPage
             ? "ChatGPT 页面已加载；可以在这里登录或开启 Voice"

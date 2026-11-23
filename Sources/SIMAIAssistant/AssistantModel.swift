@@ -106,8 +106,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.20"
-    let buildNumber = "37"
+    let version = "0.4.21"
+    let buildNumber = "38"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -115,11 +115,13 @@ final class AssistantModel: ObservableObject {
     private let voiceInputRouter = AutoVoiceInputRouter()
     let embeddedVoiceBrowser = EmbeddedChatGPTVoiceBrowser()
     private var embeddedVoiceWindow: NSWindow?
+    private var embeddedVoiceWindowOpenedByUser = false
 
     /// Application-owned browser window. Unlike the old Dashboard.onReceive,
     /// this stays available while the diagnostics window is closed or a
     /// video is playing full-screen. Only manual opens activate the Mac app.
     func showEmbeddedVoiceWindow(activate: Bool = true) {
+        if activate { embeddedVoiceWindowOpenedByUser = true }
         let window: NSWindow
         if let existing = embeddedVoiceWindow {
             window = existing
@@ -150,6 +152,9 @@ final class AssistantModel: ObservableObject {
     }
 
     func hideEmbeddedVoiceWindow() {
+        // Never hide a window the user explicitly opened just because a
+        // cellular call ended or failed to start.
+        guard !embeddedVoiceWindowOpenedByUser else { return }
         embeddedVoiceWindow?.orderOut(nil)
     }
     private let microphoneProbe = MicrophoneLevelProbe()
@@ -572,9 +577,9 @@ final class AssistantModel: ObservableObject {
             incomingVoiceBlockedUntilIdle = true
             incomingPreflightPassed = false
             incomingVoiceDeadline = nil
-            embeddedVoiceBrowser.releaseForIdle()
+            embeddedVoiceBrowser.preservePageAfterCall(reason: "RINGING_LOST")
             restoreAutomaticGPTOutput(forceInput: true)
-            log(.warn, .audio, "来电监听中断，放弃按需 Voice 启动",
+            log(.warn, .audio, "来电监听中断，保留 ChatGPT 页面并放弃本次接听",
                 details: ["reason": "VOICE_RINGING_STATE_LOST"])
             return
         }
@@ -586,7 +591,7 @@ final class AssistantModel: ObservableObject {
             embeddedVoiceStatus = "Voice 启动超时：本次来电不自动接听"
             log(.warn, .audio, "按需启动 Voice 超时，放弃本次接听",
                 details: ["reason": "ON_DEMAND_VOICE_TIMEOUT"])
-            embeddedVoiceBrowser.releaseForIdle()
+            embeddedVoiceBrowser.preservePageAfterCall(reason: "TIMEOUT")
             restoreAutomaticGPTOutput(forceInput: true)
             return
         }
@@ -980,7 +985,8 @@ final class AssistantModel: ObservableObject {
             voiceSessionPrepared = false
             incomingVoicePending = false
             incomingVoiceBlockedUntilIdle = true
-            embeddedVoiceBrowser.releaseForIdle()
+            embeddedVoiceBrowser.preservePageAfterCall(reason: "IDLE")
+            hideEmbeddedVoiceWindow()
             stopGPTTwoWayPhoneBridge()
             restoreAutomaticGPTOutput(forceInput: true)
             autoCallStatus = "自动接听已关闭；不会接听后续来电"
@@ -1064,7 +1070,7 @@ final class AssistantModel: ObservableObject {
             incomingVoiceDeadline = nil
             voiceSessionPrepared = false
             if useEmbeddedVoiceBrowser && embeddedVoiceBrowser.loaded {
-                embeddedVoiceBrowser.releaseForIdle()
+                embeddedVoiceBrowser.preservePageAfterCall(reason: "IDLE")
                 hideEmbeddedVoiceWindow()
             }
             if liveVoiceActive || liveVoiceStarting {

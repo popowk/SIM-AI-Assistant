@@ -20,6 +20,21 @@ final class SIMAICoreTests: XCTestCase {
     }
 
 
+    func testChatGPTIframeVerifiedMicrophoneDoesNotStayWaitingForever() {
+        // Reproduces the 20:46 failure: WebKit capture was active but the
+        // main page remained WAITING_FOR_CAPTURE while audio was in a frame.
+        XCTAssertFalse(VoiceMicrophoneRoutePolicy.verified(mainFrameCode: "WAITING_FOR_CAPTURE",
+                               childFrameLastSignalAge: nil))
+        XCTAssertTrue(VoiceMicrophoneRoutePolicy.verified(mainFrameCode: "WAITING_FOR_CAPTURE",
+                              childFrameLastSignalAge: 1))
+        XCTAssertTrue(VoiceMicrophoneRoutePolicy.verified(mainFrameCode: "BLACKHOLE2_CAPTURE_VERIFIED",
+                              childFrameLastSignalAge: nil))
+        XCTAssertFalse(VoiceMicrophoneRoutePolicy.verified(mainFrameCode: "WAITING_FOR_CAPTURE",
+                               childFrameLastSignalAge: 8))
+        XCTAssertFalse(VoiceMicrophoneRoutePolicy.verified(mainFrameCode: "WRONG_CAPTURE_DEVICE",
+                               childFrameLastSignalAge: nil))
+    }
+
     func testConfiguredChatGPTDestinationOnlyAllowsOfficialHTTPS() {
         XCTAssertEqual(ChatGPTDestination.validated(" https://chatgpt.com/g/g-example/telephone ")?.absoluteString,
                        "https://chatgpt.com/g/g-example/telephone")

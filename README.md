@@ -1,4 +1,8 @@
-# SIM AI Assistant · V0.4.20（ADB 稳定连接、GPT 麦克风真实校验、Mac 声音隔离）
+# SIM AI Assistant · V0.4.21（修复自动接听未就绪与 GPT 白屏）
+
+> 依据 2026-11-23 20:46:56 诊断：电话 20:46:00 RINGING，网页麦克风 20:46:02 激活，独立回复音轨 20:46:10 配置完成，但主页面虚拟麦克风检测一直 WAITING_FOR_CAPTURE；20:46:26 达到 25 秒启动超时并主动调用 releaseForIdle() 将 chatgpt.com 替换为空白 HTML。新版将网页脚本注入官方 chatgpt.com 同源子页面，监听实际 getUserMedia 及 WebRTC outgoing track 的 BlackHole2 设备验证，并以匿名 WKScriptMessageHandler 汇总跨 frame 的有效结果；8 秒内未更新的音轨证据自动失效，仍不把未经验证的物理麦克风送入 GPT。实际兼容性需在用户登录的 ChatGPT 网页上验证。
+
+> 自动接听启动超时、来电状态短暂中断、对方挂机（IDLE）或手动停止自动值守均不再清空已打开的 ChatGPT 页面；仅在显式关闭内嵌模式或退出 App 时释放网页。手动打开的 ChatGPT 窗口也不会因手机状态 IDLE 自动被隐藏。补充匿名的 WebKit 导航与进程终止诊断码，便于区分网站崩溃/页面跳转与程序主动清空。Mac v0.4.21 Build 38；Android Companion v0.3.8 不变，手机无须因本次修复重装。
 
 > 根据 2026-11-23 20:09 诊断：Mac 收到有效来电 PCM（RMS 0.22177，BlackHole2 输出 686 帧），但 GPT 返回 RMS 为 0，WebKit 的 microphoneCaptureState.active 不能证明 GPT 已选择 BlackHole 2ch。本版仅对官方 chatgpt.com 注入网页麦克风设备检测：启动原生 getUserMedia 时清除旧物理设备选择，优先使用 BlackHole2，等待真实音轨验证成功才自动接听。未验证时不会把物理环境麦克风交给 GPT。实际可用性仍受 WebKit 和 ChatGPT 网站限制。
   
