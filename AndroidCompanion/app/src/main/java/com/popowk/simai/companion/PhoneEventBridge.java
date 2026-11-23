@@ -1,6 +1,10 @@
 package com.popowk.simai.companion;
 
 import android.content.Context;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.telecom.TelecomManager;
+import android.telephony.TelephonyManager;
 import android.util.Log;
 import android.util.AtomicFile;
 import org.json.JSONArray;
@@ -189,6 +193,42 @@ final class PhoneEventBridge {
         if (!headersEnded) return;
         if (!accessToken.equals(token)) {
             reply(client, 403, "{\"error\":\"forbidden\"}");
+            return;
+        }
+
+        if (first.startsWith("POST /call/answer HTTP/1.")) {
+            // Explicit Mac user action through the existing private ADB token.
+            // No auto-answer, incoming-number processing, or call recording.
+            // Check the actual device call state just before the action; a
+            // stale RINGING event must not answer a different call later.
+            if (contentLength > 0) {
+                reply(client, 400, "{\"error\":\"body_not_allowed\"}");
+                return;
+            }
+            if (context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                reply(client, 403, "{\"error\":\"answer_permission_required\"}");
+                return;
+            }
+            try {
+                TelephonyManager phone = (TelephonyManager)
+                        context.getSystemService(Context.TELEPHONY_SERVICE);
+                TelecomManager telecom = (TelecomManager)
+                        context.getSystemService(Context.TELECOM_SERVICE);
+                if (phone == null || telecom == null ||
+                        phone.getCallState() != TelephonyManager.CALL_STATE_RINGING) {
+                    reply(client, 409, "{\"error\":\"not_ringing\"}");
+                    return;
+                }
+                // Android 13 still exposes this deprecated API to ordinary
+                // apps with ANSWER_PHONE_CALLS. OEM may reject the request.
+                telecom.acceptRingingCall();
+                reply(client, 200, "{\"ok\":true,\"result\":\"answer_requested\"}");
+            } catch (SecurityException permission) {
+                reply(client, 403, "{\"error\":\"answer_permission_denied\"}");
+            } catch (Exception unavailable) {
+                reply(client, 503, "{\"error\":\"answer_unavailable\"}");
+            }
             return;
         }
 
