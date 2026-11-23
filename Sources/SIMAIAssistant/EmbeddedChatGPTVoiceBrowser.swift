@@ -967,7 +967,9 @@ struct EmbeddedChatGPTVoiceWindow: View {
                     .font(.caption.weight(.medium))
                 Text(browser.isolatedMicrophoneStatus)
                     .font(.caption).foregroundStyle(.secondary)
-                Text(browser.microphoneSignalStatus)
+                Text(model.livePhoneState == "OFFHOOK" && model.liveVoiceActive
+                     ? browser.microphoneSignalStatus
+                     : "电话尚未接通或 PCM 未建立；BlackHole 输入静音是预期状态，不能据此判断 GPT 故障")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Label(browser.isolatedOutputReady ? "独立音频路由已就绪" : "独立音频路由待验证",
