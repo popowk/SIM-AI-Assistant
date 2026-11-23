@@ -24,6 +24,7 @@ import android.widget.TextView;
 public final class MainActivity extends Activity {
     private static final int PHONE_PERMISSION_REQUEST = 1021;
     private static final int SMS_PERMISSION_REQUEST = 1022;
+    private static final int ANSWER_PERMISSION_REQUEST = 1023;
     private static final String ONBOARDING_PREFS = "simai_initial_setup";
     private static final String KEY_WIZARD_SHOWN = "permissions_wizard_shown";
     private static final String KEY_MONITOR_DESIRED = "phone_state_monitor_desired";
@@ -50,11 +51,11 @@ public final class MainActivity extends Activity {
         scroller.addView(column);
 
         TextView title = new TextView(this);
-        title.setText("SIM AI Companion · V0.3.3");
+        title.setText("SIM AI Companion · V0.3.5");
         title.setTextSize(22f);
         column.addView(title);
         TextView description = new TextView(this);
-        description.setText("\nAndroid 电话状态 + 飞书短信通知 · 不接听、不录音、不读取来电号码。\n保留 vivo 原来的拨号应用与蓝牙功能。\n");
+        description.setText("\nAndroid 电话状态 + 飞书短信通知 + Mac 人工接听（可选授权）。\n默认不自动接听；保留 vivo 原来的拨号应用与蓝牙功能。\n");
         column.addView(description);
 
         permission = new TextView(this);
@@ -63,6 +64,18 @@ public final class MainActivity extends Activity {
         grant.setText("授权电话状态读取");
         grant.setOnClickListener(v -> requestPhonePermissionAndAutoStart());
         column.addView(grant);
+
+        Button answerGrant = new Button(this);
+        answerGrant.setText("授权 Mac 端人工接听电话（可选）");
+        answerGrant.setOnClickListener(v ->
+                new android.app.AlertDialog.Builder(this)
+                        .setTitle("允许 Mac 手动接听来电？")
+                        .setMessage("授权后，只有在 Mac 显式点击「人工接听当前来电」且电话确实处于响铃状态时，本应用才会向 Android 系统发出接听请求。不会自动接听、不会接管默认拨号应用，也不会把通话音频自动发送给 ChatGPT。")
+                        .setNegativeButton("取消", null)
+                        .setPositiveButton("继续系统授权", (dialog, which) -> requestPermissions(
+                                new String[]{Manifest.permission.ANSWER_PHONE_CALLS},
+                                ANSWER_PERMISSION_REQUEST)).show());
+        column.addView(answerGrant);
 
         state = new TextView(this);
         state.setTextSize(18);
@@ -293,8 +306,10 @@ public final class MainActivity extends Activity {
     }
 
     private void refresh() {
-        permission.setText("电话权限：" + (checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
-            == PackageManager.PERMISSION_GRANTED ? "已授权" : "未授权"));
+        permission.setText("电话状态权限：" + (checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
+            == PackageManager.PERMISSION_GRANTED ? "已授权" : "未授权") +
+            " · Mac 人工接听：" + (checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
+            == PackageManager.PERMISSION_GRANTED ? "已授权" : "未授权（可选）"));
         state.setText("服务：" + (CallMonitorService.running ? "运行中" : "停止")
                 + "   状态：" + CallMonitorService.lastState);
         if (smsStatus != null) {
@@ -323,6 +338,13 @@ public final class MainActivity extends Activity {
                         Toast.LENGTH_LONG).show();
             }
             if (wizardInProgress) requestSMSPermissionIfNeeded();
+        } else if (requestCode == ANSWER_PERMISSION_REQUEST) {
+            Toast.makeText(this,
+                    checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
+                            == PackageManager.PERMISSION_GRANTED
+                    ? "人工接听已授权；仍需在 Mac 手动点击接听按钮"
+                    : "人工接听权限未获授权；原有电话与短信功能不受影响",
+                    Toast.LENGTH_LONG).show();
         } else if (requestCode == SMS_PERMISSION_REQUEST) {
             wizardInProgress = false;
             boolean granted = checkSelfPermission(Manifest.permission.RECEIVE_SMS)
