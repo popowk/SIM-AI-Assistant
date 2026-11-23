@@ -47,8 +47,13 @@ public struct PhoneBridgeCursor {
     public mutating func consume(_ snapshot: PhoneBridgeSnapshot) -> [PhoneBridgeEvent] {
         guard snapshot.schema == 1, !snapshot.session.isEmpty else { return [] }
         if session != snapshot.session {
+            // A first connection (or a restarted Android listener) can
+            // return up to 64 historic call transitions. Establish a
+            // baseline without treating those events as new live calls.
+            // The current snapshot.state is still handled separately by Mac.
             session = snapshot.session
-            lastSequence = 0
+            lastSequence = snapshot.seq
+            return []
         }
         let fresh = snapshot.newEvents(after: lastSequence)
         lastSequence = max(lastSequence, snapshot.seq)

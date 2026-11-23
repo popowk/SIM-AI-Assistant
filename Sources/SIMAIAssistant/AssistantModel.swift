@@ -61,6 +61,8 @@ final class AssistantModel: ObservableObject {
     @Published var blackHoleInstallerBusy = false
     @Published var blackHoleInstallerStatus = "检测 BlackHole 2ch / 16ch 状态后可直接获取官方安装程序，无需 Homebrew"
     @Published var aiReplyMonitorEnabled = false
+    @Published var allowCallerMonitorDuringAI =
+        UserDefaults.standard.bool(forKey: "SIMAI_MIX_CALLER_AND_GPT_LOCAL")
     @Published var aiReplyToPhoneEnabled = false
     @Published var aiReplyReturnStatus = "尚未启动 GPT 回复监听"
     @Published var aiReplyReceivedFrames = 0
@@ -91,8 +93,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.15"
-    let buildNumber = "32"
+    let version = "0.4.16"
+    let buildNumber = "33"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -126,6 +128,7 @@ final class AssistantModel: ObservableObject {
     private var nextHTTPRecoveryAttempt = Date.distantPast
     private var bridgeRetryAfter = Date.distantPast
     private var bridgeConsecutiveFailures = 0
+    private var nextPhoneMonitorWakeAt = Date.distantPast
     private(set) var sessionID = UUID().uuidString
     private(set) var lastError: DiagnosticEvent?
 
@@ -929,6 +932,34 @@ final class AssistantModel: ObservableObject {
         bridgeConsecutiveFailures = 0
     }
 
+    /// When the Android foreground monitor is stale, request a bounded,
+    /// permission-preserving wake instead of waiting for a user to reopen it.
+    /// The Companion's explicit "stop listening" preference is respected.
+    private func schedulePhoneMonitorWakeIfNeeded(reason: String) {
+        guard ["SNAPSHOT_INVALID_OR_STALE", "SNAPSHOT_UNAVAILABLE"].contains(reason),
+              liveSyncEnabled, !adbInstalling,
+              Date() >= nextPhoneMonitorWakeAt else { return }
+        nextPhoneMonitorWakeAt = Date().addingTimeInterval(45)
+        let adb = selectedADBPath
+        Task.detached(priority: .utility) { [weak self] in
+            let code = ADBInspector.wakePhoneMonitorIfDesired(at: adb)
+            await MainActor.run {
+                guard let self, self.liveSyncEnabled else { return }
+                self.log(code == "PHONE_MONITOR_WAKE_REQUESTED" ? .info : .warn,
+                         .call, "已检查 Android 电话监听服务自动恢复",
+                         details: ["recovery": code])
+                if code == "PHONE_MONITOR_WAKE_REQUESTED" {
+                    // ADB remains authorized. Prefer fresh file snapshots
+                    // while the phone's HTTP listener is starting.
+                    self.resetBridgeRetry()
+                    self.bridgeUsingFileFallback = true
+                    self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(12)
+                    self.pollLiveBridge()
+                }
+            }
+        }
+    }
+
     private func noteBridgeFailure(code: String, domain: String) {
         bridgeConsecutiveFailures += 1
         let delay = Int(BridgeRetryPolicy.delay(after: bridgeConsecutiveFailures))
@@ -995,6 +1026,7 @@ final class AssistantModel: ObservableObject {
                     self.bridgeUsingFileFallback = true
                 } else {
                     self.bridgeUsingFileFallback = false
+                    self.schedulePhoneMonitorWakeIfNeeded(reason: result.reason)
                     self.noteBridgeFailure(code: result.reason, domain: "SIMAI.ADBFile")
                     self.livePhoneState = "未连接"
                 }
@@ -1016,16 +1048,15 @@ final class AssistantModel: ObservableObject {
         }
         if let link = bridgeLink {
             let generation = bridgeGeneration
-            // Android retains at most 64 events. Fetch the bounded history so a freshly
-            // restarted Android session is not missed when its sequence starts from 1.
-            // PhoneBridgeCursor filters all duplicate events on the Mac.
-            let since = 0
+            // The cursor establishes an initial baseline so history from a
+            // recovering phone is never misreported as live transitions.
+            let since = bridgeCursor.lastSequence
             Task { [weak self] in
                 guard let self else { return }
                 var request = URLRequest(url: URL(
                     string: "http://127.0.0.1:\(link.localPort)/events?since=\(since)")!)
                 request.httpMethod = "GET"
-                request.timeoutInterval = 6.0
+                request.timeoutInterval = 3.0
                 request.setValue(link.token, forHTTPHeaderField: "X-SIMAI-Token")
                 request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
                 do {
@@ -1070,10 +1101,18 @@ final class AssistantModel: ObservableObject {
                         self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(20)
                         self.applyBridgeSnapshot(snapshot, source: "ADB_FILE")
                     } else {
+                        self.schedulePhoneMonitorWakeIfNeeded(reason: fallback.reason)
                         self.noteBridgeFailure(code: fallback.reason, domain: "SIMAI.ADBFile")
                         self.livePhoneState = "未连接"
                         if self.bridgeConsecutiveFailures == 1 { self.inspectBridgeHealth() }
-                        if self.bridgeConsecutiveFailures >= 2 { self.closeLiveBridge() }
+                        // Preserve a valid ADB forward if only the Android
+                        // listener or its snapshot is stale. Reopening the
+                        // tunnel repeatedly delayed recovery in real logs.
+                        if self.bridgeConsecutiveFailures >= 3 &&
+                           ["ADB_NOT_READY", "ADB_ENUMERATION_FAILED",
+                            "ADB_ENUMERATION_TIMEOUT"].contains(fallback.reason) {
+                            self.closeLiveBridge()
+                        }
                     }
                 }
                 self.bridgeBusy = false
@@ -1100,7 +1139,11 @@ final class AssistantModel: ObservableObject {
                     self.adbStatus = "ADB 已自动识别 1 台已授权手机"
                     self.adbDiscoveryDescription = ADBInspector.discoveryLabel(at: path)
                     self.adbWasAuthorized = true
-                    // Keep the previous Android session and sequence across ADB port changes.
+                    // On first connect, read the private snapshot immediately.
+                    // Waiting for an HTTP request to time out made startup
+                    // take over a minute when Android's listener was asleep.
+                    self.bridgeUsingFileFallback = true
+                    self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(10)
                     self.liveBridgeStatus = result.message
                     if self.bridgeConsecutiveFailures == 0 {
                         self.log(.info, .call, "ADB 端口转发连接建立（未读取设备序列号）")
@@ -1290,6 +1333,17 @@ final class AssistantModel: ObservableObject {
         }
     }
 
+    /// The caller-to-GPT signal is never muted by this setting. It controls
+    /// only whether the Mac's physical speaker plays the caller in parallel
+    /// with ChatGPT's reply, which could sound like delayed echo.
+    func setAllowCallerMonitorDuringAI(_ enabled: Bool) {
+        allowCallerMonitorDuringAI = enabled
+        UserDefaults.standard.set(enabled, forKey: "SIMAI_MIX_CALLER_AND_GPT_LOCAL")
+        voiceStream?.setCallerMonitorEnabled(enabled || !aiReplyMonitorEnabled)
+        log(.info, .audio, "已调整 Mac 本地双路监听",
+            details: ["localCallerMonitor": enabled ? "ON" : "OFF_WHILE_AI"])
+    }
+
     /// ChatGPT must output to BlackHole 16ch. Mac speakers/headphones are
     /// chosen separately and never replaced by a virtual device.
     func setAIReplyMonitor(_ enabled: Bool) {
@@ -1308,12 +1362,17 @@ final class AssistantModel: ObservableObject {
                 try voiceStream.setAIReplyMonitoring(true, physicalOutputID: physicalID)
                 aiReplyMonitorEnabled = true
                 aiReplyToPhoneEnabled = false
-                aiReplyReturnStatus = "监听已开启：GPT 输出 BlackHole 16ch → Mac 选定耳机，电话回传仍关闭"
+                voiceStream.setCallerMonitorEnabled(allowCallerMonitorDuringAI)
+                aiReplyReturnStatus = allowCallerMonitorDuringAI
+                    ? "正在同时监听电话与 GPT，若听到回音可关闭双路监听"
+                    : "本地防回音：只监听 GPT 回复；电话对方仍正常送入 GPT"
                 log(.info, .audio, "用户主动开启独立 GPT 回复监听",
-                    details: ["route": "BLACKHOLE16_TO_PHYSICAL", "phoneForward": "off"])
+                    details: ["route": "BLACKHOLE16_TO_PHYSICAL", "phoneForward": "off",
+                              "callerMonitor": allowCallerMonitorDuringAI ? "ON" : "OFF"])
             } catch {
                 aiReplyMonitorEnabled = false
                 aiReplyToPhoneEnabled = false
+                voiceStream.setCallerMonitorEnabled(true)
                 restoreAutomaticGPTOutput()
                 aiReplyReturnStatus = "监听启动失败，请核对 BlackHole 16ch 和输出设备；失败细节请导出诊断"
                 let ns = error as NSError
@@ -1329,6 +1388,7 @@ final class AssistantModel: ObservableObject {
             do { try voiceStream.setAIReplyMonitoring(false) } catch {}
             aiReplyMonitorEnabled = false
             aiReplyToPhoneEnabled = false
+            voiceStream.setCallerMonitorEnabled(true)
             restoreAutomaticGPTOutput()
             aiReplyReturnStatus = "已关闭 GPT 回复监听及电话回传"
             log(.info, .audio, "用户关闭 GPT 回复监听与电话回传",

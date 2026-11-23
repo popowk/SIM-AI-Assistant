@@ -183,7 +183,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("自动接听 · 内嵌 GPT Voice · V0.4.15")
+                Text("自动接听 · 内嵌 GPT Voice · V0.4.16")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -361,6 +361,12 @@ struct DashboardView: View {
                 get: { model.useEmbeddedVoiceBrowser },
                 set: { model.setEmbeddedVoiceBrowserEnabled($0) }
             ))
+            Toggle("Mac 同时监听来电者与 GPT（关闭可减少回音）", isOn: Binding(
+                get: { model.allowCallerMonitorDuringAI },
+                set: { model.setAllowCallerMonitorDuringAI($0) }
+            ))
+            Text("默认只监听 GPT 的返回声音，但来电者仍会送往 BlackHole 2ch 和 GPT，双方电话语音传输不受影响。")
+                .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("打开内嵌 ChatGPT 登录与 Voice") {
                     model.setEmbeddedVoiceBrowserEnabled(true)
@@ -380,7 +386,8 @@ struct DashboardView: View {
             if model.useEmbeddedVoiceBrowser {
                 Text(model.embeddedVoiceStatus)
                     .font(.caption.weight(.medium))
-                Text("首次手动打开网页登录一次。平时不加载网页；响铃时先进行双声道 PCM 渲染预检，再按需启动 Voice，采集激活后才尝试自动接听。不能保证网页手势自动成功。")
+                Text("点击「打开内嵌 ChatGPT」可保存固定网址，使用已配置提示词的官方页面；麦克风授权成功后可在内嵌窗口启用许可记忆。来电才尝试启动 Voice。")
+                    .font(.caption).foregroundStyle(.secondary)
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
