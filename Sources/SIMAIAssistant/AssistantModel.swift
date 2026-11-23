@@ -121,6 +121,7 @@ final class AssistantModel: ObservableObject {
     private var voiceStopCheckGeneration = 0
     private var autoHangupBusy = false
     private var autoHangupAttempted = false
+    private var resumeAIForwardAfterVoicePause = false
     private var screenControlProcess: Process?
     private var voiceSessionID = ""
     private var pendingBlackHoleInstallChannels: Int?
@@ -344,6 +345,13 @@ final class AssistantModel: ObservableObject {
         if active {
             voiceStopCheckGeneration += 1
             if automaticAnswerAcknowledged { autoVoiceCaptureObserved = true }
+            if resumeAIForwardAfterVoicePause &&
+               automaticAnswerAcknowledged && livePhoneState == "OFFHOOK" &&
+               liveVoiceActive && aiReplyMonitorEnabled {
+                resumeAIForwardAfterVoicePause = false
+                setAIReplyToPhone(true)
+                log(.info, .audio, "Voice 恢复采集，恢复已授权的 GPT 电话回传")
+            }
             embeddedVoiceStatus = "WebKit 已采集麦克风；电话实测才能确认 GPT 听懂语音"
             if incomingVoicePending && incomingPreflightPassed &&
                livePhoneState == "RINGING" && !incomingVoiceBlockedUntilIdle {
@@ -359,6 +367,13 @@ final class AssistantModel: ObservableObject {
         } else {
             if automaticAnswerAcknowledged && autoVoiceCaptureObserved &&
                livePhoneState == "OFFHOOK" {
+                // Mute the PSTN uplink immediately while WebKit is not
+                // capturing, so unrelated desktop audio cannot leak during
+                // the grace period. Restore only if the same Voice resumes.
+                if aiReplyToPhoneEnabled {
+                    resumeAIForwardAfterVoicePause = true
+                    setAIReplyToPhone(false)
+                }
                 // A 4-second grace period avoids treating a temporary mute,
                 // capture pause or WebKit hiccup as an ended Voice session.
                 voiceSessionPrepared = false
@@ -737,6 +752,7 @@ final class AssistantModel: ObservableObject {
             automaticAnswerSession = ""
             automaticOffhookSequence = 0
             autoVoiceCaptureObserved = false
+            resumeAIForwardAfterVoicePause = false
             autoCallState.reset()
             voiceSessionPrepared = false
             incomingVoicePending = false
@@ -809,6 +825,7 @@ final class AssistantModel: ObservableObject {
             autoVoiceCaptureObserved = false
             autoHangupBusy = false
             autoHangupAttempted = false
+            resumeAIForwardAfterVoicePause = false
             incomingVoicePending = false
             incomingPreflightRunning = false
             incomingPreflightPassed = false
