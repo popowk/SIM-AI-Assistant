@@ -985,7 +985,8 @@ final class AssistantModel: ObservableObject {
             voiceSessionPrepared = false
             incomingVoicePending = false
             incomingVoiceBlockedUntilIdle = true
-            embeddedVoiceBrowser.releaseForIdle()
+            embeddedVoiceBrowser.preservePageAfterCall(reason: "IDLE")
+            hideEmbeddedVoiceWindow()
             stopGPTTwoWayPhoneBridge()
             restoreAutomaticGPTOutput(forceInput: true)
             autoCallStatus = "自动接听已关闭；不会接听后续来电"
