@@ -2160,14 +2160,25 @@ final class AssistantModel: ObservableObject {
             autoHangupAttempted = false
         }
         answerCallBusy = true
-        answerCallStatus = "正在安全检查 ADB 和手机响铃状态……"
+        answerCallStatus = "正在使用已授权电话桥接请求接听……"
+        let expectedRingSession = bridgeCursor.session
+        let expectedRingSequence = bridgeCursor.lastSequence
+        let existingLink = bridgeLink
         let path = selectedADBPath
         Task { [weak self] in
             guard let self else { return }
-            let attempt = await Task.detached(priority: .userInitiated) {
-                ADBInspector.openBridge(at: path)
-            }.value
-            guard let link = attempt.link else {
+            // Never build an extra slow ADB forward on every incoming call:
+            // the current listener already furnished the RINGING event.
+            let temporaryLink: ADBBridgeLink?
+            if existingLink == nil {
+                let attempt = await Task.detached(priority: .userInitiated) {
+                    ADBInspector.openBridge(at: path)
+                }.value
+                temporaryLink = attempt.link
+            } else {
+                temporaryLink = nil
+            }
+            guard let link = existingLink ?? temporaryLink else {
                 if automatic { self.automaticAnswerRequested = false }
                 self.answerCallBusy = false
                 self.answerCallStatus = "无法连接手机电话监听服务；请确认 Companion 已启动且只有一台已授权手机"
@@ -2176,9 +2187,12 @@ final class AssistantModel: ObservableObject {
                 return
             }
             defer {
-                let disposable = link
-                Task.detached(priority: .utility) {
-                    ADBInspector.closeBridge(at: path, link: disposable)
+                // The shared status listener owns its forward. Only clean up
+                // a one-off forward we created for a manual/unconnected case.
+                if let disposable = temporaryLink {
+                    Task.detached(priority: .utility) {
+                        ADBInspector.closeBridge(at: path, link: disposable)
+                    }
                 }
                 self.answerCallBusy = false
             }
@@ -2188,12 +2202,12 @@ final class AssistantModel: ObservableObject {
             }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            request.timeoutInterval = 6
+            request.timeoutInterval = 4
             request.cachePolicy = .reloadIgnoringLocalCacheData
             request.setValue(link.token, forHTTPHeaderField: "X-SIMAI-Token")
             request.setValue("0", forHTTPHeaderField: "Content-Length")
             let config = URLSessionConfiguration.ephemeral
-            config.timeoutIntervalForRequest = 6
+            config.timeoutIntervalForRequest = 4
             let session = URLSession(configuration: config)
             defer { session.invalidateAndCancel() }
             do {
@@ -2240,10 +2254,55 @@ final class AssistantModel: ObservableObject {
                                        "http": "\(http)"])
                 }
             } catch {
-                if automatic { self.automaticAnswerRequested = false }
-                self.answerCallStatus = "手机接听接口超时或连接中断；请检查手机界面，避免重复接听"
-                self.log(.warn, .system, "人工接听请求网络失败",
-                         details: ["reason": "MANUAL_ANSWER_TIMEOUT"])
+                // ADB file snapshots have remained available on this vivo
+                // while forwarded HTTP repeatedly timed out. If and ONLY IF
+                // the *same* ringing session/sequence is still present,
+                // issue a single bounded request through the Companion's
+                // authenticated Android-local socket. No simulated headset
+                // hook or arbitrary call-control key is ever sent.
+                if automatic && !expectedRingSession.isEmpty &&
+                   expectedRingSequence > 0 {
+                    let result = await Task.detached(priority: .userInitiated) {
+                        ADBInspector.answerRingingViaPrivateLocalShell(
+                            at: path,
+                            expectedSession: expectedRingSession,
+                            expectedSequence: expectedRingSequence
+                        )
+                    }.value
+                    if result == "ANSWER_FALLBACK_REQUESTED" &&
+                       self.bridgeCursor.session == expectedRingSession {
+                        self.automaticAnswerRequested = true
+                        self.automaticAnswerAcknowledged = true
+                        self.automaticAnswerSession = expectedRingSession
+                        self.autoVoiceCaptureObserved =
+                            self.autoVoiceCaptureObserved || self.embeddedVoiceCaptureActive
+                        self.answerCallStatus =
+                            "已通过 Android 本机受控通信提交接听；正在确认 OFFHOOK"
+                        self.log(.info, .call, "HTTP 转发失败后 Android 本机接听请求成功",
+                                 details: ["reason": result])
+                        // OFFHOOK may have arrived while the fall-back was
+                        // running. Reconcile the current call without creating
+                        // a new answer request.
+                        if self.livePhoneState == "OFFHOOK" {
+                            self.automaticOffhookSequence =
+                                self.bridgeCursor.lastSequence
+                            self.reactToAutomaticCallState("OFFHOOK")
+                        }
+                        return
+                    }
+                    self.automaticAnswerRequested = false
+                    self.answerCallStatus =
+                        "接听转发失败，Android 本机路径也未确认；本次未自动接听"
+                    self.log(.warn, .call, "电话接听双路径失败",
+                             details: ["reason": "MANUAL_ANSWER_TIMEOUT",
+                                       "fallback": result])
+                } else {
+                    if automatic { self.automaticAnswerRequested = false }
+                    self.answerCallStatus =
+                        "手机接听接口超时或连接中断；请核对手机当前状态"
+                    self.log(.warn, .system, "人工接听请求网络失败",
+                             details: ["reason": "MANUAL_ANSWER_TIMEOUT"])
+                }
             }
         }
     }
