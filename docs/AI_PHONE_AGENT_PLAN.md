@@ -2,6 +2,12 @@
 
 更新时间：2026-11-23。现有目标设备：vivo S9e / Android 13 / 联通 SIM、Apple Silicon Mac、BlackHole 2ch 与 16ch、ChatGPT Plus 官方 Voice。不默认使用付费 API。
 
+## V0.4.10 自动 BlackHole 16ch 输出设置（需实机验收）
+
+Mac 在已预备的自动来电 RINGING 前、或用户确认开启 GPT 双向通话时，将 macOS 默认音频输出自动切到 BlackHole 16ch，并在 IDLE、人工停止、PCM 会话超时或应用退出后恢复原输出设备。异常退出下次打开尝试根据保留的设备 UID 恢复。若用户自己改了输出，保留该选择；若切换失败不接起无人响应的电话。
+
+这只减少 macOS 声音设置操作，**不能让 ChatGPT Plus Voice 自动启动或保证 Voice 已在线**。默认输出切换会使其它应用音频也可能进入电话，因此需关闭无关音频和系统通知。
+
 ## V0.4.9 新增自动通话编排（仍需真机验收）
 
 Mac 自动状态机只在用户声明 Voice 已预先启动、相关音频设备就绪后，自动从 RINGING 请求接听、OFFHOOK 建立 PCM、再接通已存在的 Voice 路由。一个来电周期最多请求一次接听、一次音频；IDLE 重置。**官方 ChatGPT Plus Voice 不能由第三方程序自动启动、维持或判断其真正在线**，因此此版不能宣称做到安装后完全无人工的 GPT 电话接待。180 秒通话音频上限仍保留；超时后不假装仍可听到 AI 语音。
