@@ -20,6 +20,8 @@ struct DashboardView: View {
     @State private var confirmAPKInstall = false
     @State private var confirmAPKReset = false
     @State private var showFeishuWebhook = false
+    @State private var requestedBlackHoleChannels = 16
+    @State private var confirmBlackHoleDownload = false
 
     var body: some View {
         ScrollView {
@@ -118,6 +120,16 @@ struct DashboardView: View {
         } message: {
             Text(model.cleanupPreviewText + "\n操作不可撤销，仅影响 SIM AI Assistant 的历史 JSONL 日志，不清除系统 OSLog。")
         }
+        .confirmationDialog("获取 BlackHole 官方虚拟音频驱动？",
+                            isPresented: $confirmBlackHoleDownload,
+                            titleVisibility: .visible) {
+            Button("从官网下载并打开 macOS 安装器") {
+                model.openOfficialBlackHoleInstaller(channels: requestedBlackHoleChannels)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将从 Existential Audio 官网直接获取 BlackHole \(requestedBlackHoleChannels)ch 0.7.1 安装包，检查固定 SHA-256。该第三方驱动不随 SIM AI Assistant 分发。下载并校验完成后会打开 macOS 系统安装器；需要你在系统中批准安装，可能需要管理员密码和重启电脑。不使用 Homebrew，也不静默安装驱动。")
+        }
         .confirmationDialog("安装或覆盖 Android 伴侣 APK？",
                             isPresented: $confirmAPKInstall, titleVisibility: .visible) {
             Button("确认安装 / 覆盖") { model.installAndroidCompanion() }
@@ -152,7 +164,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("电话音频 + GPT Voice + 自动输出切换 · V0.4.10")
+                Text("电话音频 + GPT Voice + 官方声卡一键安装 · V0.4.11")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -581,21 +593,40 @@ struct DashboardView: View {
                     "独立回复输入：缺少 BlackHole 16ch（可通过 brew install blackhole-16ch 安装）")
                 .font(.caption)
                 .foregroundStyle(blackHoleReturnReady ? .green : .orange)
-            if !blackHoleReturnReady {
+            let blackHole2Ready = model.audio.devices.contains {
+                $0.displayName.caseInsensitiveCompare("BlackHole 2ch") == .orderedSame
+            }
+            if !blackHoleReturnReady || !blackHole2Ready {
                 HStack {
-                    Button("复制 BlackHole 16ch 安装命令") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString("brew install blackhole-16ch", forType: .string)
+                    if !blackHoleReturnReady {
+                        Button("一键安装 BlackHole 16ch") {
+                            requestedBlackHoleChannels = 16
+                            confirmBlackHoleDownload = true
+                        }
+                        .disabled(model.blackHoleInstallerBusy)
+                        .buttonStyle(.borderedProminent)
                     }
-                    .buttonStyle(.bordered)
-                    Button("安装说明") {
-                        if let url = URL(string: "https://github.com/ExistentialAudio/BlackHole") {
+                    if !blackHole2Ready {
+                        Button("安装 BlackHole 2ch") {
+                            requestedBlackHoleChannels = 2
+                            confirmBlackHoleDownload = true
+                        }
+                        .disabled(model.blackHoleInstallerBusy)
+                        .buttonStyle(.bordered)
+                    }
+                    Button("开发者官网") {
+                        if let url = URL(string: "https://existential.audio/blackhole/") {
                             NSWorkspace.shared.open(url)
                         }
                     }
                     .buttonStyle(.link)
                 }
-                Text("缺少虚拟声卡时不会擅自安装内核／音频驱动，也不会自动接听无人回答的电话；请先完成一次安装。")
+                if model.blackHoleInstallerBusy {
+                    ProgressView("下载与校验官方安装包……").controlSize(.small)
+                }
+                Text(model.blackHoleInstallerStatus)
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("安装包不包含在软件内：点击按钮后直接从开发者官网下载并校验，随后由 macOS 安装器进行系统授权。安装完成后可能需要重启。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Picker("Mac 真实耳机/扬声器", selection: $model.selectedVoiceMonitorOutputID) {
@@ -720,7 +751,7 @@ struct DashboardView: View {
             Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.4.10 (27)").font(.caption.monospaced())
+            Text("0.4.11 (28)").font(.caption.monospaced())
         }
     }
 
