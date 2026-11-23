@@ -1,4 +1,10 @@
-# SIM AI Assistant · V0.4.19（内置新版 APK、一键电话授权与音频播放手势修复）
+# SIM AI Assistant · V0.4.20（ADB 稳定连接、GPT 麦克风真实校验、Mac 声音隔离）
+
+> 根据 2026-11-23 20:09 诊断：Mac 收到有效来电 PCM（RMS 0.22177，BlackHole2 输出 686 帧），但 GPT 返回 RMS 为 0，WebKit 的 microphoneCaptureState.active 不能证明 GPT 已选择 BlackHole 2ch。本版仅对官方 chatgpt.com 注入网页麦克风设备检测：启动原生 getUserMedia 时清除旧物理设备选择，优先使用 BlackHole2，等待真实音轨验证成功才自动接听。未验证时不会把物理环境麦克风交给 GPT。实际可用性仍受 WebKit 和 ChatGPT 网站限制。
+  
+> 视频安全模式不再每通电话切换 Mac 系统扬声器。自动值守期间为兼容 WebKit 首次录音，暂时保留 BlackHole2 作为系统默认输入，直至关闭自动值守或退出；因此其他需要使用默认麦克风的软件可能需要手动选择各自麦克风。本程序不会自动改变视频和音乐的系统输出。物理监听耳机临时自动回退不会覆盖用户保存的硬件 UID。
+
+> ADB 方面过滤单次设备空扫描、保留端口转发、延长服务唤醒和 HTTP 退避；安卓后台服务被 vivo 拒绝时，仅对已明确允许监听的 Companion 尝试前台恢复。Android v0.3.8 将匿名电话状态快照刷新间隔由 15 秒缩短到 10 秒。Mac v0.4.20 Build 37；Android v0.3.8 versionCode 13。
 
 > 此版 Mac 程序内置 Android Companion v0.3.7（versionCode 12），构建时校验实际 APK Manifest 版本并写入元数据，UI 不再固定写死 V0.3.5。用户在 Mac 明确点击“一键安装最新版并开启电话权限”后，仅对唯一已授权 ADB 手机安装/覆盖 APK，并请求电话状态读取、接听与挂断两种所需运行时权限；不申请短信权限，不自动卸载或清除手机数据。若系统阻止 ADB 授权，手机端自动合并发起 Android 系统授权，不再要求点击第二个“授权 Mac 控制接听与结束电话”按钮。首次 ADB 授权及 vivo 系统权限仍由系统控制。网页版 ChatGPT Voice 播放受阻的一个可能原因是上一版把 play() 放入了异步 setSinkId Promise，导致用户手势失效；现保留原生同步 play() 调用并报告 NotAllowedError。ChatGPT 官方页面本身的交互限制仍可能要求一次真实点击。Mac v0.4.19 Build 36。
 
