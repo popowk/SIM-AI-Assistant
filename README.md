@@ -1,4 +1,4 @@
-# SIM AI Assistant · V0.4.11（BlackHole 官方驱动一键安装）
+# SIM AI Assistant · V0.4.12（自动虚拟麦克风 + 精简主界面）
 
 **设备目标**：vivo S9e / Android 13 / 中国联通实体 SIM + Apple Silicon Mac / macOS 26.6.2。
 **源代码**：https://github.com/popowk/SIM-AI-Assistant
@@ -10,6 +10,25 @@
 - Android → Mac：私有通信令牌、本机端口转发、匿名电话状态同步和去重、断线重连。此前 vivo S9e 的真实来电日志已验证此项。
 - Mac 本地音频设备检查、麦克风电平、扬声器试听和设备恢复。
 - 诊断 ZIP、匿名事件日志、1/7/14 天清理与「清空全部（含今天）」。
+
+## V0.4.12 · 修复 GPT 虚拟麦克风与精简主界面（2026-11-23）
+
+依据用户上传的 V0.4.11 Build 28 诊断包 `SIM-AI-Diagnostics-20261123-135319.zip`：
+- ADB 电话状态正常，RINGING → 自动接听请求 → OFFHOOK 成功；双向 PCM 16kHz/20ms 已启动。macOS 默认**输出**切换 BlackHole 16ch 成功（`ROUTE_ACTIVE`），电话到 BlackHole 2ch 的发送路由也已启动，但**此前代码未自动管理 macOS 默认麦克风**，无法保证官方 ChatGPT Voice 真正使用 BlackHole 2ch。
+- 结束时 GPT 回复 `aiReturnPeakRMS=0.00000`、`aiReturnCaptured=1233`、`aiReturnMonitorDropped=5812`、`aiReturnUplinkUnderflow=4604`、`voiceRouteDropped=4565`。只能证明当时未检测到有效 GPT 回复，不能仅凭这些计数推断 ChatGPT 网页输入设备或电话下行 PCM 内容。
+- V0.4.12 Mac Build 29 使用 CoreAudio 新增默认输入自动切换至 **BlackHole 2ch**，同时继续在需要时设置默认播放为 BlackHole 16ch；记录原麦克风 UID，停止值守或退出时恢复。异常退出下次启动检查恢复；若用户手动改输入，则尊重用户选择，不强行夺回。
+- 在已准备好 Voice 的值守期间保留 BlackHole 2ch 为默认输入，**避免待机时官方 Voice 误拾取电脑实体麦克风**。通话结束自动恢复播放设备，退出自动值守再恢复原输入。失败时阻止发起空接真实来电，不会改 Android 权限或系统音频服务。
+- **核心限制**：更改 macOS 默认麦克风不等于更改浏览器某个站点此前锁定的输入。如果网页或 ChatGPT Voice 已单独选择实体麦克风，仍需要到网站/浏览器内将其首次设为 BlackHole 2ch，必要时重新启动 Voice 会话；软件不能调用 Plus 官方未公开接口更改网站音频设置。若用户对着 Mac 实体麦克风说话，这个自动来电模式不会转给 GPT；输入源预设为**真实电话对方的音频**。
+- 另外加入不保留电话音频内容的**来电下行 PCM RMS 峰值**统计及 GPT 回声静音分类，只在脱敏日志/诊断 ZIP 中输出；未来可区分“手机下行本身静音”与“网页没有采集麦克风”或“GPT 回传音频静音”，但不能证明网页内部的音频选择。
+- 将原来四个阶段的实验控制、逐帧指标和冗长设备列表从默认主界面中移走：主界面只保留**自动值守、首次安装配置、折叠飞书设置、折叠高级维护与诊断**。ADB/飞书/PCM 采集及日志仍在后台运行，诊断 ZIP 可继续导出；没有删除业务能力。
+- Android Companion 仍为 V0.3.5，**不需要重新安装手机端**。
+
+### 验证（自己的真实测试号码）
+
+1. 安装 V0.4.12，先在浏览器的 ChatGPT Voice 中确认麦克风为 **BlackHole 2ch**。如果之前选了 Mac 内建麦克风，需要改选一次，重新启动 Voice 会话以应用。
+2. 点击 Mac「确认 ChatGPT Voice 已启动」；程序将自动管理 macOS 默认麦克风，电话来电时才管理 BlackHole 16ch 输出。
+3. 用第二部自有手机拨入测试普通话语音，观察是否从 RINGING → OFFHOOK → PCM 活跃，GPT 能否回答；不要上传电话录音或验证码。通话超时/挂断后系统播放输出应恢复；停止值守后原实体麦克风应恢复。
+4. 如仍听不到，导出脱敏诊断 ZIP。重点检查 `phoneDownlinkPeakRMS` 与 `aiReturnPeakRMS` 是否大于噪声基线，以及 `INPUT_ACTIVE`、`ROUTE_ACTIVE`、`VOICE_ROUTE` 相关错误分类，而不要仅看设备列表。
 
 ## V0.4.11 · 在软件中一键获取官方 BlackHole 安装程序（2026-11-23）
 
