@@ -19,6 +19,9 @@ final class AssistantModel: ObservableObject {
     @Published var lastADBScanAt: Date?
     @Published var adbInstalling = false
     @Published var apkInstallStatus = "尚未安装伴侣 APK"
+    @Published var screenControlStatus = "尚未打开手机屏幕（需要本机安装 scrcpy）"
+    @Published var screenControlStarting = false
+    @Published var screenControlRunning = false
     @Published var liveSyncEnabled = UserDefaults.standard.object(forKey: "SIMAI_LIVE_SYNC") as? Bool ?? true
     @Published var liveBridgeStatus = "正在检查 ADB 连接"
     @Published var livePhoneState = "未连接"
@@ -70,13 +73,14 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.6"
-    let buildNumber = "23"
+    let version = "0.4.7"
+    let buildNumber = "24"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
     private let microphoneProbe = MicrophoneLevelProbe()
     private var voiceStream: PhoneAudioStream?
+    private var screenControlProcess: Process?
     private var voiceSessionID = ""
     private var bridgeTimer: Timer?
     private var wakeObserver: NSObjectProtocol?
@@ -1049,6 +1053,102 @@ final class AssistantModel: ObservableObject {
         pollLiveBridge()
     }
 
+    /// User-controlled scrcpy mirroring; no OCR or automated taps are
+    /// performed. Permission dialogs are completed explicitly in the mirror.
+    func openPhoneScreenControl() {
+        guard !screenControlRunning, !screenControlStarting else {
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        screenControlStarting = true
+        screenControlStatus = "正在确认 scrcpy 与唯一已授权的 ADB 手机……"
+        let adb = selectedADBPath
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let prepared = ADBInspector.prepareScreenControl(at: adb)
+            await MainActor.run {
+                guard let self else { return }
+                self.screenControlStarting = false
+                guard prepared.code == "SCREEN_READY",
+                      let scrcpy = prepared.scrcpy,
+                      let selectedADB = prepared.adb,
+                      let serial = prepared.serial else {
+                    let status: String
+                    switch prepared.code {
+                    case "SCREEN_SCRCPY_MISSING":
+                        status = "未检测到 scrcpy。请先在 Mac 运行 brew install scrcpy（不自动安装第三方工具）。"
+                    case "SCREEN_ADB_MISSING":
+                        status = "未找到 adb；请先在 ADB 管理区设置有效路径"
+                    case "SCREEN_ADB_UNAUTHORIZED":
+                        status = "手机尚未授权 USB 调试；首次配对需在手机上确认，之后才能远程控制"
+                    case "SCREEN_MULTIPLE_DEVICES":
+                        status = "检测到多台已授权手机，为避免误操作请只连接目标手机"
+                    case "SCREEN_DEVICE_NOT_READY":
+                        status = "尚未检测到已授权的在线手机，请确认 USB / 无线 ADB"
+                    case "SCREEN_ADB_TIMEOUT":
+                        status = "ADB 设备检测超时；解锁手机并检查连接后再试"
+                    default:
+                        status = "无法启动屏幕控制，请检查 ADB 和 scrcpy 是否正常"
+                    }
+                    self.screenControlStatus = status
+                    self.log(.warn, .system, "ADB 手机屏幕控制未能启动",
+                             details: ["reason": prepared.code])
+                    return
+                }
+
+                let process = Process()
+                process.executableURL = scrcpy
+                process.arguments = [
+                    "--serial", serial,
+                    "--no-audio", "--max-size=1024", "--max-fps=30",
+                    "--window-title=SIM AI 手机屏幕（用户手动操作）"
+                ]
+                var environment = ProcessInfo.processInfo.environment
+                // Honor the same ADB executable used for installation and
+                // never log the device serial or the spawned command line.
+                environment["ADB"] = selectedADB.path
+                environment["PATH"] = selectedADB.deletingLastPathComponent().path + ":" +
+                    (environment["PATH"] ?? "/usr/bin:/bin")
+                process.environment = environment
+                process.standardOutput = FileHandle.nullDevice
+                process.standardError = FileHandle.nullDevice
+                process.terminationHandler = { [weak self] finished in
+                    Task { @MainActor in
+                        guard let self, self.screenControlProcess === finished else { return }
+                        self.screenControlProcess = nil
+                        self.screenControlRunning = false
+                        self.screenControlStatus = finished.terminationStatus == 0
+                            ? "手机屏幕窗口已关闭"
+                            : "手机屏幕连接中断或被系统拒绝；请检查 USB 调试与 vivo 安全设置"
+                        self.log(.info, .system, "手机屏幕控制会话结束",
+                                 details: ["reason": "SCREEN_SESSION_ENDED"])
+                    }
+                }
+                do {
+                    try process.run()
+                    self.screenControlProcess = process
+                    self.screenControlRunning = true
+                    self.screenControlStatus = "已打开手机屏幕：使用 Mac 鼠标处理安装、权限及设置提示；不会自动点击授权"
+                    self.log(.info, .system, "用户主动打开手机屏幕控制",
+                             details: ["route": "SCRCPY_AUTHORIZED_SINGLE_DEVICE"])
+                } catch {
+                    self.screenControlStatus = "无法启动 scrcpy；检查是否已安装以及 Mac 执行权限"
+                    self.log(.warn, .system, "scrcpy 进程启动失败",
+                             details: ["reason": "SCREEN_PROCESS_LAUNCH_FAILED"])
+                }
+            }
+        }
+    }
+
+    func closePhoneScreenControl() {
+        let process = screenControlProcess
+        screenControlProcess = nil
+        screenControlRunning = false
+        screenControlStatus = "已主动关闭手机屏幕控制"
+        if let process, process.isRunning { process.terminate() }
+        log(.info, .system, "用户关闭手机屏幕控制",
+            details: ["reason": "SCREEN_USER_STOPPED"])
+    }
+
     func installAndroidCompanion() {
         guard !adbInstalling else { return }
         guard let resource = Bundle.main.resourceURL?.appendingPathComponent("SIMAI-Companion.apk"),
@@ -1057,8 +1157,11 @@ final class AssistantModel: ObservableObject {
             return
         }
         closeLiveBridge()
+        // Open the control window before ADB install can block on an OEM
+        // confirmation. The user still makes all permission decisions.
+        openPhoneScreenControl()
         adbInstalling = true
-        apkInstallStatus = "正在通过 ADB 安装/覆盖手机应用……"
+        apkInstallStatus = "正在安装；如手机要求确认，请在 Mac 打开的手机屏幕窗口中手动操作……"
         let adb = selectedADBPath
         log(.info, .system, "用户确认开始安装或覆盖 Android 伴侣 APK",
             details: ["version": "0.3.4"])
@@ -1093,8 +1196,9 @@ final class AssistantModel: ObservableObject {
             return
         }
         closeLiveBridge()
+        openPhoneScreenControl()
         adbInstalling = true
-        apkInstallStatus = "已确认清空旧版伴侣数据，正在重新安装……"
+        apkInstallStatus = "已确认清空旧版数据，正在重装；如有系统提示请在 Mac 手机窗口手动确认……"
         let adbPath = selectedADBPath
         Task.detached(priority: .userInitiated) { [weak self] in
             let outcome = ADBInspector.reinstallAfterSignatureChange(at: adbPath, apk: apk)
