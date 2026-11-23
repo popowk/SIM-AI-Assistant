@@ -20,6 +20,20 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     @Published private(set) var rememberMicrophoneApproval =
         UserDefaults.standard.object(forKey: "SIMAI_REMEMBER_CHATGPT_MIC") as? Bool ?? true
     private let micApprovalKey = "SIMAI_CHATGPT_MIC_PREVIOUSLY_APPROVED"
+    // Unlike the previous "remember after successful capture" option,
+    // this explicit site-level choice is always visible in BOTH windows.
+    @Published private(set) var alwaysAllowOfficialMicrophone =
+        UserDefaults.standard.bool(forKey: "SIMAI_CHATGPT_MIC_ALWAYS_ALLOW")
+
+    func setAlwaysAllowOfficialMicrophone(_ allowed: Bool) {
+        alwaysAllowOfficialMicrophone = allowed
+        UserDefaults.standard.set(allowed, forKey: "SIMAI_CHATGPT_MIC_ALWAYS_ALLOW")
+        // Off always means ASK, even when an older release remembered success.
+        status = allowed
+            ? "本站麦克风已设为始终允许（仅 chatgpt.com）；macOS 系统权限仍生效"
+            : "本站麦克风已改为每次询问；不会再自动授权网页"
+        onDiagnostic?(allowed ? "VOICE_SITE_MIC_ALWAYS_ALLOWED" : "VOICE_SITE_MIC_ASK_EACH_TIME")
+    }
 
     var configuredURL: URL {
         ChatGPTDestination.validated(
@@ -276,13 +290,12 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         // prompt. Never automatically grant microphone to an auth provider.
         if origin.protocol == "https" && origin.host == "chatgpt.com" &&
            type == .microphone {
-            if rememberMicrophoneApproval &&
-               UserDefaults.standard.bool(forKey: micApprovalKey) {
-                // A prior explicit site permission and successful WebKit
-                // microphone capture is required. The macOS TCC permission
-                // remains authoritative and users can revoke this in the UI.
+            // Explicitly user-configured website permission, analogous to a
+            // browser's "Always allow microphone" setting. macOS TCC consent
+            // still applies and can be revoked in System Settings.
+            if alwaysAllowOfficialMicrophone {
                 decisionHandler(.grant)
-                onDiagnostic?("VOICE_MIC_PREVIOUSLY_APPROVED")
+                onDiagnostic?("VOICE_SITE_MIC_GRANT")
             } else {
                 decisionHandler(.prompt)
                 onDiagnostic?("VOICE_MIC_PERMISSION_PROMPT")
@@ -338,10 +351,13 @@ struct EmbeddedChatGPTVoiceWindow: View {
                 Button("保存网址") { browser.saveDestination() }
                     .buttonStyle(.borderedProminent)
             }
-            Toggle("记住已确认的 ChatGPT 麦克风许可", isOn: Binding(
-                get: { browser.rememberMicrophoneApproval },
-                set: { browser.setRememberMicrophoneApproval($0) }
+            Toggle("网站权限：始终允许 ChatGPT 使用麦克风", isOn: Binding(
+                get: { browser.alwaysAllowOfficialMicrophone },
+                set: { browser.setAlwaysAllowOfficialMicrophone($0) }
             ))
+            .font(.headline)
+            Text("仅授权官方 chatgpt.com 的麦克风，不授权摄像头；关闭后每次询问。macOS 系统的首次麦克风授权依然需要确认。")
+                .font(.caption).foregroundStyle(.secondary)
             Toggle("登录后自动尝试启动 Voice（实验）", isOn: Binding(
                 get: { browser.automaticVoiceButtonEnabled },
                 set: { model.setEmbeddedVoiceAutoStart($0) }
@@ -349,7 +365,7 @@ struct EmbeddedChatGPTVoiceWindow: View {
             Text(browser.status)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("固定网址仅允许官方 chatgpt.com（可选自定义 GPT／会话），不读取提示词。首次麦克风许可仍由你确认，成功采集后可记住网站许可；macOS 系统授权可能仍需确认。关掉记忆开关即可撤销应用内记忆。")
+            Text("固定网址只允许官方 chatgpt.com（可选自定义 GPT／会话），不读取提示词。上方网站麦克风开关就是浏览器层面的允许/询问设置；macOS 系统隐私权限单独管理。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             EmbeddedChatGPTWebView(controller: browser)
