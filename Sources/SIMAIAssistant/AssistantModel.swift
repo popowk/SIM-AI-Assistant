@@ -64,6 +64,8 @@ final class AssistantModel: ObservableObject {
     @Published var aiReplyUplinkUnderflow = 0
     @Published var aiReplyPeakRMS = 0.0
     @Published var liveVoiceRxFrames = 0
+    private var livePhysicalRenderFrames = 0
+    private var liveVirtualRenderFrames = 0
     private var liveDownlinkPeakRMS = 0.0
     @Published var liveVoiceTxFrames = 0
     @Published var liveVoiceDropFrames = 0
@@ -923,6 +925,8 @@ final class AssistantModel: ObservableObject {
         aiReplyUplinkUnderflow = 0
         aiReplyPeakRMS = 0
         liveVoiceRxFrames = 0
+        livePhysicalRenderFrames = 0
+        liveVirtualRenderFrames = 0
         liveDownlinkPeakRMS = 0
         liveVoiceTxFrames = 0
         liveVoiceDropFrames = 0
@@ -959,7 +963,8 @@ final class AssistantModel: ObservableObject {
                         details: ["sampleRate": "16000", "channels": "1", "frameMs": "20"])
                 case .metrics(let received, let sent, let dropped,
                               let micUnderflows, let micOverflows,
-                              let txLate, let micBufferedMs, let voiceRouteDropped):
+                              let txLate, let micBufferedMs, let voiceRouteDropped,
+                              let monitorRendered, let virtualRendered):
                     self.liveVoiceRxFrames = received
                     self.liveVoiceTxFrames = sent
                     self.liveVoiceDropFrames = dropped
@@ -968,6 +973,8 @@ final class AssistantModel: ObservableObject {
                     self.liveVoiceUplinkLateFrames = txLate
                     self.liveVoiceMicBufferedMs = micBufferedMs
                     self.chatGPTVoiceRouteDropped = voiceRouteDropped
+                    self.livePhysicalRenderFrames = monitorRendered
+                    self.liveVirtualRenderFrames = virtualRendered
                 case .downlinkSignal(let peakRMS):
                     self.liveDownlinkPeakRMS = peakRMS
                 case .aiReturnMetrics(let captured, let monitorDropped, let uplinkUnderflow, let peakRMS):
@@ -996,6 +1003,11 @@ final class AssistantModel: ObservableObject {
                     // Resume anonymous call-state synchronization without
                     // rebuilding the ADB connection unnecessarily.
                     self.pollLiveBridge()
+                    if self.liveVoiceRxFrames > 100 &&
+                       self.liveVirtualRenderFrames == 0 {
+                        self.log(.warn, .audio, "BlackHole 虚拟麦克风音频引擎未实际渲染任何 PCM",
+                                 details: ["reason": "BLACKHOLE_RENDER_STALLED"])
+                    }
                     if self.liveVoiceRxFrames > 100 && self.liveDownlinkPeakRMS < 0.001 {
                         self.log(.warn, .audio, "电话 PCM 已接收但未检测到明显的人声电平",
                                  details: ["reason": "PHONE_DOWNLINK_POSSIBLY_SILENT"])
@@ -1015,6 +1027,8 @@ final class AssistantModel: ObservableObject {
                             "uplinkLateFrames": "\(self.liveVoiceUplinkLateFrames)",
                             "micBufferedMs": "\(self.liveVoiceMicBufferedMs)",
                             "voiceRouteDropped": "\(self.chatGPTVoiceRouteDropped)",
+                            "physicalRenderedFrames": "\(self.livePhysicalRenderFrames)",
+                            "virtualMicRenderedFrames": "\(self.liveVirtualRenderFrames)",
                             "aiReturnCaptured": "\(self.aiReplyReceivedFrames)",
                             "aiReturnMonitorDropped": "\(self.aiReplyMonitorDropped)",
                             "aiReturnUplinkUnderflow": "\(self.aiReplyUplinkUnderflow)",
