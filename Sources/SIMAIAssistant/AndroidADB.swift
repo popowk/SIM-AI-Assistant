@@ -509,9 +509,11 @@ enum ADBInspector {
     static func answerRingingViaPrivateLocalShell(
         at selected: String?,
         expectedSession: String,
-        expectedSequence: Int
+        expectedSequence: Int,
+        expectedSerial: String
     ) -> String {
-        guard !expectedSession.isEmpty, expectedSequence > 0 else {
+        guard !expectedSession.isEmpty, expectedSequence > 0,
+              !expectedSerial.isEmpty else {
             return "ANSWER_FALLBACK_NO_RING_GUARD"
         }
         let result = readPrivateStateSnapshot(at: selected)
@@ -526,6 +528,19 @@ enum ADBInspector {
         guard let adb = executable(at: selected) else {
             return "ANSWER_FALLBACK_ADB_MISSING"
         }
+        // Bind the operation to exactly the same previously authorized
+        // Android device. Never let adb shell implicitly target a different
+        // phone if a cable reconnect occurs between the two checks.
+        let currentDevices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 5) {
+        case .completed(0, let output): currentDevices = parseDevices(output)
+        default: return "ANSWER_FALLBACK_DEVICE_CHANGED"
+        }
+        let authorized = currentDevices.filter { $0.state == "device" }
+        guard authorized.count == 1,
+              authorized[0].serial == expectedSerial else {
+            return "ANSWER_FALLBACK_DEVICE_CHANGED"
+        }
         // The 64-byte credential is expanded inside Android's run-as only.
         let script = #"""
         token="$(cat files/bridge-token 2>/dev/null)"
@@ -535,7 +550,7 @@ enum ADBInspector {
             .replacingOccurrences(of: "\n", with: "; ")
         let quoted = "'" + script.replacingOccurrences(of: "'", with: "'\\''") + "'"
         let command = "run-as com.popowk.simai.companion sh -c " + quoted
-        switch run(adb, args: ["shell", command], timeout: 8) {
+        switch run(adb, args: ["-s", expectedSerial, "shell", command], timeout: 8) {
         case .completed(0, let output):
             return output.hasPrefix("HTTP/1.1 200") &&
                    output.contains("\"answer_requested\"")
