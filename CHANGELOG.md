@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.4.22（麦克风实际电平与挂机自动收尾）— 2026-11-23
+
+- 根据 21:53 诊断：在 21:52:01 已自动接听，21:52:02 手机报告 OFFHOOK，电话下行 PCM 1,431 帧、BlackHole2 输出 1,429 帧（RMS 峰值 0.06734）；网页频繁报告 BlackHole2 已验证及 BlackHole16 媒体元素路由成功，但 GPT 回复捕获的 1,420 帧仍为零 RMS。虚拟录音设备匹配不代表网站真正处理了非静音声音。
+- WebKit 官方 chatgpt.com 中的 BlackHole2 录音请求关闭 WebRTC echoCancellation/noiseSuppression/autoGainControl，减少虚拟电话声音被误过滤。加入网页音轨匿名音量阈值检查（有声/持续静音/无法确认），仅上报固定的状态码，不记录/上传声音或网页消息。
+- BlackHole16 的 Mac 捕获从仅使用第 1 个通道升级为检测并选择确实含有声音的通道，选择采用幅度门槛与滞回抑制立体声抖动，并保持隔离模式下不修改 Mac 系统默认扬声器。电话下行存在而 GPT 持续零 RMS 时会在运行中明确显示并记录诊断码。
+- 仅对 SIM AI 自动接听的会话，在安卓 PCM Helper 返回 AUDIO_REMOTE_CLOSED（可能早于异步电话状态更新）或收到 IDLE 时执行 Voice 清理：先隐藏自动窗口再卸载网页音轨、关闭麦克风并保留 WebKit 登录数据；不盲目给运营商电话发送挂断命令。不会因为其他用户手动 ChatGPT 会话而乱关窗口。
+- 新增独立单元测试，确保自动 PCM 断开或真实 IDLE 会收尾，手动浏览器不受误清理影响。Mac v0.4.22 Build 39；Android Companion 仍为 v0.3.8，手机 APK 不需要重新安装；WebKit 声音能否被 GPT 识别必须真机验证。
+
+
 ## 0.4.21（修复 Voice iframe 验证阻塞与网页白屏）— 2026-11-23
 
 - 20:46 诊断显示：Android 在 20:46:00 成功发送 RINGING，20:46:02 WebKit microphoneCaptureState.active，20:46:10 HTMLMediaElement 的 BlackHole 16ch 输出已验证，但主页面 getUserMedia 钩子仍 WAITING_FOR_CAPTURE，导致 20:46:26 自动接听因 25 秒超时失败。随后程序调用 releaseForIdle，将用户看到的页面导航到空白 HTML（不是网页自动刷新）。

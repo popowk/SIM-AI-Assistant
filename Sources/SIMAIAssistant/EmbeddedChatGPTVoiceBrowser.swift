@@ -21,7 +21,9 @@ private final class SIMAIMicRouteSignalHandler: NSObject, WKScriptMessageHandler
         guard let code = message.body as? String,
               ["BLACKHOLE2_CAPTURE_VERIFIED", "BLACKHOLE2_TRACK_ENDED",
                "WRONG_CAPTURE_DEVICE", "BLACKHOLE2_NOT_VISIBLE",
-               "BLACKHOLE2_CAPTURE_FAILED"].contains(code) else { return }
+               "BLACKHOLE2_CAPTURE_FAILED",
+               "BLACKHOLE2_SIGNAL_PRESENT", "BLACKHOLE2_SIGNAL_SILENT",
+               "BLACKHOLE2_SIGNAL_METER_UNAVAILABLE"].contains(code) else { return }
         let target = browser
         Task { @MainActor [weak target] in
             target?.receiveMicrophoneFrameSignal(code)
@@ -41,6 +43,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     @Published private(set) var isolatedOutputReady = false
     @Published private(set) var isolatedMicrophoneReady = false
     @Published private(set) var isolatedMicrophoneStatus = "等待确认 ChatGPT 实际录音设备为 BlackHole 2ch"
+    @Published private(set) var microphoneSignalStatus = "尚未检测网页虚拟麦克风的实际声音电平"
     var onIsolatedMicrophoneChange: ((Bool) -> Void)?
     private var lastMicrophoneRouteCheck = Date.distantPast
     private var lastVerifiedMicrophoneFrameAt = Date.distantPast
@@ -64,6 +67,22 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     /// audio samples or page content are sent to the host process.
     func receiveMicrophoneFrameSignal(_ code: String) {
         guard loaded, microphoneActive, isOfficialPage else { return }
+        if code.hasPrefix("BLACKHOLE2_SIGNAL_") {
+            let description: String
+            switch code {
+            case "BLACKHOLE2_SIGNAL_PRESENT":
+                description = "网页中的 BlackHole 2ch 麦克风检测到非零声音电平"
+            case "BLACKHOLE2_SIGNAL_SILENT":
+                description = "网页已选 BlackHole 2ch，但输入音轨连续静音；GPT 可能听不到电话"
+            default:
+                description = "网页麦克风音量监测不可用；不能确认 GPT 收到了声音"
+            }
+            if microphoneSignalStatus != description {
+                microphoneSignalStatus = description
+                onDiagnostic?(code)
+            }
+            return
+        }
         if code == "BLACKHOLE2_CAPTURE_VERIFIED" {
             lastVerifiedMicrophoneFrameAt = Date()
             isolatedMicrophoneStatus =
@@ -71,6 +90,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
             updateIsolatedMicrophoneReady(true)
         } else {
             lastVerifiedMicrophoneFrameAt = .distantPast
+            microphoneSignalStatus = "虚拟麦克风音轨已停止，声音电平待重新检测"
             isolatedMicrophoneStatus = code == "BLACKHOLE2_TRACK_ENDED"
                 ? "ChatGPT 虚拟麦克风音轨已结束，等待重新建立"
                 : "GPT 麦克风音轨不符合 BlackHole 2ch，已拒绝自动接听"
@@ -202,10 +222,61 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
               }
             }, 2500);
           };
+          // Observe only an anonymous RMS threshold on the actual, verified
+          // local BlackHole2 track. No speech, samples, device IDs, or URLs
+          // cross into Swift, and the analyser is not connected to speakers.
+          const monitorMicEnergy = track => {
+            try {
+              const Ctx = window.AudioContext || window.webkitAudioContext;
+              if (!Ctx) { reportMic('BLACKHOLE2_SIGNAL_METER_UNAVAILABLE'); return; }
+              const ctx = new Ctx();
+              const source = ctx.createMediaStreamSource(new MediaStream([track]));
+              const analyser = ctx.createAnalyser();
+              analyser.fftSize = 1024;
+              source.connect(analyser);
+              const samples = new Float32Array(analyser.fftSize);
+              let quiet = 0, previous = '';
+              const check = setInterval(() => {
+                if (track.readyState !== 'live') {
+                  clearInterval(check);
+                  source.disconnect();
+                  Promise.resolve(ctx.close()).catch(() => {});
+                  return;
+                }
+                if (ctx.state !== 'running') {
+                  if (previous !== 'unavailable') {
+                    previous = 'unavailable';
+                    reportMic('BLACKHOLE2_SIGNAL_METER_UNAVAILABLE');
+                  }
+                  return;
+                }
+                analyser.getFloatTimeDomainData(samples);
+                let power = 0;
+                for (let i = 0; i < samples.length; i++)
+                  power += samples[i] * samples[i];
+                const rms = Math.sqrt(power / samples.length);
+                if (rms >= 0.003) {
+                  quiet = 0;
+                  if (previous !== 'present') {
+                    previous = 'present';
+                    reportMic('BLACKHOLE2_SIGNAL_PRESENT');
+                  }
+                } else if (++quiet >= 6 && previous !== 'silent') {
+                  previous = 'silent';
+                  reportMic('BLACKHOLE2_SIGNAL_SILENT');
+                }
+              }, 1000);
+            } catch (_) {
+              reportMic('BLACKHOLE2_SIGNAL_METER_UNAVAILABLE');
+            }
+          };
+
           const attachVerifiedTrack = track => {
             if (!track || track.kind !== 'audio' ||
                 track.readyState !== 'live') return;
+            if (window.__simaiMicTracks.has(track)) return;
             window.__simaiMicTracks.add(track);
+            monitorMicEnergy(track);
             track.addEventListener('ended', () => {
               window.__simaiMicTracks.delete(track);
               if (![...window.__simaiMicTracks].some(t => t.readyState === 'live')) {
@@ -236,6 +307,13 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
               // ChatGPT may remember an old physical microphone deviceId.
               // Replace that stale site choice with our verified virtual mic.
               delete audioConstraints.deviceId;
+              // Telephony PCM from a virtual sound card should not be
+              // mistaken for loudspeaker echo or stationary background
+              // noise by WebRTC's normal physical-microphone processing.
+              // These options apply only to the official ChatGPT WebView.
+              audioConstraints.echoCancellation = false;
+              audioConstraints.noiseSuppression = false;
+              audioConstraints.autoGainControl = false;
               if (window.__simaiBlackHole2DeviceId) {
                 audioConstraints.deviceId =
                   {exact: window.__simaiBlackHole2DeviceId};
@@ -426,6 +504,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         updateIsolatedMicrophoneReady(false)
         lastPlaybackCheck = .distantPast
         playbackBlocked = false
+        microphoneSignalStatus = "尚未检测网页虚拟麦克风的实际声音电平"
         isolateCheckBusy = false
         updateIsolatedOutputReady(false)
         webView.stopLoading()
@@ -888,6 +967,8 @@ struct EmbeddedChatGPTVoiceWindow: View {
                     .font(.caption.weight(.medium))
                 Text(browser.isolatedMicrophoneStatus)
                     .font(.caption).foregroundStyle(.secondary)
+                Text(browser.microphoneSignalStatus)
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Label(browser.isolatedOutputReady ? "独立音频路由已就绪" : "独立音频路由待验证",
                           systemImage: browser.isolatedOutputReady
@@ -913,11 +994,9 @@ struct EmbeddedChatGPTVoiceWindow: View {
                 .foregroundStyle(.secondary)
             EmbeddedChatGPTWebView(controller: browser)
                 .onAppear { browser.loadIfNeeded() }
-                .onDisappear {
-                    if model.livePhoneState == "IDLE" {
-                        browser.releaseForIdle()
-                    }
-                }
+                // Browser teardown belongs to the owner model only AFTER
+                // its window has been hidden. SwiftUI disappearance alone
+                // must not blank a page during unrelated view transitions.
                 .frame(minHeight: 500)
         }
         .padding(12)
