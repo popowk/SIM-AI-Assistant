@@ -1,5 +1,13 @@
 # 变更记录
 
+## 0.4.24（HTTP 失效时独立 Android 私有接听）— 2026-11-24
+
+- 根据 00:06 诊断：RINGING 已被 ADB 私有快照识别，Voice 就绪后 HTTP 接听超时；原备用方式仍使用同一 HTTP 端口和 toybox nc，最终无 OFFHOOK。
+- Android Companion v0.3.9（versionCode 14）：新增独立于 HTTP 的应用私有单次接听文件与回执。服务核验会话 UUID、RINGING 序列、实时通话状态及 ANSWER_PHONE_CALLS 权限，并先消费请求再执行，避免重放或接听另一通电话。
+- Mac 已处于 ADB_FILE 状态时优先执行独立接听；HTTP 作为后备；只有相同会话的成功回执才授权自动电话音频。自动 HTTP 接听也加上会话/序列防串线字段。
+- Mac v0.4.24 Build41；同时更新手机 APK 与 Mac 程序。GitHub Actions 编译不等于 vivo 实机接听验收。
+
+
 ## 0.4.23（自动接听超时降级与 Voice 挂机清理）— 2026-11-23
 
 - 23:20 诊断：RINGING 期间启动 Voice，接听请求因 HTTP 超时而失败，接下来直接变 IDLE，无 OFFHOOK 和 PCM；网页静音实际是尚未接通电话，没有音频来源。
