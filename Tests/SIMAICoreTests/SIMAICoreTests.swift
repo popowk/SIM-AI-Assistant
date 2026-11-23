@@ -4,6 +4,21 @@ import XCTest
 
 final class SIMAICoreTests: XCTestCase {
 
+    func testVideoSafeRoutingNeverAnswersWithoutIsolatedVoiceOutput() {
+        let ready = VoiceAudioIsolationPolicy.browserReady
+        XCTAssertFalse(ready(embedded: true, microphoneCapturing: false,
+                             isolationEnabled: true, isolatedMediaRouted: false))
+        XCTAssertFalse(ready(embedded: true, microphoneCapturing: true,
+                             isolationEnabled: true, isolatedMediaRouted: false))
+        XCTAssertTrue(ready(embedded: true, microphoneCapturing: true,
+                            isolationEnabled: true, isolatedMediaRouted: true))
+        XCTAssertTrue(ready(embedded: true, microphoneCapturing: true,
+                            isolationEnabled: false, isolatedMediaRouted: false))
+        XCTAssertTrue(ready(embedded: false, microphoneCapturing: false,
+                            isolationEnabled: false, isolatedMediaRouted: false))
+    }
+
+
     func testConfiguredChatGPTDestinationOnlyAllowsOfficialHTTPS() {
         XCTAssertEqual(ChatGPTDestination.validated(" https://chatgpt.com/g/g-example/telephone ")?.absoluteString,
                        "https://chatgpt.com/g/g-example/telephone")
