@@ -129,6 +129,8 @@ final class AssistantModel: ObservableObject {
     private var bridgeRetryAfter = Date.distantPast
     private var bridgeConsecutiveFailures = 0
     private var nextPhoneMonitorWakeAt = Date.distantPast
+    private var initialPhoneMonitorWarmup = false
+    private var startupBridgeGraceUntil = Date().addingTimeInterval(30)
     private(set) var sessionID = UUID().uuidString
     private(set) var lastError: DiagnosticEvent?
 
@@ -702,8 +704,14 @@ final class AssistantModel: ObservableObject {
                 self?.checkEmbeddedVoiceHealth()
             }
         }
-        autoInspectADBIfNeeded(force: true)
-        pollLiveBridge()
+        // Never race two independent "adb devices" launches on startup.
+        // Bridge connection begins once the initial authorized-device scan
+        // returns, after the Android monitor gets one bounded warm-up.
+        if autoADBDetectionEnabled {
+            autoInspectADBIfNeeded(force: true)
+        } else {
+            pollLiveBridge()
+        }
     }
 
     func setAutoADBDetectionEnabled(_ enabled: Bool) {
@@ -773,9 +781,39 @@ final class AssistantModel: ObservableObject {
                 self.adbWasAuthorized = connected
                 if reconnected && self.liveSyncEnabled && self.bridgeLink == nil {
                     self.resetBridgeRetry()
-                    self.liveBridgeStatus = "自动发现已授权手机，正在恢复来电状态……"
-                    self.pollLiveBridge()
+                    self.beginInitialPhoneMonitorWarmup()
+                } else if !connected && self.liveSyncEnabled {
+                    self.liveBridgeStatus = "正在等待手机 ADB 授权或恢复在线"
                 }
+            }
+        }
+    }
+
+    /// One startup wake-up is cheaper than opening the HTTP port, waiting for
+    /// a timeout, then rebuilding the forward. The helper refuses to override
+    /// the user's explicit "stop listening" preference on Android.
+    private func beginInitialPhoneMonitorWarmup() {
+        guard !initialPhoneMonitorWarmup, bridgeLink == nil,
+              liveSyncEnabled, !adbInstalling else { return }
+        initialPhoneMonitorWarmup = true
+        liveBridgeStatus = "检测到已授权手机，正在恢复电话监听服务……"
+        let adb = selectedADBPath
+        let generation = bridgeGeneration
+        Task.detached(priority: .utility) { [weak self] in
+            let code = ADBInspector.wakePhoneMonitorIfDesired(at: adb)
+            await MainActor.run {
+                guard let self else { return }
+                self.initialPhoneMonitorWarmup = false
+                guard generation == self.bridgeGeneration,
+                      self.liveSyncEnabled else { return }
+                self.log(code == "PHONE_MONITOR_WAKE_REQUESTED" ? .info : .warn,
+                         .call, "手机电话监听启动预热",
+                         details: ["recovery": code])
+                self.liveBridgeStatus = code == "PHONE_MONITOR_USER_DISABLED"
+                    ? "手机端明确停止监听；请在 Companion 中手动开启"
+                    : "手机监听预热完成，正在自动同步状态……"
+                self.bridgeRetryAfter = .distantPast
+                self.pollLiveBridge()
             }
         }
     }
@@ -964,11 +1002,16 @@ final class AssistantModel: ObservableObject {
         bridgeConsecutiveFailures += 1
         let delay = Int(BridgeRetryPolicy.delay(after: bridgeConsecutiveFailures))
         bridgeRetryAfter = Date().addingTimeInterval(TimeInterval(delay))
-        liveBridgeStatus = "连接中断，将在约 \(delay) 秒后重试（可手动重新连接）"
+        let isStartup = Date() < startupBridgeGraceUntil &&
+            bridgeConsecutiveFailures <= 5
+        liveBridgeStatus = isStartup
+            ? "手机启动同步中 · 正在自动恢复电话监听（无需手动重连）"
+            : "连接中断，将在约 \(delay) 秒后自动重试"
         // One warning per outage, then sparse checkpoints. Avoid dozens of
         // redundant JSONL entries when the phone's ADB tunnel remains unreachable.
         if bridgeConsecutiveFailures == 1 || bridgeConsecutiveFailures % 8 == 0 {
-            log(.warn, .call, "ADB 电话状态桥接连接中断",
+            log(isStartup ? .info : .warn, .call,
+                isStartup ? "ADB 电话状态启动阶段正在重试" : "ADB 电话状态桥接连接中断",
                 details: ["errorDomain": domain, "errorCode": code,
                           "retrySeconds": "\(delay)", "failures": "\(bridgeConsecutiveFailures)"])
         }
@@ -1008,6 +1051,7 @@ final class AssistantModel: ObservableObject {
                           "transport": source])
         }
         resetBridgeRetry()
+        startupBridgeGraceUntil = .distantPast
         liveBridgeStatus = source == "ADB_FILE"
             ? "已连接 · ADB 私有状态快照（HTTP 备用）"
             : "已连接 · ADB HTTP 自动同步"
@@ -1025,7 +1069,11 @@ final class AssistantModel: ObservableObject {
                     self.applyBridgeSnapshot(snapshot, source: "ADB_FILE")
                     self.bridgeUsingFileFallback = true
                 } else {
-                    self.bridgeUsingFileFallback = false
+                    // Keep polling the private file during Android startup.
+                    // Alternating to HTTP after every stale snapshot added
+                    // another timeout and made the UI look disconnected.
+                    self.bridgeUsingFileFallback = true
+                    self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(12)
                     self.schedulePhoneMonitorWakeIfNeeded(reason: result.reason)
                     self.noteBridgeFailure(code: result.reason, domain: "SIMAI.ADBFile")
                     self.livePhoneState = "未连接"
@@ -1040,6 +1088,8 @@ final class AssistantModel: ObservableObject {
         // Resume state sync after the explicit audio preview ends.
         guard !liveVoiceStarting, !liveVoiceActive,
               liveSyncEnabled, !adbInstalling, !bridgeBusy,
+              !initialPhoneMonitorWarmup,
+              !(adbChecking && !adbWasAuthorized && bridgeLink == nil),
               Date() >= bridgeRetryAfter else { return }
         bridgeBusy = true
         if bridgeUsingFileFallback && Date() < nextHTTPRecoveryAttempt {
