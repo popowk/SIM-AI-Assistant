@@ -107,8 +107,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.23"
-    let buildNumber = "40"
+    let version = "0.4.24"
+    let buildNumber = "41"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -2144,7 +2144,26 @@ final class AssistantModel: ObservableObject {
         }
     }
 
-    /// Explicit user-initiated real-call answer request only. The Android
+    /// Require same Android ring before acknowledging a private-file request.
+    private func recordPrivateAutomaticAnswer(expectedSession: String) -> Bool {
+        guard bridgeCursor.session == expectedSession,
+              autoStartedWebVoiceForRing,
+              ["RINGING", "OFFHOOK"].contains(livePhoneState) else { return false }
+        automaticAnswerRequested = true
+        automaticAnswerAcknowledged = true
+        automaticAnswerSession = expectedSession
+        autoVoiceCaptureObserved = autoVoiceCaptureObserved || embeddedVoiceCaptureActive
+        answerCallStatus = "Android 已通过独立私有通道请求接听；正在确认 OFFHOOK"
+        log(.info, .call, "Android 独立私有通道接听请求成功",
+            details: ["result": "ANSWER_FALLBACK_REQUESTED"])
+        if livePhoneState == "OFFHOOK" {
+            automaticOffhookSequence = bridgeCursor.lastSequence
+            reactToAutomaticCallState("OFFHOOK")
+        }
+        return true
+    }
+
+    /// User-authorized phone-answer request (manually or automatically). The Android
     /// Companion re-checks its own call state, refuses all non-ringing calls,
     /// and requires separate ANSWER_PHONE_CALLS permission.
     func answerIncomingPhoneCall(automatic: Bool = false) {
@@ -2206,10 +2225,32 @@ final class AssistantModel: ObservableObject {
             request.cachePolicy = .reloadIgnoringLocalCacheData
             request.setValue(link.token, forHTTPHeaderField: "X-SIMAI-Token")
             request.setValue("0", forHTTPHeaderField: "Content-Length")
+            if automatic {
+                request.setValue(expectedRingSession, forHTTPHeaderField: "X-SIMAI-Expected-Session")
+                request.setValue(String(expectedRingSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
+            }
             let config = URLSessionConfiguration.ephemeral
             config.timeoutIntervalForRequest = 4
             let session = URLSession(configuration: config)
             defer { session.invalidateAndCancel() }
+            // ADB_FILE indicates the HTTP listener is already unreliable.
+            // Prioritize the independent private-file path during ringing.
+            var earlyFallback = ""
+            if automatic && self.bridgeUsingFileFallback &&
+               !expectedRingSession.isEmpty && expectedRingSequence > 0 {
+                earlyFallback = await Task.detached(priority: .userInitiated) {
+                    ADBInspector.answerRingingViaPrivateLocalShell(
+                        at: path, expectedSession: expectedRingSession,
+                        expectedSequence: expectedRingSequence,
+                        expectedSerial: link.serial)
+                }.value
+                if earlyFallback == "ANSWER_FALLBACK_REQUESTED" &&
+                   self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession) {
+                    return
+                }
+                self.log(.warn, .call, "独立接听通道未确认，尝试 HTTP",
+                         details: ["fallback": earlyFallback])
+            }
             do {
                 let (body, response) = try await session.data(for: request)
                 let http = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -2262,35 +2303,19 @@ final class AssistantModel: ObservableObject {
                 // hook or arbitrary call-control key is ever sent.
                 if automatic && !expectedRingSession.isEmpty &&
                    expectedRingSequence > 0 {
-                    let result = await Task.detached(priority: .userInitiated) {
-                        ADBInspector.answerRingingViaPrivateLocalShell(
-                            at: path,
-                            expectedSession: expectedRingSession,
-                            expectedSequence: expectedRingSequence,
-                            expectedSerial: link.serial
-                        )
-                    }.value
+                    let result: String
+                    if earlyFallback.isEmpty {
+                        result = await Task.detached(priority: .userInitiated) {
+                            ADBInspector.answerRingingViaPrivateLocalShell(
+                                at: path, expectedSession: expectedRingSession,
+                                expectedSequence: expectedRingSequence,
+                                expectedSerial: link.serial)
+                        }.value
+                    } else {
+                        result = earlyFallback
+                    }
                     if result == "ANSWER_FALLBACK_REQUESTED" &&
-                       self.bridgeCursor.session == expectedRingSession &&
-                       self.autoStartedWebVoiceForRing &&
-                       ["RINGING", "OFFHOOK"].contains(self.livePhoneState) {
-                        self.automaticAnswerRequested = true
-                        self.automaticAnswerAcknowledged = true
-                        self.automaticAnswerSession = expectedRingSession
-                        self.autoVoiceCaptureObserved =
-                            self.autoVoiceCaptureObserved || self.embeddedVoiceCaptureActive
-                        self.answerCallStatus =
-                            "已通过 Android 本机受控通信提交接听；正在确认 OFFHOOK"
-                        self.log(.info, .call, "HTTP 转发失败后 Android 本机接听请求成功",
-                                 details: ["reason": result])
-                        // OFFHOOK may have arrived while the fall-back was
-                        // running. Reconcile the current call without creating
-                        // a new answer request.
-                        if self.livePhoneState == "OFFHOOK" {
-                            self.automaticOffhookSequence =
-                                self.bridgeCursor.lastSequence
-                            self.reactToAutomaticCallState("OFFHOOK")
-                        }
+                       self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession) {
                         return
                     }
                     self.automaticAnswerRequested = false
@@ -2298,7 +2323,8 @@ final class AssistantModel: ObservableObject {
                         "接听转发失败，Android 本机路径也未确认；本次未自动接听"
                     self.log(.warn, .call, "电话接听双路径失败",
                              details: ["reason": "MANUAL_ANSWER_TIMEOUT",
-                                       "fallback": result])
+                                       "fallback": result,
+                                       "transport": self.bridgeUsingFileFallback ? "ADB_FILE" : "ADB_HTTP"])
                 } else {
                     if automatic { self.automaticAnswerRequested = false }
                     self.answerCallStatus =
