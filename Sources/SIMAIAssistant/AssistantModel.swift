@@ -1843,7 +1843,6 @@ final class AssistantModel: ObservableObject {
                     // Fail closed on a terminated auto-answered PCM stream,
                     // without attempting to hang up an uncertain phone call.
                     if reason == "AUDIO_REMOTE_CLOSED" &&
-                       self.automaticAnswerAcknowledged &&
                        self.autoCallAudioRequested {
                         self.endAutoAnsweredVoiceBrowser(
                             reason: "AUTO_CALL_PCM_REMOTE_CLOSED")
