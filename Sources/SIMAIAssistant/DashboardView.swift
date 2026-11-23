@@ -353,7 +353,7 @@ struct DashboardView: View {
                 get: { model.autoCallEnabled },
                 set: { model.setAutoCallEnabled($0) }
             ))
-            Toggle("自动配置 GPT 虚拟麦克风及扬声器", isOn: Binding(
+            Toggle("自动配置 GPT 输入及音频路由", isOn: Binding(
                 get: { model.automaticGPTOutputEnabled },
                 set: { model.setAutomaticGPTOutputEnabled($0) }
             ))
@@ -390,7 +390,8 @@ struct DashboardView: View {
                 get: { model.allowCallerMonitorDuringAI },
                 set: { model.setAllowCallerMonitorDuringAI($0) }
             ))
-            Text("默认只监听 GPT 的返回声音，但来电者仍会送往 BlackHole 2ch 和 GPT，双方电话语音传输不受影响。")
+            Text("来电者始终走 BlackHole 2ch 送往 GPT；视频兼容模式只对 ChatGPT 网页音频设置 BlackHole 16ch，电脑上的视频不会进入电话。")
+                .font(.caption).foregroundStyle(.secondary)
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("打开内嵌 ChatGPT 登录与 Voice") {
