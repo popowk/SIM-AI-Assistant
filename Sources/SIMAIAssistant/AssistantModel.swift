@@ -103,8 +103,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.18"
-    let buildNumber = "35"
+    let version = "0.4.19"
+    let buildNumber = "36"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -2037,7 +2037,7 @@ final class AssistantModel: ObservableObject {
                     case 403:
                         self.answerCallStatus = "手机拒绝接听：请在 Companion 授权「接听电话」"
                     case 404:
-                        self.answerCallStatus = "手机 Companion 版本过旧，请更新至 V0.3.6"
+                        self.answerCallStatus = "手机 Companion 不支持电话接听接口，请通过一键更新安装内置最新版"
                     case 409:
                         self.answerCallStatus = "手机当前并未响铃；不会接听其它通话"
                     case 503:
@@ -2206,6 +2206,29 @@ final class AssistantModel: ObservableObject {
         }
     }
 
+
+    /// Embedded APK metadata is generated from Android build.gradle.kts
+    /// during packaging and validated against the actual APK in CI.
+    var embeddedAPKVersionLabel: String {
+        guard let path = Bundle.main.resourceURL?
+                .appendingPathComponent("SIMAI-Companion-version.txt"),
+              let text = try? String(contentsOf: path, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else { return "版本未知（安装包未带版本元数据）" }
+        return text
+    }
+
+    @Published var installedCompanionVersion = "尚未查询"
+
+    func inspectInstalledCompanionVersion() {
+        let adb = selectedADBPath
+        Task.detached(priority: .utility) { [weak self] in
+            let version = ADBInspector.installedCompanionVersion(at: adb)
+            await MainActor.run {
+                self?.installedCompanionVersion = version
+            }
+        }
+    }
 
     var embeddedAPKSigningStatus: String {
         guard let resource = Bundle.main.resourceURL?
@@ -2391,20 +2414,23 @@ final class AssistantModel: ObservableObject {
             return
         }
         closeLiveBridge()
-        // Open the control window before ADB install can block on an OEM
-        // confirmation. The user still makes all permission decisions.
-        openPhoneScreenControl()
+        // An explicit one-click user action grants only Android phone
+        // state + answer/hangup via the already authorized single ADB phone.
+        // If the OEM blocks this, the Companion offers Android's own consent
+        // dialog. Never request SMS or erase existing app data.
         adbInstalling = true
-        apkInstallStatus = "正在安装；如手机要求确认，请在 Mac 打开的手机屏幕窗口中手动操作……"
+        apkInstallStatus = "正在安装内置最新版并配置电话状态＋接听／挂断权限；如 vivo 要求系统确认，请在手机上确认……"
         let adb = selectedADBPath
         log(.info, .system, "用户确认开始安装或覆盖 Android 伴侣 APK",
-            details: ["version": "0.3.5"])
+            details: ["bundleVersion": embeddedAPKVersionLabel,
+                      "scope": "PHONE_STATUS_AND_ANSWER_HANGUP"])
         Task.detached(priority: .userInitiated) { [weak self] in
             let outcome = ADBInspector.install(at: adb, apk: resource)
             await MainActor.run {
                 guard let self else { return }
                 self.adbInstalling = false
                 self.apkInstallStatus = outcome.status
+                if outcome.succeeded { self.inspectInstalledCompanionVersion() }
                 self.log(outcome.succeeded ? .info : .warn, .system,
                     outcome.succeeded ? "Android APK 安装成功" : "Android APK 安装失败",
                     details: ["success": "\(outcome.succeeded)",

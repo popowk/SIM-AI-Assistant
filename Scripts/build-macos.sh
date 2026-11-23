@@ -43,8 +43,29 @@ if [[ -n "${ANDROID_COMPANION_APK_PATH:-}" ]]; then
     echo "错误：Android 伴侣 APK 不存在或为空：$ANDROID_COMPANION_APK_PATH" >&2
     exit 4
   fi
+  APK_GRADLE="$ROOT/AndroidCompanion/app/build.gradle.kts"
+  APK_NAME="$(sed -nE 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$APK_GRADLE" | head -n 1)"
+  APK_CODE="$(sed -nE 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' "$APK_GRADLE" | head -n 1)"
+  if [[ -z "$APK_NAME" || -z "$APK_CODE" ]]; then
+    echo "::error::无法从 Android build.gradle.kts 获取 APK 的真实版本号" >&2
+    exit 7
+  fi
+  # Verify the compiled package, not just the version text in source.
+  if [[ -n "${ANDROID_HOME:-}" && -x "$ANDROID_HOME/build-tools/35.0.0/aapt" ]]; then
+    APK_BADGING="$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$ANDROID_COMPANION_APK_PATH")"
+    if ! printf '%s\n' "$APK_BADGING" | grep -Fq "versionCode='$APK_CODE'" ||
+       ! printf '%s\n' "$APK_BADGING" | grep -Fq "versionName='$APK_NAME'"; then
+      echo "::error::内置 APK 的 AndroidManifest 版本与 Gradle 版本不一致" >&2
+      exit 8
+    fi
+  elif [[ "${CI:-}" == "true" ]]; then
+    echo "::error::CI 环境缺少 aapt，无法验证内置 APK 的版本" >&2
+    exit 9
+  fi
   cp "$ANDROID_COMPANION_APK_PATH" "$APP/Contents/Resources/SIMAI-Companion.apk"
-  echo "已内置 Android Companion APK"
+  printf 'v%s (versionCode %s)\n' "$APK_NAME" "$APK_CODE" > \
+    "$APP/Contents/Resources/SIMAI-Companion-version.txt"
+  echo "已内置并验证 Android Companion v$APK_NAME (versionCode $APK_CODE)"
 else
   echo "注意：未设置 ANDROID_COMPANION_APK_PATH，当前本地构建不含 APK。"
 fi
@@ -88,7 +109,7 @@ codesign --verify --verbose "$APP"
 echo "[5/5] 生成发行 ZIP..."
 ARCH="${TARGET_TRIPLE%%-*}"
 if [[ -z "${TARGET_TRIPLE:-}" ]]; then ARCH="$(uname -m)"; fi
-ARCHIVE="$DIST/SIM-AI-Assistant-v0.4.18-macos-$ARCH.zip"
+ARCHIVE="$DIST/SIM-AI-Assistant-v0.4.19-macos-$ARCH.zip"
 rm -f "$ARCHIVE"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"
 shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"

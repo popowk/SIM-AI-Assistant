@@ -257,14 +257,40 @@ enum ADBInspector {
         let serial = authorized[0].serial
         switch run(executable, args: ["-s", serial, "install", "-r", apk.path], timeout: 150) {
         case .completed(0, let output) where output.contains("Success"):
+            // One explicit "install and enable phone assistant" action on Mac
+            // also requests ONLY the two call-related Android runtime
+            // permissions on its one authorized ADB phone. No SMS permission,
+            // phone numbers, accessibility service, root, or default dialer
+            // privileges are requested. OEMs may deny shell grants; in that
+            // case MainActivity requests the official Android system dialogs.
+            let packageName = "com.popowk.simai.companion"
+            let permissions = [
+                "android.permission.READ_PHONE_STATE",
+                "android.permission.ANSWER_PHONE_CALLS"
+            ]
+            var granted = 0
+            for permission in permissions {
+                switch run(executable, args: ["-s", serial, "shell", "pm",
+                                              "grant", packageName, permission],
+                           timeout: 9) {
+                case .completed(0, _): granted += 1
+                default: break
+                }
+            }
             let launch = run(executable, args: ["-s", serial, "shell", "am", "start",
                 "-n", "com.popowk.simai.companion/.MainActivity"], timeout: 12)
             let launched: Bool
             if case .completed(0, _) = launch { launched = true } else { launched = false }
+            let version = Self.installedVersionForSerial(
+                executable: executable, serial: serial) ?? "版本查询未完成"
+            let permissionStatus = granted == permissions.count
+                ? "已通过本次授权的 ADB 安装操作配置电话监听、接听和挂断权限"
+                : "Android 仍需系统权限确认；新版手机 App 会自动发起合并授权"
             return .init(succeeded: true,
-                status: launched
-                    ? "APK 安装/覆盖成功，已自动打开手机端引导；确认系统权限弹窗后，电话监听将自行启动。"
-                    : "APK 已安装，但手机未自动打开；请手动打开 SIM AI Companion 完成系统授权引导。")
+                status: "已安装 SIM AI Companion \(version)；\(permissionStatus)；" +
+                    (launched
+                        ? "已自动打开手机端，电话监听会按用户设置启动。"
+                        : "手机暂未允许自动打开 App；请打开 Companion 完成系统提示。"))
         case .completed(_, let output) where output.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE"):
             return .init(succeeded: false,
                 status: "覆盖失败：新旧 APK 的签名不一致。没有卸载旧版本，也没有清除数据；请配置固定签名后重新构建。")
@@ -285,6 +311,39 @@ enum ADBInspector {
         }
     }
 
+
+    /// Read only fixed package-version metadata; never expose phone serials.
+    private static func installedVersionForSerial(executable: URL,
+                                                   serial: String) -> String? {
+        switch run(executable, args: ["-s", serial, "shell", "dumpsys", "package",
+                                      "com.popowk.simai.companion"], timeout: 10) {
+        case .completed(0, let raw):
+            // Android's versionName and versionCode come from the APK manifest.
+            guard let versionMatch = raw.range(
+                of: #"versionName=([A-Za-z0-9._-]+)"#,
+                options: .regularExpression) else { return nil }
+            let name = String(raw[versionMatch].dropFirst("versionName=".count))
+            let code = raw.range(of: #"versionCode=([0-9]+)"#,
+                                 options: .regularExpression).map {
+                String(raw[$0].dropFirst("versionCode=".count))
+            } ?? "?"
+            return "v\(name) (\(code))"
+        default: return nil
+        }
+    }
+
+    static func installedCompanionVersion(at selected: String?) -> String {
+        guard let adb = executable(at: selected) else { return "ADB 不可用" }
+        let authorized: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 8) {
+        case .completed(0, let raw): authorized = parseDevices(raw)
+        default: return "暂时无法查询手机 APK"
+        }
+        let phones = authorized.filter { $0.state == "device" }
+        guard phones.count == 1 else { return "需要恰好一台已授权手机" }
+        return installedVersionForSerial(executable: adb, serial: phones[0].serial)
+            ?? "未检测到已安装版本"
+    }
 
     /// User-triggered direct ADB configuration sync. It intentionally does
     /// not use the phone call-state HTTP bridge: SMS handling must keep working

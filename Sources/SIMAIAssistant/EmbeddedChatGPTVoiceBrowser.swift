@@ -15,6 +15,8 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     @Published private(set) var loaded = false
     @Published private(set) var isolatedAudioOutputEnabled = true
     @Published private(set) var isolatedOutputReady = false
+    @Published private(set) var playbackBlocked = false
+    private var lastPlaybackCheck = Date.distantPast
     @Published private(set) var isolatedOutputStatus = "等待 Voice 网页创建独立声音通道"
     var onIsolatedOutputChange: ((Bool) -> Void)?
     private var isolateCheckBusy = false
@@ -110,18 +112,37 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
           window.__simaiAudioIsolationInstalled = true;
           window.__simaiAudioSinkID = '';
           window.__simaiAudioElements = new Set();
+          // Preserve the site's real click user activation. The prior
+          // setSinkId(...).then(() => play()) deferred play past the trusted
+          // gesture and could cause NotAllowedError ("tap to play").
+          // Never delay the site's own play() behind a Promise.
+          window.__simaiAutoplayBlocked = false;
           const nativePlay = HTMLMediaElement.prototype.play;
           HTMLMediaElement.prototype.play = function(...args) {
             if (window.__simaiAudioElements.size < 200) {
               window.__simaiAudioElements.add(this);
             }
             const sink = window.__simaiAudioSinkID;
-            if (sink && typeof this.setSinkId === 'function') {
-              return Promise.resolve(this.setSinkId(sink))
-                .then(() => nativePlay.apply(this, args));
+            if (sink && typeof this.setSinkId === 'function'
+                && this.sinkId !== sink) {
+              try { Promise.resolve(this.setSinkId(sink)).catch(() => {}); }
+              catch (_) {}
             }
-            return nativePlay.apply(this, args);
+            const playback = nativePlay.apply(this, args);
+            if (playback && typeof playback.catch === 'function') {
+              playback.catch(error => {
+                if (error && error.name === 'NotAllowedError') {
+                  window.__simaiAutoplayBlocked = true;
+                }
+              });
+            }
+            return playback;
           };
+          for (const event of ['pointerdown','keydown','touchstart']) {
+            document.addEventListener(event, e => {
+              if (e.isTrusted) window.__simaiAutoplayBlocked = false;
+            }, true);
+          }
         })();
         """#
         configuration.userContentController.addUserScript(WKUserScript(
@@ -171,6 +192,8 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         loaded = false
         lastStartAttempt = .distantPast
         lastIsolationCheck = .distantPast
+        lastPlaybackCheck = .distantPast
+        playbackBlocked = false
         isolateCheckBusy = false
         updateIsolatedOutputReady(false)
         webView.stopLoading()
@@ -312,14 +335,38 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         }
     }
 
+    /// Report the official webpage's media NotAllowedError without reading
+    /// page text or trying to forge a trusted browser gesture.
+    private func checkPlaybackPermission() {
+        guard loaded, isOfficialPage,
+              Date().timeIntervalSince(lastPlaybackCheck) > 3 else { return }
+        lastPlaybackCheck = Date()
+        webView.evaluateJavaScript("Boolean(window.__simaiAutoplayBlocked)") {
+            [weak self] value, error in
+            Task { @MainActor [weak self] in
+                guard let self, self.loaded, error == nil,
+                      let blocked = value as? Bool,
+                      blocked != self.playbackBlocked else { return }
+                self.playbackBlocked = blocked
+                if blocked {
+                    self.status = "网页播放受阻：请在 ChatGPT 页面上点击一次继续播放。此问题不是麦克风权限。"
+                    self.onDiagnostic?("VOICE_MEDIA_AUTOPLAY_NOT_ALLOWED")
+                } else {
+                    self.onDiagnostic?("VOICE_MEDIA_PLAYBACK_INTERACTION_RECEIVED")
+                }
+            }
+        }
+    }
+
     /// Called by the existing once-per-2s app health loop. Avoid frequent
     /// DOM activity, and only try while the user opted into experimentation.
     func healthCheck(prepareAudio: () -> Bool) {
         guard loaded else { return }
         checkMicrophoneCapture()
+        checkPlaybackPermission()
         if isolatedAudioOutputEnabled { routeCurrentVoiceAudioIfNeeded() }
         guard automaticVoiceButtonEnabled && isOfficialPage &&
-              !microphoneActive &&
+              !playbackBlocked && !microphoneActive &&
               Date().timeIntervalSince(lastStartAttempt) > 10 else { return }
         guard prepareAudio() else {
             status = "BlackHole 2ch／16ch 未准备好；未点击 Voice"
@@ -537,6 +584,10 @@ struct EmbeddedChatGPTVoiceWindow: View {
                 }
                 Text(browser.isolatedOutputStatus)
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            if browser.playbackBlocked {
+                Label("ChatGPT 网页要求真人点击播放：请直接点击网页里的“继续播放”。Mac 的网站麦克风许可不能替代网页播放手势。", systemImage: "hand.tap")
+                    .font(.caption.weight(.medium))
             }
             Text(browser.status)
                 .font(.caption)

@@ -1,4 +1,6 @@
-# SIM AI Assistant · V0.4.18（看视频也可尝试独立 GPT 音频隔离）
+# SIM AI Assistant · V0.4.19（内置新版 APK、一键电话授权与音频播放手势修复）
+
+> 此版 Mac 程序内置 Android Companion v0.3.7（versionCode 12），构建时校验实际 APK Manifest 版本并写入元数据，UI 不再固定写死 V0.3.5。用户在 Mac 明确点击“一键安装最新版并开启电话权限”后，仅对唯一已授权 ADB 手机安装/覆盖 APK，并请求电话状态读取、接听与挂断两种所需运行时权限；不申请短信权限，不自动卸载或清除手机数据。若系统阻止 ADB 授权，手机端自动合并发起 Android 系统授权，不再要求点击第二个“授权 Mac 控制接听与结束电话”按钮。首次 ADB 授权及 vivo 系统权限仍由系统控制。网页版 ChatGPT Voice 播放受阻的一个可能原因是上一版把 play() 放入了异步 setSinkId Promise，导致用户手势失效；现保留原生同步 play() 调用并报告 NotAllowedError。ChatGPT 官方页面本身的交互限制仍可能要求一次真实点击。Mac v0.4.19 Build 36。
 
 > 默认开启「视频兼容：只隔离 ChatGPT 声音」：不再把整个 Mac 的默认输出切到 BlackHole 16ch；内嵌 ChatGPT 使用 WebKit 在支持时将实际网页音频元素独立路由至 BlackHole 16ch。若网页未提供可路由的音频元素、WebKit 没有列出设备或输出选择被拒绝，则自动接听保持关闭，防止视频声误入运营商通话。仅支持官方 chatgpt.com；不读取网页对话、凭据或媒体数据。每次耳机、蓝牙和视频输出设备改变后，监听目标会用 CoreAudio 设备 UID 恢复，而不是依赖会变化的临时设备编号。保留可手动启用的旧全局切换作兼容测试（视频播放时不要启用）；macOS v0.4.18 Build35，手机 Companion v0.3.6 未变。此方案需要在目标 Mac 上确认 Voice 使用 HTMLMediaElement 并可设置 setSinkId；Web Audio 或非标准播放链路不保证兼容。
 
