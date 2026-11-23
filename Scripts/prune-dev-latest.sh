@@ -36,8 +36,8 @@ while read -r asset_id asset_name; do
   case "$asset_name" in
     SIM-AI-Assistant-v0.4.16-macos-arm64.zip|\
     SIM-AI-Assistant-v0.4.16-macos-arm64.zip.sha256|\
-    SIM-AI-Assistant-v0.4.16-macos-arm64.zip|\
-    SIM-AI-Assistant-v0.4.16-macos-arm64.zip.sha256|\
+    SIM-AI-Assistant-v0.4.15-macos-arm64.zip|\
+    SIM-AI-Assistant-v0.4.15-macos-arm64.zip.sha256|\
     SIMAI-Companion-v0.3.5-debug.apk|\
     SIMAI-Companion-v0.3.5-debug.apk.sha256|\
     SIMAI-Audio-Probe.jar|\
