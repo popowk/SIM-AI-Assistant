@@ -166,7 +166,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("自动接听 · 内嵌 GPT Voice · V0.4.17")
+                Text("自动接听 · 内嵌 GPT Voice · V0.4.20")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -369,6 +369,14 @@ struct DashboardView: View {
                 : "传统模式会修改 Mac 总输出，播放中的视频也可能进入电话通道；仅用于设备兼容性测试。")
                 .font(.caption).foregroundStyle(.secondary)
             if model.isolatedChatGPTOutputEnabled {
+                Label(model.embeddedVoiceBrowser.isolatedMicrophoneReady
+                        ? "已验证 GPT 使用 BlackHole 2ch 采集电话声音"
+                        : "GPT 虚拟麦克风尚未验证",
+                      systemImage: model.embeddedVoiceBrowser.isolatedMicrophoneReady
+                          ? "mic.fill" : "mic.slash")
+                    .font(.caption)
+                Text(model.embeddedVoiceBrowser.isolatedMicrophoneStatus)
+                    .font(.caption).foregroundStyle(.secondary)
                 Label(model.embeddedVoiceBrowser.isolatedOutputReady
                         ? "网页独立音频已配置" : "网页独立音频待就绪",
                       systemImage: model.embeddedVoiceBrowser.isolatedOutputReady
@@ -381,7 +389,7 @@ struct DashboardView: View {
                 get: { model.allowCallerMonitorDuringAI },
                 set: { model.setAllowCallerMonitorDuringAI($0) }
             ))
-            Text("来电者始终走 BlackHole 2ch 送往 GPT；视频兼容模式只对 ChatGPT 网页音频设置 BlackHole 16ch，电脑上的视频不会进入电话。")
+            Text("安全模式须同时验证 GPT 实际从 BlackHole 2ch 录音、网页回复独立输出到 BlackHole 16ch，才会自动接听。自动值守期间保留虚拟输入，通话间不反复恢复；其他应用的系统扬声器不由本程序切换。")
                 .font(.caption).foregroundStyle(.secondary)
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
@@ -500,7 +508,7 @@ struct DashboardView: View {
                     .disabled(model.screenControlStarting)
                 Button("恢复 Mac 原声音设备") {
                     model.setVoiceSessionPrepared(false)
-                    model.restoreAutomaticGPTOutput(forceInput: true)
+                    model.restoreAutomaticGPTOutput(forceInput: true, userRequested: true)
                 }
             }
             .buttonStyle(.bordered)
