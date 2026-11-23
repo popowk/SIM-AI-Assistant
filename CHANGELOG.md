@@ -1,5 +1,13 @@
 # 变更记录
 
+## 0.4.14 — 2026-11-23
+
+- Mac 新增 WebKit WKWebView 内嵌 ChatGPT 登录／Voice 窗口（持久网站数据只保留在用户 Mac，由用户自行登录），以及按源站限定的实验性 Voice 启动按钮点击，不读取 Cookie、密码、聊天正文和 Token。
+- 内嵌网页麦克风按 WebKit/macOS 原生方式提示用户授权。只有 WKWebView 实际处于 microphoneCaptureState.active，才允许该模式自动接听；采集停止撤销自动值守及 GPT 回传。所有日志仅包含固定类别代码。
+- 在网页启动前自动设置 BlackHole 2ch 输入与 16ch 输出，在已激活 Voice 的等待时段保持路由并在停止值守或退出时恢复；兼容原来外部浏览器方案。
+- 警告：Google 第三方登录可能拒绝内嵌 WKWebView，官方网站按钮、媒体用户激活要求及会话保持行为会变，不能保证脚本点击后 Voice 真正启动，也不是 ChatGPT Plus 的第三方 API。Android Companion V0.3.5 不变。
+
+
 ## 0.4.13 — 2026-11-23
 
 - V0.4.12 实机日志显示 BlackHole 2ch/16ch 自动选择和自动接听已成功，但 1912 帧电话 PCM 有 1887 帧本地播放丢弃及 1708 帧虚拟麦克风丢弃，GPT 回传峰值 RMS 仍是 0.00000。
