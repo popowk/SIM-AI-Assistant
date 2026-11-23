@@ -8,7 +8,6 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         _ = AutoVoiceOutputRouter().restore()
         _ = AutoVoiceInputRouter().restore()
-        _ = AutoVoiceInputRouter().restore()
     }
 }
 
@@ -21,10 +20,14 @@ struct SIMAIApp: App {
         MenuBarExtra("SIM AI", systemImage: "phone.connection") {
             MenuBarCommands().environmentObject(model)
         }
-        Window("SIM AI Assistant · 诊断中心", id: "dashboard") {
+        Window("SIM AI Assistant · 自动值守", id: "dashboard") {
             DashboardView().environmentObject(model)
         }
         .defaultSize(width: 900, height: 720)
+        Window("ChatGPT Voice · 内嵌浏览器", id: "embedded-voice") {
+            EmbeddedChatGPTVoiceWindow().environmentObject(model)
+        }
+        .defaultSize(width: 1100, height: 820)
     }
 }
 
@@ -39,6 +42,11 @@ private struct MenuBarCommands: View {
         }
         Divider()
         Button("刷新 Mac 音频设备") { model.refresh() }
+        Button("内嵌 ChatGPT Voice（实验）") {
+            model.setEmbeddedVoiceBrowserEnabled(true)
+            NSApp.activate(ignoringOtherApps: true)
+            openWindow(id: "embedded-voice")
+        }
         Button("打开手机屏幕（ADB）") {
             model.openPhoneScreenControl()
         }
@@ -47,7 +55,7 @@ private struct MenuBarCommands: View {
             model.restoreAutomaticGPTOutput()
         }
         Divider()
-        Text("v0.4.13 · 持续音频播放缓冲")
+        Text("v0.4.14 · 内嵌 ChatGPT Voice 实验")
         Button("退出 SIM AI Assistant") {
             model.shutdownForAppExit()
             NSApp.terminate(nil)
