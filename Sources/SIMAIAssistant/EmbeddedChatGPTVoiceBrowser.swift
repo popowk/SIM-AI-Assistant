@@ -137,25 +137,28 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
             navigator.mediaDevices.getUserMedia = async function(request) {
               if (!request || !request.audio) return originalCapture(request);
               window.__simaiMicRouteCode = 'BLACKHOLE2_CHECKING';
-              let available = [];
-              try { available = await originalDevices(); } catch (_) {}
-              const wanted = available.find(d => d.kind === 'audioinput'
-                && (d.label || '').toLowerCase().includes('blackhole 2ch'));
+              // Do not await enumerateDevices() BEFORE the native capture:
+              // that can lose a real user gesture and make WebKit reject
+              // microphone access. The first call uses our prepared macOS
+              // BlackHole2 default input. Later calls use a cached exact ID.
               const audioConstraints = request.audio === true
                 ? {} : {...request.audio};
-              if (wanted && wanted.deviceId) {
-                audioConstraints.deviceId = {exact: wanted.deviceId};
+              if (window.__simaiBlackHole2DeviceId) {
+                audioConstraints.deviceId =
+                  {exact: window.__simaiBlackHole2DeviceId};
               }
               let stream;
               try {
-                stream = await originalCapture({...request, audio: audioConstraints});
+                const immediateCapture = originalCapture(
+                  {...request, audio: audioConstraints});
+                stream = await immediateCapture;
               } catch (err) {
                 window.__simaiMicRouteCode = 'BLACKHOLE2_CAPTURE_FAILED';
                 throw err;
               }
-              // After the website is permitted to capture, device labels
-              // should be exposed. Validate before returning audio to GPT.
-              let updated = available;
+              // WebKit reveals audio device labels after the site captures.
+              // Confirm the actual track before delivering it to ChatGPT.
+              let updated = [];
               try { updated = await originalDevices(); } catch (_) {}
               const target = updated.find(d => d.kind === 'audioinput'
                 && (d.label || '').toLowerCase().includes('blackhole 2ch'));
@@ -164,6 +167,9 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
                 tracks.every(t => t.readyState === 'live' &&
                   ((t.getSettings && t.getSettings().deviceId === target.deviceId)
                     || (t.label || '').toLowerCase().includes('blackhole 2ch')));
+              if (target && target.deviceId) {
+                window.__simaiBlackHole2DeviceId = target.deviceId;
+              }
               if (!matching) {
                 tracks.forEach(t => t.stop());
                 window.__simaiMicRouteCode =
