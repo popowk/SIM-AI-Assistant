@@ -53,7 +53,7 @@ final class AssistantModel: ObservableObject {
     @Published var selectedVoiceMonitorOutputID = ""
     @Published var automaticGPTOutputEnabled =
         UserDefaults.standard.object(forKey: "SIMAI_AUTO_GPT_OUTPUT") as? Bool ?? true
-    @Published var automaticGPTOutputStatus = "自动输出路由已待命；仅在 GPT 电话会话需要时切至 BlackHole 16ch"
+    @Published var automaticGPTOutputStatus = "自动虚拟音频路由待命；GPT 输入 BlackHole 2ch、输出 BlackHole 16ch"
     @Published var blackHoleInstallerBusy = false
     @Published var blackHoleInstallerStatus = "检测 BlackHole 2ch / 16ch 状态后可直接获取官方安装程序，无需 Homebrew"
     @Published var aiReplyMonitorEnabled = false
@@ -84,12 +84,13 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.11"
-    let buildNumber = "28"
+    let version = "0.4.12"
+    let buildNumber = "29"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
     private let voiceOutputRouter = AutoVoiceOutputRouter()
+    private let voiceInputRouter = AutoVoiceInputRouter()
     private let microphoneProbe = MicrophoneLevelProbe()
     private var voiceStream: PhoneAudioStream?
     private var autoCallState = AutoCallStateMachine()
@@ -134,18 +135,15 @@ final class AssistantModel: ObservableObject {
         }
         log(.info, .system, "程序启动，诊断日志已初始化")
         let recoveredOutput = voiceOutputRouter.recoverPreviousSession()
-        if recoveredOutput == "ROUTE_RESTORED" {
-            // AudioInspector was initialized before recovery. Refresh its
-            // captured defaults so the older manual-recovery button cannot
-            // accidentally restore a stale BlackHole default on this launch.
+        let recoveredInput = voiceInputRouter.recoverPreviousSession()
+        if recoveredOutput == "ROUTE_RESTORED" || recoveredInput == "INPUT_RESTORED" {
+            // Update the cached start-up defaults after crash recovery.
             audioInspector = AudioInspector()
         }
-        if recoveredOutput != "ROUTE_NOT_OWNED" {
-            automaticGPTOutputStatus = recoveredOutput == "ROUTE_RESTORED"
-                ? "已恢复上一次异常退出前的 Mac 声音输出"
-                : "启动时检查了遗留的自动输出路由：" + recoveredOutput
-            log(.info, .audio, "自动音频输出启动恢复",
-                details: ["routeCode": recoveredOutput])
+        if recoveredOutput != "ROUTE_NOT_OWNED" || recoveredInput != "INPUT_NOT_OWNED" {
+            automaticGPTOutputStatus = "已检查上次异常结束的音频输入／输出，并尝试恢复"
+            log(.info, .audio, "自动虚拟音频设备启动恢复",
+                details: ["inputCode": recoveredInput, "outputCode": recoveredOutput])
         }
         refresh()
         startLiveSyncTimer()
@@ -276,57 +274,83 @@ final class AssistantModel: ObservableObject {
             } else {
                 restoreAutomaticGPTOutput()
             }
-            automaticGPTOutputStatus = "自动切换已关闭；不再修改系统默认输出"
+            restoreAutomaticGPTOutput(forceInput: true)
+            automaticGPTOutputStatus = "自动切换已关闭；不再修改系统输入和输出"
         } else {
-            automaticGPTOutputStatus = "自动切换已待命；下次已授权的电话会话将使用 BlackHole 16ch"
+            automaticGPTOutputStatus = "自动切换待命：GPT 麦克风 BlackHole 2ch、输出 BlackHole 16ch"
         }
     }
 
-    /// This is a global macOS output change, so only do it during a
-    /// user-authorized AI call. Does not start or verify ChatGPT Voice.
+    /// Switch only after the user arms an existing official Voice session.
+    /// This changes the OS default microphone; a browser with a pinned
+    /// per-site microphone may not follow until the user changes it once.
     @discardableResult
-    private func prepareAutomaticGPTOutput() -> Bool {
-        guard automaticGPTOutputEnabled else {
-            automaticGPTOutputStatus = "自动切换已关闭；请自行配置 ChatGPT 语音输出"
-            return true
-        }
-        let code = voiceOutputRouter.activate(physicalMonitorID: selectedVoiceMonitorOutputID)
+    private func prepareAutomaticGPTInput() -> Bool {
+        guard automaticGPTOutputEnabled else { return true }
+        let code = voiceInputRouter.activate()
         switch code {
-        case "ROUTE_ACTIVE", "ROUTE_ALREADY_MANAGED":
-            refresh()
-            automaticGPTOutputStatus = "已自动将 Mac 输出切换至 BlackHole 16ch，通话结束后恢复"
-            log(.info, .audio, "GPT 电话自动音频输出已切换",
-                details: ["routeCode": code])
-            return true
-        case "ROUTE_ALREADY_VIRTUAL_MANUAL":
-            automaticGPTOutputStatus = "BlackHole 16ch 已由用户选中；未修改系统设置"
+        case "INPUT_ACTIVE", "INPUT_ALREADY_MANAGED", "INPUT_ALREADY_SELECTED":
+            if code == "INPUT_ACTIVE" {
+                log(.info, .audio, "已将 macOS 默认麦克风切至 BlackHole 2ch",
+                    details: ["routeCode": code])
+            }
             return true
         default:
-            automaticGPTOutputStatus = "自动音频输出切换失败（" + code + "），不会自动接听或回传"
-            log(.warn, .audio, "自动输出路由不可用",
+            automaticGPTOutputStatus = "GPT 虚拟麦克风配置失败（" + code + "）"
+            log(.warn, .audio, "BlackHole 2ch 自动输入路由失败",
                 details: ["reason": code])
             return false
         }
     }
 
-    func restoreAutomaticGPTOutput() {
-        let code = voiceOutputRouter.restore()
+    /// Configure both the OS microphone and output, fail closed when either
+    /// side cannot be changed. No UI automation of official ChatGPT Voice.
+    @discardableResult
+    private func prepareAutomaticGPTOutput() -> Bool {
+        guard automaticGPTOutputEnabled else {
+            automaticGPTOutputStatus = "自动切换已关闭；GPT 输入和输出必须手动配置"
+            return true
+        }
+        guard prepareAutomaticGPTInput() else { return false }
+        let code = voiceOutputRouter.activate(physicalMonitorID: selectedVoiceMonitorOutputID)
         switch code {
-        case "ROUTE_RESTORED":
-            automaticGPTOutputStatus = "已自动恢复 Mac 原来的真实耳机／扬声器"
+        case "ROUTE_ACTIVE", "ROUTE_ALREADY_MANAGED", "ROUTE_ALREADY_VIRTUAL_MANUAL":
             refresh()
-        case "ROUTE_NOT_OWNED":
-            break
-        case "ROUTE_USER_CHANGED_OUTPUT":
-            automaticGPTOutputStatus = "检测到你已手动切换输出；保留你选定的新设备"
-            refresh()
+            automaticGPTOutputStatus = "默认麦克风 BlackHole 2ch、播放输出 BlackHole 16ch 已准备；网页实际设备仍需确认"
+            log(.info, .audio, "电话 GPT 虚拟麦克风与播放输出已配置",
+                details: ["input": "BLACKHOLE_2CH", "outputRouteCode": code])
+            return true
         default:
-            automaticGPTOutputStatus = "音频输出恢复结果：" + code
+            automaticGPTOutputStatus = "GPT 默认输出切换失败（" + code + "），已阻止自动接听"
+            log(.warn, .audio, "GPT 输出路由不可用", details: ["reason": code])
+            // Avoid leaving a virtual mic in use unless still armed.
+            if !voiceSessionPrepared { _ = voiceInputRouter.restore() }
+            return false
+        }
+    }
+
+    /// Preserve virtual microphone while Voice is armed so it doesn't listen
+    /// to the ambient physical microphone between calls. On disarm or Quit,
+    /// restore both system defaults if they are still app-managed.
+    func restoreAutomaticGPTOutput(forceInput: Bool = false) {
+        let outputCode = voiceOutputRouter.restore()
+        let inputCode = forceInput || !voiceSessionPrepared
+            ? voiceInputRouter.restore() : "INPUT_KEPT_FOR_ARMED_VOICE"
+        if outputCode == "ROUTE_RESTORED" || inputCode == "INPUT_RESTORED" {
+            automaticGPTOutputStatus = "已恢复程序管理的声音设备"
+            refresh()
+        } else if outputCode == "ROUTE_USER_CHANGED_OUTPUT" || inputCode == "INPUT_USER_CHANGED" {
+            automaticGPTOutputStatus = "检测到你已自行修改输入或输出，已保留该选择"
+            refresh()
+        } else if outputCode != "ROUTE_NOT_OWNED" ||
+                  (inputCode != "INPUT_NOT_OWNED" && inputCode != "INPUT_KEPT_FOR_ARMED_VOICE") {
+            automaticGPTOutputStatus = "音频设备恢复状态：" + outputCode + "／" + inputCode
             refresh()
         }
-        if code != "ROUTE_NOT_OWNED" {
-            log(.info, .audio, "自动音频输出结束或回收",
-                details: ["routeCode": code])
+        if outputCode != "ROUTE_NOT_OWNED" ||
+           (inputCode != "INPUT_NOT_OWNED" && inputCode != "INPUT_KEPT_FOR_ARMED_VOICE") {
+            log(.info, .audio, "自动虚拟音频设备结束或回收",
+                details: ["inputCode": inputCode, "outputCode": outputCode])
         }
     }
 
@@ -337,7 +361,7 @@ final class AssistantModel: ObservableObject {
         if aiReplyToPhoneEnabled || aiReplyMonitorEnabled || chatGPTVoiceRouteEnabled {
             stopGPTTwoWayPhoneBridge()
         }
-        restoreAutomaticGPTOutput()
+        restoreAutomaticGPTOutput(forceInput: true)
         closePhoneScreenControl()
     }
 
@@ -348,6 +372,7 @@ final class AssistantModel: ObservableObject {
             autoCallState.reset()
             voiceSessionPrepared = false
             stopGPTTwoWayPhoneBridge()
+            restoreAutomaticGPTOutput(forceInput: true)
             autoCallStatus = "自动接听已关闭；不会接听后续来电"
         } else {
             autoCallStatus = "自动接听已启用；请确认官方 Voice 正在运行，才能开始无人点击的来电处理"
@@ -359,15 +384,17 @@ final class AssistantModel: ObservableObject {
         voiceSessionPrepared = prepared
         if prepared {
             let problems = automaticVoiceReadinessIssues()
-            if problems.isEmpty {
+            if problems.isEmpty && prepareAutomaticGPTInput() {
                 autoCallStatus = "已预备自动来电：下一通响铃将自动接听并建立音频（官方 Voice 会话仍需保持运行）"
             } else {
                 voiceSessionPrepared = false
-                autoCallStatus = "暂不能自动接听：" + problems.joined(separator: "；")
+                autoCallStatus = problems.isEmpty
+                    ? "虚拟麦克风未准备好，已暂停自动接听"
+                    : "暂不能自动接听：" + problems.joined(separator: "；")
             }
         } else {
             autoCallState.reset()
-            if !liveVoiceActive { restoreAutomaticGPTOutput() }
+            if !liveVoiceActive { restoreAutomaticGPTOutput(forceInput: true) }
             autoCallStatus = "已撤销自动接听预备状态；未结束当前通话，但不接听新来电"
         }
     }
