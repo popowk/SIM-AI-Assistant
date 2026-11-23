@@ -1,4 +1,6 @@
-# SIM AI Assistant · V0.4.23（修复自动接听超时、来电结束 Voice 不退出）
+# SIM AI Assistant · V0.4.24（独立 Android 私有接听通道）
+
+> v0.4.24 Build41 / Companion v0.3.9：已知 ADB_FILE 可读取手机状态、HTTP 不能接听时，优先通过 Android 私有一次性指令触发接听。双方校验当前来电会话与响铃序列，不使用 toybox nc 或按键模拟。升级需要重新安装 Mac 程序并用内置安装功能升级手机 APK；电话音频仍需 vivo 实机验证。
 
 > > 2026-11-23 23:20 实机诊断（Mac v0.4.22）：23:18:33 RINGING；23:18:35 WebKit 录音且确认 BlackHole2；23:18:39 自动请求接听；23:18:41 网页输入为静音；23:18:45 接听 HTTP 超时；23:19:06 直接 IDLE，全程没有 OFFHOOK 和 PCM 电话音频桥接。没有接通时网页静音是预期行为，并不能据此认定 GPT 录音故障。
 
