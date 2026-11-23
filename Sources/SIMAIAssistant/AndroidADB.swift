@@ -650,6 +650,46 @@ enum ADBInspector {
         }
     }
 
+    /// Compatibility with an already installed Companion that predates the
+    /// optional /call/hangup endpoint. Only the exact authenticated Android
+    /// monitor session and OFFHOOK sequence may receive KEYCODE_ENDCALL (6).
+    /// Never send this input to an unknown, new or stale phone call.
+    static func guardedLegacyHangup(at selected: String?,
+                                    expectedSession: String,
+                                    expectedSequence: Int) -> String {
+        guard !expectedSession.isEmpty, expectedSequence > 0 else {
+            return "ENDCALL_NO_SESSION_GUARD"
+        }
+        let result = readPrivateStateSnapshot(at: selected)
+        guard let snapshot = result.snapshot else {
+            return "ENDCALL_SNAPSHOT_UNAVAILABLE"
+        }
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        guard snapshot.session == expectedSession,
+              snapshot.seq == expectedSequence,
+              snapshot.state == "OFFHOOK",
+              snapshot.isFresh(referenceMilliseconds: now,
+                               maxAgeMilliseconds: 20_000) else {
+            return "ENDCALL_CALL_CHANGED"
+        }
+        guard let adb = executable(at: selected) else { return "ENDCALL_NO_ADB" }
+        let devices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 6) {
+        case .completed(0, let text): devices = parseDevices(text)
+        default: return "ENDCALL_DEVICE_UNAVAILABLE"
+        }
+        let authorized = devices.filter { $0.state == "device" }
+        guard authorized.count == 1 else { return "ENDCALL_DEVICE_AMBIGUOUS" }
+        // ADB authorized shell key event. This is a best-effort OEM fallback;
+        // zero exit status does not prove Telecom actually ended the call.
+        switch run(adb, args: ["-s", authorized[0].serial,
+                               "shell", "input", "keyevent", "6"], timeout: 6) {
+        case .completed(0, _): return "ENDCALL_KEY_SENT_UNCONFIRMED"
+        case .timedOut: return "ENDCALL_KEY_TIMEOUT"
+        default: return "ENDCALL_KEY_REJECTED"
+        }
+    }
+
     static func closeBridge(at selected: String?, link: ADBBridgeLink) {
         guard let adb = executable(at: selected) else { return }
         _ = run(adb, args: ["-s", link.serial, "forward", "--remove",
