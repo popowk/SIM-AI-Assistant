@@ -174,6 +174,7 @@ final class AssistantModel: ObservableObject {
     private var autoHangupAttempted = false
     private var resumeAIForwardAfterVoicePause = false
     private var resumeAIForwardAfterIsolationRestored = false
+    private var resumeAIForwardAfterMicrophoneRestored = false
     private var screenControlProcess: Process?
     private var voiceSessionID = ""
     private var pendingBlackHoleInstallChannels: Int?
@@ -245,6 +246,15 @@ final class AssistantModel: ObservableObject {
             guard let self, self.useEmbeddedVoiceBrowser else { return }
             if ready {
                 self.log(.info, .audio, "已核验 ChatGPT 实际使用 BlackHole 2ch 输入")
+                if self.resumeAIForwardAfterMicrophoneRestored &&
+                   self.liveVoiceActive && self.livePhoneState == "OFFHOOK" &&
+                   self.automaticAnswerAcknowledged &&
+                   self.aiReplyMonitorEnabled &&
+                   self.embeddedVoiceBrowser.isolatedOutputReady &&
+                   self.isSystemOutputSafeForIsolatedReturn() {
+                    self.resumeAIForwardAfterMicrophoneRestored = false
+                    self.setAIReplyToPhone(true)
+                }
                 if self.incomingVoicePending && self.embeddedVoiceBrowser.microphoneActive &&
                    (!self.isolatedChatGPTOutputEnabled ||
                     self.embeddedVoiceBrowser.isolatedOutputReady) {
@@ -252,6 +262,7 @@ final class AssistantModel: ObservableObject {
                 }
             } else if self.isolatedChatGPTOutputEnabled &&
                       self.aiReplyToPhoneEnabled {
+                self.resumeAIForwardAfterMicrophoneRestored = true
                 self.setAIReplyToPhone(false)
                 self.log(.warn, .audio, "ChatGPT 麦克风路由未验证，暂停电话 AI 回传",
                          details: ["reason": "GPT_INPUT_DEVICE_NOT_VERIFIED"])
@@ -269,6 +280,7 @@ final class AssistantModel: ObservableObject {
                 if self.resumeAIForwardAfterIsolationRestored &&
                    self.liveVoiceActive && self.livePhoneState == "OFFHOOK" &&
                    self.aiReplyMonitorEnabled && self.embeddedVoiceBrowser.microphoneActive &&
+                   self.embeddedVoiceBrowser.isolatedMicrophoneReady &&
                    self.isSystemOutputSafeForIsolatedReturn() {
                     self.resumeAIForwardAfterIsolationRestored = false
                     self.setAIReplyToPhone(true)
@@ -466,7 +478,10 @@ final class AssistantModel: ObservableObject {
             if automaticAnswerAcknowledged { autoVoiceCaptureObserved = true }
             if resumeAIForwardAfterVoicePause &&
                automaticAnswerAcknowledged && livePhoneState == "OFFHOOK" &&
-               liveVoiceActive && aiReplyMonitorEnabled {
+               liveVoiceActive && aiReplyMonitorEnabled &&
+               embeddedVoiceBrowser.isolatedMicrophoneReady &&
+               (!isolatedChatGPTOutputEnabled ||
+                embeddedVoiceBrowser.isolatedOutputReady) {
                 resumeAIForwardAfterVoicePause = false
                 setAIReplyToPhone(true)
                 log(.info, .audio, "Voice 恢复采集，恢复已授权的 GPT 电话回传")
@@ -960,6 +975,7 @@ final class AssistantModel: ObservableObject {
             autoVoiceCaptureObserved = false
             resumeAIForwardAfterVoicePause = false
             resumeAIForwardAfterIsolationRestored = false
+            resumeAIForwardAfterMicrophoneRestored = false
             autoCallState.reset()
             voiceSessionPrepared = false
             incomingVoicePending = false
@@ -1040,6 +1056,7 @@ final class AssistantModel: ObservableObject {
             autoHangupAttempted = false
             resumeAIForwardAfterVoicePause = false
             resumeAIForwardAfterIsolationRestored = false
+            resumeAIForwardAfterMicrophoneRestored = false
             incomingVoicePending = false
             incomingPreflightRunning = false
             incomingPreflightPassed = false
