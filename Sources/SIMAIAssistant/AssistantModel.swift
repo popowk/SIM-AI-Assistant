@@ -358,7 +358,8 @@ final class AssistantModel: ObservableObject {
             }
         } else {
             if automaticAnswerAcknowledged && autoVoiceCaptureObserved &&
-               livePhoneState == "OFFHOOK" {
+               livePhoneState == "OFFHOOK" &&
+               embeddedVoiceBrowser.voiceSessionActuallyEnded {
                 scheduleAutomaticHangupAfterVoiceEnds()
             }
             if voiceSessionPrepared || aiReplyToPhoneEnabled {
@@ -379,7 +380,10 @@ final class AssistantModel: ObservableObject {
         guard useEmbeddedVoiceBrowser else { return }
         // Never auto-start Voice merely because a WebKit page is loaded at idle.
         guard incomingVoicePending else {
-            if liveVoiceActive { embeddedVoiceBrowser.checkMicrophoneCapture() }
+            if liveVoiceActive || (automaticAnswerAcknowledged &&
+                                   livePhoneState == "OFFHOOK") {
+                embeddedVoiceBrowser.checkMicrophoneCapture()
+            }
             return
         }
         if livePhoneState != "RINGING" {
@@ -593,7 +597,9 @@ final class AssistantModel: ObservableObject {
     /// and the exact OFFHOOK sequence before accepting the hang-up request.
     private func scheduleAutomaticHangupAfterVoiceEnds() {
         guard automaticAnswerAcknowledged && autoVoiceCaptureObserved &&
-              livePhoneState == "OFFHOOK" && !autoHangupAttempted else { return }
+              livePhoneState == "OFFHOOK" &&
+              embeddedVoiceBrowser.voiceSessionActuallyEnded &&
+              !autoHangupAttempted else { return }
         voiceStopCheckGeneration += 1
         let generation = voiceStopCheckGeneration
         autoCallStatus = "Voice 已停止采集；正在确认是否结束电话（4 秒保护）"
@@ -606,7 +612,8 @@ final class AssistantModel: ObservableObject {
             // Synchronize once; Voice could have resumed during this pause.
             self.embeddedVoiceBrowser.checkMicrophoneCapture()
             guard self.voiceStopCheckGeneration == generation,
-                  !self.embeddedVoiceCaptureActive else { return }
+                  !self.embeddedVoiceCaptureActive,
+                  self.embeddedVoiceBrowser.voiceSessionActuallyEnded else { return }
             self.requestAutomaticHangup(reason: "VOICE_CAPTURE_ENDED")
         }
     }
@@ -804,14 +811,17 @@ final class AssistantModel: ObservableObject {
                 NotificationCenter.default.post(
                     name: Notification.Name("SIMAI_CLOSE_VOICE_AFTER_CALL"), object: nil)
             }
-            if !liveVoiceActive && !liveVoiceStarting {
+            if liveVoiceActive || liveVoiceStarting {
+                stopLiveVoice()
+            } else {
                 restoreAutomaticGPTOutput(forceInput: true)
             }
             autoCallStatus = "空闲轻量待命 · 下次来电再启动 Voice"
         } else if state == "OFFHOOK" && automaticAnswerAcknowledged &&
                   bridgeCursor.session == automaticAnswerSession {
             automaticOffhookSequence = bridgeCursor.lastSequence
-            if !embeddedVoiceCaptureActive && autoVoiceCaptureObserved {
+            if !embeddedVoiceCaptureActive && autoVoiceCaptureObserved &&
+               embeddedVoiceBrowser.voiceSessionActuallyEnded {
                 scheduleAutomaticHangupAfterVoiceEnds()
             }
         }
@@ -1816,7 +1826,7 @@ final class AssistantModel: ObservableObject {
                 let parsed = (try? JSONSerialization.jsonObject(with: body))
                     as? [String: Any]
                 if http == 200 && parsed?["result"] as? String == "answer_requested" {
-                    if automatic {
+                    if automatic && ["RINGING", "OFFHOOK"].contains(self.livePhoneState) {
                         self.automaticAnswerAcknowledged = true
                         self.automaticAnswerSession = self.bridgeCursor.session
                         self.autoVoiceCaptureObserved =
@@ -1824,7 +1834,8 @@ final class AssistantModel: ObservableObject {
                         if self.livePhoneState == "OFFHOOK" {
                             self.automaticOffhookSequence = self.bridgeCursor.lastSequence
                             if !self.embeddedVoiceCaptureActive &&
-                               self.autoVoiceCaptureObserved {
+                               self.autoVoiceCaptureObserved &&
+                               self.embeddedVoiceBrowser.voiceSessionActuallyEnded {
                                 self.scheduleAutomaticHangupAfterVoiceEnds()
                             }
                         }
