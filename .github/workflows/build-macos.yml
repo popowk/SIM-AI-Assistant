@@ -108,8 +108,8 @@ jobs:
         with:
           name: SIM-AI-Assistant-macOS-arm64
           path: |
-            dist/SIM-AI-Assistant-v0.4.6-macos-arm64.zip
-            dist/SIM-AI-Assistant-v0.4.6-macos-arm64.zip.sha256
+            dist/SIM-AI-Assistant-v0.4.7-macos-arm64.zip
+            dist/SIM-AI-Assistant-v0.4.7-macos-arm64.zip.sha256
             dist/SIMAI-Audio-Probe.jar
             dist/SIMAI-Android-Signing.txt
             dist/SIMAI-Companion-v0.3.4-debug.apk
@@ -133,11 +133,11 @@ jobs:
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest --target "$(git rev-parse HEAD)" \
               --title "SIM AI Assistant · 最新测试版" --prerelease \
-              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.6 增加 GitHub Secrets 固定 Android 调试 APK 签名支持、签名状态标记及安全升级提示；未配置密钥仍为临时调试签名，不能保证无损覆盖。"
+              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.7 Mac 新增 scrcpy 实时屏幕镜像与鼠标手动操作、Android 权限页快捷入口，安装时尝试自动打开镜像；不自动批准系统权限、不录制声音或屏幕。"
           fi
           gh release upload dev-latest \
-            dist/SIM-AI-Assistant-v0.4.6-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.6-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.7-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.7-macos-arm64.zip.sha256 \
             dist/SIMAI-Audio-Probe.jar \
             dist/SIMAI-Android-Signing.txt \
             dist/SIMAI-Companion-v0.3.4-debug.apk \
@@ -150,8 +150,8 @@ jobs:
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/SIM-AI-Assistant-v0.4.6-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.6-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.7-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.7-macos-arm64.zip.sha256 \
             dist/SIMAI-Companion-v0.3.4-debug.apk \
             dist/SIMAI-Companion-v0.3.4-debug.apk.sha256 \
             dist/SIMAI-Android-Signing.txt \
