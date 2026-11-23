@@ -53,7 +53,17 @@ public final class MainActivity extends Activity {
         scroller.addView(column);
 
         TextView title = new TextView(this);
-        title.setText("SIM AI Companion · V0.3.7");
+        // Display the installed APK manifest version; never hardcode a
+        // release label that can drift from Gradle or the downloaded package.
+        String packageVersion = "未知";
+        try {
+            android.content.pm.PackageInfo info =
+                    getPackageManager().getPackageInfo(getPackageName(), 0);
+            packageVersion = "v" + info.versionName + " (Build " + info.versionCode + ")";
+        } catch (PackageManager.NameNotFoundException ignored) {
+            // Package metadata may be temporarily unavailable on upgrade.
+        }
+        title.setText("SIM AI Companion · " + packageVersion);
         title.setTextSize(22f);
         column.addView(title);
         TextView description = new TextView(this);
