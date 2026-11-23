@@ -1,4 +1,4 @@
-# SIM AI Assistant · V0.4.13（电话 PCM 丢帧修复）
+# SIM AI Assistant · V0.4.14（内嵌 ChatGPT Voice 浏览器实验）
 
 **设备目标**：vivo S9e / Android 13 / 中国联通实体 SIM + Apple Silicon Mac / macOS 26.6.2。
 **源代码**：https://github.com/popowk/SIM-AI-Assistant
@@ -10,6 +10,33 @@
 - Android → Mac：私有通信令牌、本机端口转发、匿名电话状态同步和去重、断线重连。此前 vivo S9e 的真实来电日志已验证此项。
 - Mac 本地音频设备检查、麦克风电平、扬声器试听和设备恢复。
 - 诊断 ZIP、匿名事件日志、1/7/14 天清理与「清空全部（含今天）」。
+
+## V0.4.14 · 内嵌 ChatGPT Voice 浏览器（实验性自动启动，2026-11-23）
+
+### 已实现
+
+- macOS 原生 **WebKit WKWebView** 独立 ChatGPT 窗口，直接加载 `https://chatgpt.com/`。用户在网页**自行登录**；WebKit 官方 `WKWebsiteDataStore.default()` 负责本机登录会话。SIM AI Assistant 不读取密码、Cookie、Token、聊天内容、语音转写或网页正文，不导出登录信息到日志。
+- 「内嵌 ChatGPT Voice」开关和独立窗口；网页登录后，在用户启用的实验性自动启动设置下，软件只在 **HTTPS chatgpt.com 源站**寻找可见、启用且明确标记 Voice 启动的按钮，尝试执行一次点击；不绕过验证码、登录、设备安全策略，不逆向调用未公开的 ChatGPT API。每次自动尝试至少隔 75 秒，避免循环点击和网页卡顿。
+- 浏览器麦克风权限遵循 WebKit/macOS 的原生提示，只允许来源为 `https://chatgpt.com` 的页面申请；第三方登录来源无权使用麦克风。**采集状态检测**基于 `WKWebView.microphoneCaptureState == .active`：检测到网页采集后才允许 Mac 自动来电预备，采集停止则停止新来电自动接听，正在回传 GPT 声音的通话也会立即关闭 AI 回传。
+- 网页 Voice 启动前，先使用现有 CoreAudio 自动路由确保 macOS 默认输入 BlackHole 2ch、输出 BlackHole 16ch。已经开始的内嵌 Voice 会话在通话空闲时仍维持必要音频路由，停止值守或退出软件后恢复用户原来的设备。实体耳机监听与 Android PCM 桥接流程不变。
+- 左侧简洁主界面增加「打开内嵌 ChatGPT 登录与 Voice」，菜单栏同样提供入口。内部日志只记录固定事件代码（启动点击尝试、采集激活/停止、权限提示/拒绝、网页载入失败），不记录网页 URL 参数、账号信息、音频或会话令牌。
+- 此版本仅更新 Mac V0.4.14 Build 31；手机 Android Companion V0.3.5 不变，不影响飞书短信转发。
+
+### 限制
+
+- 这只是 **ChatGPT 官方网站的内嵌网页和实验性按钮自动化**，不是 ChatGPT Plus 的授权 API。网页 DOM、语音播放策略、浏览器自动播放限制、macOS 麦克风授权、Voice 会话额度和会话寿命可能导致失败，且无人值守开机后能否自动启动**尚未经过真实 ChatGPT 登录和语音测试**。
+- Google OAuth 等第三方登录可能以 `disallowed_useragent` 拒绝 WKWebView。软件可将其跳转在系统浏览器中打开，但外部浏览器登录状态不会自动回写到内嵌浏览器。用户可选用官网支持的其它登录方式，或退回外部 ChatGPT Voice 模式。
+- WebKit 的 **麦克风正在采集**只能证明网页请求并获得了麦克风，并不能证明 GPT 正常识别电话对方语音、浏览器使用的是 BlackHole 2ch（如果网站独立选择了物理麦克风）、AI 回复已经进入 BlackHole 16ch，或者通话可以突破现有 180 秒音频 Helper 测试限制。
+- 若要真正在开机后保证「不用人工启动网页 Voice、每次都正常对话」，还需采用有公开可编排接口的语音后端或本地 ASR/LLM/TTS。ChatGPT Plus 订阅不能作为第三方应用的编程接口。
+- 实际运营商通话使用第三方语音 AI 需当事人知情同意；内嵌网页将声音发送给 ChatGPT 服务，此行为由网站与账号设置管理。勿用于未获授权的通话监控。
+
+### 实机检查
+
+1. 安装新版 Mac 程序，确认 BlackHole 2ch／16ch 和 Android ADB 一切正常。
+2. 点击「打开内嵌 ChatGPT 登录与 Voice」，在网页内自行登录。遇到 Google 登录不支持就改用自己受支持的官方登录方法。
+3. WebKit 弹出麦克风请求时按照自身意愿确认；如果自动 Voice 点击失败，在网页中手动点一次 Voice 并检查是否看到「网页麦克风正在采集」。此时后台将预备自动值守。
+4. 用第二台自有手机拨入测试，确认自动接听、真实电话下行、GPT 回复返回及挂断后的输出状态；仍有现阶段 180 秒音频会话限制。
+5. 失去网页麦克风采集时应自动撤销接听预备，不应继续假装 GPT 处于可用状态。保存脱敏日志以便区分网站按钮失效、WebKit 权限和电话 PCM 路由问题。
 
 ## V0.4.13 · 修复电话音频大量丢帧（2026-11-23）
 
