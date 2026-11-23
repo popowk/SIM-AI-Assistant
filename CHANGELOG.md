@@ -1,5 +1,13 @@
 # 变更记录
 
+## 0.4.11 — 2026-11-23
+
+- Mac V0.4.11 Build 28 新增一键安装 BlackHole 16ch／2ch 引导，免 Homebrew：只在用户确认后，直接向 Existential Audio 官网上游请求固定版本 0.7.1 官方包。
+- SHA-256 分别按 Homebrew 官方 Cask 固定校验，下载失败、哈希不符或返回不正确状态码即停止；不自动执行有管理员权限的静默命令。
+- 使用 macOS Installer 进行用户批准的驱动安装并自动监听 CoreAudio 设备是否出现；如需重启 Mac 则按系统提示。遵守官网对官方二进制第三方再分发的限制，不把驱动 .pkg 嵌入发给用户的 ZIP。
+- Android Companion V0.3.5 无变化；已实现的 BlackHole 输出自动切换和通话后恢复功能保留。
+
+
 ## 0.4.10 — 2026-11-23
 
 - Mac Build 27 添加 CoreAudio `kAudioHardwarePropertyDefaultOutputDevice` 自动控制模块：GPT 来电开始时自动将默认播放切到唯一 BlackHole 16ch，原来的真实输出保留为电话监听设备。
