@@ -235,6 +235,21 @@ final class PhoneEventBridge {
             Log.w("SIMAICompanion", "Private answer acknowledgement unavailable");
     }
 
+    /** Called only via the signature-level DUMP-permission guarded receiver. */
+    synchronized void acceptAndRecordGuardedShellRequest(
+            String expectedSession, int expectedSequence) {
+        if (expectedSequence <= 0 || expectedSession == null ||
+                !expectedSession.matches("[a-fA-F0-9-]{36}")) return;
+        // If the file path already succeeded, do not issue a second answer.
+        if (lastPrivateAnswerSequence == expectedSequence &&
+                "ANSWER_REQUESTED".equals(lastPrivateAnswerResult)) return;
+        String result = acceptGuardedPrivateAnswer(expectedSession, expectedSequence);
+        lastPrivateAnswerSequence = expectedSequence;
+        lastPrivateAnswerResult = result;
+        persistSnapshot();
+        Log.i("SIMAICompanion", "Guarded shell answer: " + result);
+    }
+
     private synchronized String acceptGuardedPrivateAnswer(
             String expectedSession, int ringSequence) {
         if (!active || !session.equals(expectedSession) || ringSequence <= 0 ||
