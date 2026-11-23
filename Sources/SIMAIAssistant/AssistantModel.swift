@@ -107,8 +107,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.25"
-    let buildNumber = "42"
+    let version = "0.4.26"
+    let buildNumber = "43"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -194,6 +194,11 @@ final class AssistantModel: ObservableObject {
     /// The current ringing session owns this WebKit Voice page even if the
     /// Android answer response was lost. It is safe to close on real IDLE.
     private var autoStartedWebVoiceForRing = false
+    // Hand-answered calls may still route PCM, but may NEVER gain the
+    // automatic-hangup authority reserved for acknowledged AI answers.
+    private var observedRingingSession = ""
+    private var observedRingingSequence = 0
+    private var manualPickupFromTrackedRing = false
     private var incomingVoiceBlockedUntilIdle = false
     private var incomingPreflightRunning = false
     private var incomingPreflightPassed = false
@@ -537,14 +542,16 @@ final class AssistantModel: ObservableObject {
                embeddedVoiceBrowser.isolatedMicrophoneReady &&
                (!isolatedChatGPTOutputEnabled ||
                 embeddedVoiceBrowser.isolatedOutputReady) &&
-               livePhoneState == "RINGING" && !incomingVoiceBlockedUntilIdle {
+               (livePhoneState == "RINGING" ||
+                (livePhoneState == "OFFHOOK" && manualPickupFromTrackedRing)) &&
+               !incomingVoiceBlockedUntilIdle {
                 setVoiceSessionPrepared(true)
                 if voiceSessionPrepared {
                     incomingVoicePending = false
                     incomingVoiceDeadline = nil
                     log(.info, .audio, "来电 Voice 与音频 HAL 预检已就绪",
                         details: ["stage": "VOICE_CAPTURE_READY_AFTER_PREFLIGHT"])
-                    reactToAutomaticCallState("RINGING")
+                    reactToAutomaticCallState(livePhoneState)
                 }
             }
         } else {
@@ -611,7 +618,8 @@ final class AssistantModel: ObservableObject {
             }
             return
         }
-        if livePhoneState != "RINGING" {
+        if livePhoneState != "RINGING" &&
+           !(livePhoneState == "OFFHOOK" && manualPickupFromTrackedRing) {
             // ADB may disconnect during a ringing session. Do not leave
             // a live browser or virtual audio route running indefinitely.
             incomingVoicePending = false
@@ -640,7 +648,9 @@ final class AssistantModel: ObservableObject {
         embeddedVoiceBrowser.healthCheck { [weak self] in
             guard let self else { return false }
             return self.incomingVoicePending && self.incomingPreflightPassed &&
-                   self.livePhoneState == "RINGING"
+                   (self.livePhoneState == "RINGING" ||
+                    (self.livePhoneState == "OFFHOOK" &&
+                     self.manualPickupFromTrackedRing))
         }
         embeddedVoiceBrowser.checkMicrophoneCapture()
     }
@@ -676,7 +686,9 @@ final class AssistantModel: ObservableObject {
                 guard let self else { return }
                 self.incomingPreflightRunning = false
                 guard self.incomingVoicePending else { return }
-                guard self.livePhoneState == "RINGING" else {
+                guard self.livePhoneState == "RINGING" ||
+                    (self.livePhoneState == "OFFHOOK" &&
+                     self.manualPickupFromTrackedRing) else {
                     self.incomingVoicePending = false
                     self.restoreAutomaticGPTOutput(forceInput: true)
                     return
@@ -1043,7 +1055,9 @@ final class AssistantModel: ObservableObject {
         if prepared && useEmbeddedVoiceBrowser &&
            (!embeddedVoiceBrowser.microphoneActive ||
             !embeddedVoiceBrowser.isolatedMicrophoneReady ||
-            !incomingPreflightPassed || livePhoneState != "RINGING") {
+            !incomingPreflightPassed ||
+            !(livePhoneState == "RINGING" ||
+              (livePhoneState == "OFFHOOK" && manualPickupFromTrackedRing))) {
             voiceSessionPrepared = false
             autoCallStatus = "等待响铃、音频预检及 WebKit 麦克风采集全部通过"
             return
@@ -1086,6 +1100,25 @@ final class AssistantModel: ObservableObject {
         return problems
     }
 
+    /// Route a manually picked-up, observed call only after Voice has real
+    /// isolated input/output. Unlike AI-answer success this grants NO hangup
+    /// capability, even if the AI voice session subsequently stops.
+    private func tryStartTrackedManualPickupAudio() {
+        guard manualPickupFromTrackedRing && autoCallEnabled &&
+              livePhoneState == "OFFHOOK" && voiceSessionPrepared &&
+              embeddedVoiceCaptureActive &&
+              embeddedVoiceBrowser.isolatedMicrophoneReady &&
+              (!isolatedChatGPTOutputEnabled ||
+               embeddedVoiceBrowser.isolatedOutputReady) &&
+              !liveVoiceStarting && !liveVoiceActive && !adbInstalling &&
+              !audioProbeBusy && !autoCallAudioRequested else { return }
+        autoCallAudioRequested = true
+        autoCallStatus = "手机已手动接通同一来电；正在自动建立电话 PCM 和 GPT 音频"
+        log(.info, .audio, "手机手动接听后自动启动 GPT 电话音频",
+            details: ["reason": "TRACKED_MANUAL_PICKUP_PCM"])
+        startLiveVoice()
+    }
+
     private func reactToAutomaticCallState(_ state: String) {
         let newIdle = state == "IDLE" && previousObservedPhoneState != "IDLE" &&
                       !previousObservedPhoneState.isEmpty
@@ -1117,6 +1150,9 @@ final class AssistantModel: ObservableObject {
             resumeAIForwardAfterIsolationRestored = false
             resumeAIForwardAfterMicrophoneRestored = false
             incomingVoicePending = false
+            observedRingingSession = ""
+            observedRingingSequence = 0
+            manualPickupFromTrackedRing = false
             incomingPreflightRunning = false
             incomingPreflightPassed = false
             incomingVoiceBlockedUntilIdle = false
@@ -1147,12 +1183,28 @@ final class AssistantModel: ObservableObject {
                 scheduleAutomaticHangupAfterVoiceEnds()
             }
         }
-        if state == "OFFHOOK" && incomingVoicePending && !voiceSessionPrepared {
-            // Someone answered manually while Voice was being prepared.
+        if ManualPickupPolicy.isSameTrackedCall(
+            state: state, session: bridgeCursor.session,
+            sequence: bridgeCursor.lastSequence,
+            ringSession: observedRingingSession,
+            ringSequence: observedRingingSequence,
+            automationEnabled: autoCallEnabled,
+            voiceStartedForRing: autoStartedWebVoiceForRing || incomingVoicePending,
+            automaticAnswerAcknowledged: automaticAnswerAcknowledged
+        ) && !manualPickupFromTrackedRing {
+            manualPickupFromTrackedRing = true
+            autoCallStatus = "手机已手动接听，正在完成 Voice 并建立 PCM"
+            log(.info, .call, "识别到当前来电由手机手动接听",
+                details: ["stage": "MANUAL_PICKUP_SAME_RING"])
+        }
+        // Do not cancel an in-progress Voice startup just because the user
+        // answered that same ring before the browser was ready.
+        if state == "OFFHOOK" && incomingVoicePending && !voiceSessionPrepared &&
+           !manualPickupFromTrackedRing {
             incomingVoicePending = false
             incomingVoiceBlockedUntilIdle = true
             incomingVoiceDeadline = nil
-            autoCallStatus = "电话已手动接听；停止本次自动 Voice 启动"
+            autoCallStatus = "通话来源未匹配本次响铃；不会连接 GPT 电话音频"
         }
         // Fail closed if the official Voice UI was not pre-armed this session.
         // Checking for virtual devices cannot prove that ChatGPT is listening.
@@ -1192,6 +1244,9 @@ final class AssistantModel: ObservableObject {
             restoreAutomaticGPTOutput()
         case .none:
             break
+        }
+        if state == "OFFHOOK" {
+            tryStartTrackedManualPickupAudio()
         }
     }
 
@@ -1566,6 +1621,18 @@ final class AssistantModel: ObservableObject {
                 details: ["state": event.state, "sequence": "\(event.seq)",
                           "source": source])
         }
+        if snapshot.state == "RINGING" &&
+           (observedRingingSession != snapshot.session ||
+            observedRingingSequence != snapshot.seq) {
+            observedRingingSession = snapshot.session
+            observedRingingSequence = snapshot.seq
+            manualPickupFromTrackedRing = false
+        }
+        if snapshot.state == "IDLE" &&
+           received.contains(where: { $0.state == "OFFHOOK" }) {
+            log(.warn, .call, "接通与挂机事件延迟到同一轮才收到，已经错过可用的电话 PCM 时间窗",
+                details: ["diagnosis": "OFFHOOK_IDLED_BEFORE_POLL"])
+        }
         livePhoneState = snapshot.state
         liveBridgeLastSync = Date()
         if let granted = snapshot.answerPermissionGranted,
@@ -1666,8 +1733,14 @@ final class AssistantModel: ObservableObject {
                         throw NSError(domain: "SIMAI.ADBBridge", code: 422)
                     }
                     self.applyBridgeSnapshot(snapshot, source: "ADB_HTTP")
-                    self.bridgeUsingFileFallback = false
-                    self.nextHTTPRecoveryAttempt = .distantPast
+                    // HTTP GET timed out on vivo once a real ring started.
+                    // Prefer the established private-file reader for the
+                    // rest of this ring and for its OFFHOOK transition.
+                    let callPending = snapshot.state == "RINGING" ||
+                        snapshot.state == "OFFHOOK"
+                    self.bridgeUsingFileFallback = callPending
+                    self.nextHTTPRecoveryAttempt = callPending
+                        ? Date().addingTimeInterval(75) : .distantPast
                 } catch {
                     guard self.liveSyncEnabled, generation == self.bridgeGeneration else {
                         return
