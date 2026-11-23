@@ -108,8 +108,8 @@ jobs:
         with:
           name: SIM-AI-Assistant-macOS-arm64
           path: |
-            dist/SIM-AI-Assistant-v0.4.11-macos-arm64.zip
-            dist/SIM-AI-Assistant-v0.4.11-macos-arm64.zip.sha256
+            dist/SIM-AI-Assistant-v0.4.12-macos-arm64.zip
+            dist/SIM-AI-Assistant-v0.4.12-macos-arm64.zip.sha256
             dist/SIMAI-Audio-Probe.jar
             dist/SIMAI-Android-Signing.txt
             dist/SIMAI-Companion-v0.3.5-debug.apk
@@ -133,11 +133,11 @@ jobs:
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest --target "$(git rev-parse HEAD)" \
               --title "SIM AI Assistant · 最新测试版" --prerelease \
-              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.11 在 Mac 应用内可一键从 Existential Audio 官网获取 BlackHole 2ch/16ch 0.7.1 安装器，SHA-256 校验后交给 macOS 系统安装器执行授权；未再分发第三方驱动。原自动声音切换功能保留。"
+              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.12 根据 2026-11-23 用户诊断补齐 GPT 输入 BlackHole 2ch 自动路由、输入恢复及来电PCM/GPT回复静音分类日志；首页收敛为自动值守、设备设置、飞书配置和折叠维护日志。"
           fi
           gh release upload dev-latest \
-            dist/SIM-AI-Assistant-v0.4.11-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.11-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.12-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.12-macos-arm64.zip.sha256 \
             dist/SIMAI-Audio-Probe.jar \
             dist/SIMAI-Android-Signing.txt \
             dist/SIMAI-Companion-v0.3.5-debug.apk \
@@ -150,8 +150,8 @@ jobs:
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/SIM-AI-Assistant-v0.4.11-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.11-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.12-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.12-macos-arm64.zip.sha256 \
             dist/SIMAI-Companion-v0.3.5-debug.apk \
             dist/SIMAI-Companion-v0.3.5-debug.apk.sha256 \
             dist/SIMAI-Android-Signing.txt \
