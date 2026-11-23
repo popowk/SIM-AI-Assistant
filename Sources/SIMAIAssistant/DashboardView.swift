@@ -102,7 +102,7 @@ struct DashboardView: View {
             Button("确认安装 / 覆盖") { model.installAndroidCompanion() }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("仅向唯一已授权的 Android 设备安装内置 APK。安装后会打开手机权限向导并尝试恢复 Mac 已保存的飞书设置；系统电话/短信授权仍由你在手机端确认。不会自动卸载旧应用。")
+            Text("仅向唯一已授权的 Android 设备安装内置 APK。若 Mac 已装 scrcpy，将自动打开手机屏幕窗口供你用鼠标手动完成 vivo 安装和权限确认；不会自动同意系统权限或卸载旧应用。")
         }
         .confirmationDialog("要删除旧版 Android 伴侣 App 的全部数据并重装吗？",
                             isPresented: $confirmAPKReset, titleVisibility: .visible) {
@@ -111,7 +111,7 @@ struct DashboardView: View {
             }
             Button("取消", role: .cancel) { }
         } message: {
-            Text("仅针对 SIM AI Companion。此操作会通过 ADB 卸载该 APK（删除其私有数据、权限、手机端历史事件），随后安装新 APK。请仅在提示签名不一致时使用；绝不自动执行。")
+            Text("仅针对 SIM AI Companion。此操作会通过 ADB 卸载 APK（清除应用私有数据和权限）并重装；如已安装 scrcpy，会在 Mac 弹出手机窗口供你手动确认系统提示。仅在签名不一致时使用。")
         }
         .sheet(isPresented: $previewExport) {
             ExportPreviewView()
@@ -131,7 +131,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("电话音频 + GPT Voice + 飞书短信通知 · V0.4.6")
+                Text("电话音频 + GPT Voice + ADB 手机远程屏幕 · V0.4.7")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -196,6 +196,38 @@ struct DashboardView: View {
             .font(.caption).foregroundStyle(.secondary)
             Text("自动识别默认开启：手机接入 USB、恢复已授权无线 ADB 或 Mac 唤醒后，会自动检测并尝试恢复来电状态；有多台设备时不会猜测选择。")
                 .font(.caption).foregroundStyle(.secondary)
+            Divider()
+            Text("手机屏幕操作 · 在 Mac 上点安装/权限提示")
+                .font(.headline)
+            HStack {
+                Button {
+                    model.openPhoneScreenControl()
+                } label: {
+                    Label(model.screenControlStarting ? "正在连接屏幕…" : "打开手机屏幕控制",
+                          systemImage: "iphone.gen3.radiowaves.left.and.right")
+                }
+                .disabled(model.screenControlStarting || model.screenControlRunning)
+                Button("关闭屏幕控制") { model.closePhoneScreenControl() }
+                    .disabled(!model.screenControlRunning)
+                if model.screenControlStarting { ProgressView().controlSize(.small) }
+            }
+            .buttonStyle(.bordered)
+            Text(model.screenControlStatus)
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("复制 scrcpy 安装命令") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString("brew install scrcpy", forType: .string)
+                }
+                Button("scrcpy 官方安装指南") {
+                    if let url = URL(string: "https://github.com/Genymobile/scrcpy/blob/master/doc/macos.md") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+            .buttonStyle(.link)
+            Text("首次 USB 调试授权仍需先在手机确认一次。之后可在弹出的 scrcpy 窗口用 Mac 鼠标点击 vivo 安装确认、电话与短信权限弹窗。不会自动授权、关闭安全限制、录屏或修改手机设置；部分系统安全页面可能禁止远程点击。")
+                .font(.caption).foregroundStyle(.orange)
             Divider()
             Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.3.4" : "当前构建未包含")")
                 .font(.caption)
@@ -565,7 +597,7 @@ struct DashboardView: View {
             Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.4.6 (23)").font(.caption.monospaced())
+            Text("0.4.7 (24)").font(.caption.monospaced())
         }
     }
 
