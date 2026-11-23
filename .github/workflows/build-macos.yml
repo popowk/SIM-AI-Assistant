@@ -86,10 +86,10 @@ jobs:
             exit 1
           fi
           gradle -p AndroidCompanion :app:assembleDebug --no-daemon
-          cp AndroidCompanion/app/build/outputs/apk/debug/app-debug.apk dist/SIMAI-Companion-v0.3.4-debug.apk
-          test -s dist/SIMAI-Companion-v0.3.4-debug.apk
-          shasum -a 256 dist/SIMAI-Companion-v0.3.4-debug.apk > dist/SIMAI-Companion-v0.3.4-debug.apk.sha256
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose dist/SIMAI-Companion-v0.3.4-debug.apk
+          cp AndroidCompanion/app/build/outputs/apk/debug/app-debug.apk dist/SIMAI-Companion-v0.3.5-debug.apk
+          test -s dist/SIMAI-Companion-v0.3.5-debug.apk
+          shasum -a 256 dist/SIMAI-Companion-v0.3.5-debug.apk > dist/SIMAI-Companion-v0.3.5-debug.apk.sha256
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose dist/SIMAI-Companion-v0.3.5-debug.apk
 
 
       - name: Build Android 13 audio capability helper
@@ -98,7 +98,7 @@ jobs:
       - name: Run tests and build arm64 app
         env:
           TARGET_TRIPLE: arm64-apple-macosx13.0
-          ANDROID_COMPANION_APK_PATH: ${{ github.workspace }}/dist/SIMAI-Companion-v0.3.4-debug.apk
+          ANDROID_COMPANION_APK_PATH: ${{ github.workspace }}/dist/SIMAI-Companion-v0.3.5-debug.apk
           ANDROID_AUDIO_PROBE_JAR_PATH: ${{ github.workspace }}/dist/SIMAI-Audio-Probe.jar
           ANDROID_COMPANION_SIGNING_STATUS_PATH: ${{ github.workspace }}/dist/SIMAI-Android-Signing.txt
         run: bash Scripts/build-macos.sh
@@ -108,12 +108,12 @@ jobs:
         with:
           name: SIM-AI-Assistant-macOS-arm64
           path: |
-            dist/SIM-AI-Assistant-v0.4.7-macos-arm64.zip
-            dist/SIM-AI-Assistant-v0.4.7-macos-arm64.zip.sha256
+            dist/SIM-AI-Assistant-v0.4.8-macos-arm64.zip
+            dist/SIM-AI-Assistant-v0.4.8-macos-arm64.zip.sha256
             dist/SIMAI-Audio-Probe.jar
             dist/SIMAI-Android-Signing.txt
-            dist/SIMAI-Companion-v0.3.4-debug.apk
-            dist/SIMAI-Companion-v0.3.4-debug.apk.sha256
+            dist/SIMAI-Companion-v0.3.5-debug.apk
+            dist/SIMAI-Companion-v0.3.5-debug.apk.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -133,15 +133,15 @@ jobs:
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest --target "$(git rev-parse HEAD)" \
               --title "SIM AI Assistant · 最新测试版" --prerelease \
-              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.7 Mac 新增 scrcpy 实时屏幕镜像与鼠标手动操作、Android 权限页快捷入口，安装时尝试自动打开镜像；不自动批准系统权限、不录制声音或屏幕。"
+              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.8 新增通过原有 ADB 私有桥接人工接听当前来电，许可和响铃状态由 Android 二次验证；Mac 追加 GPT 双向语音一键授权路由与立即停止。证书可在可信 Mac 上通过脚本配置 GitHub Secrets。"
           fi
           gh release upload dev-latest \
-            dist/SIM-AI-Assistant-v0.4.7-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.7-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.8-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.8-macos-arm64.zip.sha256 \
             dist/SIMAI-Audio-Probe.jar \
             dist/SIMAI-Android-Signing.txt \
-            dist/SIMAI-Companion-v0.3.4-debug.apk \
-            dist/SIMAI-Companion-v0.3.4-debug.apk.sha256 --clobber
+            dist/SIMAI-Companion-v0.3.5-debug.apk \
+            dist/SIMAI-Companion-v0.3.5-debug.apk.sha256 --clobber
 
       - name: Publish versioned prerelease on tag
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -150,10 +150,10 @@ jobs:
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/SIM-AI-Assistant-v0.4.7-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.7-macos-arm64.zip.sha256 \
-            dist/SIMAI-Companion-v0.3.4-debug.apk \
-            dist/SIMAI-Companion-v0.3.4-debug.apk.sha256 \
+            dist/SIM-AI-Assistant-v0.4.8-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.8-macos-arm64.zip.sha256 \
+            dist/SIMAI-Companion-v0.3.5-debug.apk \
+            dist/SIMAI-Companion-v0.3.5-debug.apk.sha256 \
             dist/SIMAI-Android-Signing.txt \
             dist/SIMAI-Audio-Probe.jar \
             --title "SIM AI Assistant $GITHUB_REF_NAME" --prerelease \
