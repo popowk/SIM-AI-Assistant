@@ -272,7 +272,7 @@ final class SIMAICoreTests: XCTestCase {
         let a = try decoder.decode(PhoneBridgeSnapshot.self, from: Data(json.utf8))
         let b = try decoder.decode(PhoneBridgeSnapshot.self, from: Data(file.utf8))
         var cursor = PhoneBridgeCursor()
-        XCTAssertEqual(cursor.consume(a).map(\.state), ["RINGING", "OFFHOOK"])
+        XCTAssertEqual(cursor.consume(a).count, 0) // initial baseline, not a new call
         XCTAssertEqual(cursor.consume(b).map(\.state), ["IDLE"])
         XCTAssertEqual(cursor.consume(a).count, 0)
         XCTAssertEqual(cursor.consume(b).count, 0)
@@ -310,7 +310,7 @@ final class SIMAICoreTests: XCTestCase {
         var cursor = PhoneBridgeCursor()
         let a = try decoder.decode(PhoneBridgeSnapshot.self, from: Data(first.utf8))
         let b = try decoder.decode(PhoneBridgeSnapshot.self, from: Data(second.utf8))
-        XCTAssertEqual(cursor.consume(a).map(\.state), ["IDLE", "RINGING", "OFFHOOK"])
+        XCTAssertEqual(cursor.consume(a).count, 0) // old history ignored on first connect
         XCTAssertEqual(cursor.lastSequence, 3)
         // Mimic ADB reconnect while Android monitor service/session stays alive.
         XCTAssertEqual(cursor.consume(b).map(\.state), ["IDLE"])
@@ -325,8 +325,8 @@ final class SIMAICoreTests: XCTestCase {
         let fresh = try decoder.decode(PhoneBridgeSnapshot.self,
             from: Data(#"{"schema":1,"session":"new","running":true,"state":"IDLE","seq":1,"events":[{"seq":1,"state":"IDLE","at":3000}]}"#.utf8))
         var cursor = PhoneBridgeCursor()
-        XCTAssertEqual(cursor.consume(old).count, 2)
-        XCTAssertEqual(cursor.consume(fresh).map(\.state), ["IDLE"])
+        XCTAssertEqual(cursor.consume(old).count, 0)
+        XCTAssertEqual(cursor.consume(fresh).count, 0) // new service history baseline
         XCTAssertEqual(cursor.session, "new")
         XCTAssertEqual(cursor.lastSequence, 1)
     }
