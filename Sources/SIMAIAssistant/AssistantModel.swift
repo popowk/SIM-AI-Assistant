@@ -93,8 +93,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.16"
-    let buildNumber = "33"
+    let version = "0.4.17"
+    let buildNumber = "34"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -111,6 +111,17 @@ final class AssistantModel: ObservableObject {
     private var incomingPreflightPassed = false
     private var incomingVoiceDeadline: Date?
     private var previousObservedPhoneState = ""
+    // A hang-up is permitted only for this app's acknowledged auto-answer.
+    // The Android service independently checks its current session/sequence.
+    private var automaticAnswerRequested = false
+    private var automaticAnswerAcknowledged = false
+    private var automaticAnswerSession = ""
+    private var automaticOffhookSequence = 0
+    private var autoVoiceCaptureObserved = false
+    private var voiceStopCheckGeneration = 0
+    private var autoHangupBusy = false
+    private var autoHangupAttempted = false
+    private var resumeAIForwardAfterVoicePause = false
     private var screenControlProcess: Process?
     private var voiceSessionID = ""
     private var pendingBlackHoleInstallChannels: Int?
@@ -129,6 +140,8 @@ final class AssistantModel: ObservableObject {
     private var bridgeRetryAfter = Date.distantPast
     private var bridgeConsecutiveFailures = 0
     private var nextPhoneMonitorWakeAt = Date.distantPast
+    private var initialPhoneMonitorWarmup = false
+    private var startupBridgeGraceUntil = Date().addingTimeInterval(30)
     private(set) var sessionID = UUID().uuidString
     private(set) var lastError: DiagnosticEvent?
 
@@ -330,6 +343,15 @@ final class AssistantModel: ObservableObject {
         embeddedVoiceCaptureActive = active
         guard useEmbeddedVoiceBrowser else { return }
         if active {
+            voiceStopCheckGeneration += 1
+            if automaticAnswerAcknowledged { autoVoiceCaptureObserved = true }
+            if resumeAIForwardAfterVoicePause &&
+               automaticAnswerAcknowledged && livePhoneState == "OFFHOOK" &&
+               liveVoiceActive && aiReplyMonitorEnabled {
+                resumeAIForwardAfterVoicePause = false
+                setAIReplyToPhone(true)
+                log(.info, .audio, "Voice 恢复采集，恢复已授权的 GPT 电话回传")
+            }
             embeddedVoiceStatus = "WebKit 已采集麦克风；电话实测才能确认 GPT 听懂语音"
             if incomingVoicePending && incomingPreflightPassed &&
                livePhoneState == "RINGING" && !incomingVoiceBlockedUntilIdle {
@@ -343,6 +365,27 @@ final class AssistantModel: ObservableObject {
                 }
             }
         } else {
+            if automaticAnswerAcknowledged && autoVoiceCaptureObserved &&
+               livePhoneState == "OFFHOOK" {
+                // Mute the PSTN uplink immediately while WebKit is not
+                // capturing, so unrelated desktop audio cannot leak during
+                // the grace period. Restore only if the same Voice resumes.
+                if aiReplyToPhoneEnabled {
+                    resumeAIForwardAfterVoicePause = true
+                    setAIReplyToPhone(false)
+                }
+                // A 4-second grace period avoids treating a temporary mute,
+                // capture pause or WebKit hiccup as an ended Voice session.
+                voiceSessionPrepared = false
+                if embeddedVoiceBrowser.voiceSessionActuallyEnded {
+                    scheduleAutomaticHangupAfterVoiceEnds()
+                    embeddedVoiceStatus = "Voice 已结束，确认 4 秒后请求手机挂断"
+                } else {
+                    voiceStopCheckGeneration += 1
+                    embeddedVoiceStatus = "Voice 麦克风暂时静音；不会误挂电话"
+                }
+                return
+            }
             if voiceSessionPrepared || aiReplyToPhoneEnabled {
                 log(.warn, .audio, "Voice 采集停止，撤销自动接听及 GPT 回传",
                     details: ["reason": "VOICE_CAPTURE_LOST"])
@@ -361,7 +404,10 @@ final class AssistantModel: ObservableObject {
         guard useEmbeddedVoiceBrowser else { return }
         // Never auto-start Voice merely because a WebKit page is loaded at idle.
         guard incomingVoicePending else {
-            if liveVoiceActive { embeddedVoiceBrowser.checkMicrophoneCapture() }
+            if liveVoiceActive || (automaticAnswerAcknowledged &&
+                                   livePhoneState == "OFFHOOK") {
+                embeddedVoiceBrowser.checkMicrophoneCapture()
+            }
             return
         }
         if livePhoneState != "RINGING" {
@@ -553,6 +599,14 @@ final class AssistantModel: ObservableObject {
     func shutdownForAppExit() {
         // Closing the app must stop forwarding caller audio before changing
         // the global sound device. Also closes scrcpy as before.
+        // ADB forwards survive Mac process exit in the adb server. Release
+        // only our own dynamic port synchronously before termination.
+        bridgeTimer?.invalidate()
+        bridgeTimer = nil
+        if let link = bridgeLink {
+            ADBInspector.closeBridge(at: selectedADBPath, link: link)
+            bridgeLink = nil
+        }
         if liveVoiceStarting || liveVoiceActive { stopLiveVoice() }
         if aiReplyToPhoneEnabled || aiReplyMonitorEnabled || chatGPTVoiceRouteEnabled {
             stopGPTTwoWayPhoneBridge()
@@ -562,10 +616,143 @@ final class AssistantModel: ObservableObject {
         closePhoneScreenControl()
     }
 
+    /// A brief WebKit capture interruption must not hang up a caller.
+    /// Android independently verifies both the originating bridge session
+    /// and the exact OFFHOOK sequence before accepting the hang-up request.
+    private func scheduleAutomaticHangupAfterVoiceEnds() {
+        guard automaticAnswerAcknowledged && autoVoiceCaptureObserved &&
+              livePhoneState == "OFFHOOK" &&
+              embeddedVoiceBrowser.voiceSessionActuallyEnded &&
+              !autoHangupAttempted else { return }
+        voiceStopCheckGeneration += 1
+        let generation = voiceStopCheckGeneration
+        autoCallStatus = "Voice 已停止采集；正在确认是否结束电话（4 秒保护）"
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard let self else { return }
+            guard self.voiceStopCheckGeneration == generation,
+                  self.automaticAnswerAcknowledged,
+                  self.livePhoneState == "OFFHOOK" else { return }
+            // Synchronize once; Voice could have resumed during this pause.
+            self.embeddedVoiceBrowser.checkMicrophoneCapture()
+            guard self.voiceStopCheckGeneration == generation,
+                  !self.embeddedVoiceCaptureActive,
+                  self.embeddedVoiceBrowser.voiceSessionActuallyEnded else { return }
+            self.requestAutomaticHangup(reason: "VOICE_CAPTURE_ENDED")
+        }
+    }
+
+    private func requestAutomaticHangup(reason: String) {
+        guard automaticAnswerAcknowledged && !autoHangupBusy &&
+              !autoHangupAttempted && livePhoneState == "OFFHOOK",
+              automaticOffhookSequence > 0 &&
+              !automaticAnswerSession.isEmpty &&
+              bridgeCursor.session == automaticAnswerSession else {
+            return
+        }
+        autoHangupBusy = true
+        autoHangupAttempted = true
+        let expectedSession = automaticAnswerSession
+        let expectedSequence = automaticOffhookSequence
+        let adb = selectedADBPath
+        let existingLink = bridgeLink
+        autoCallStatus = "Voice 已结束，正在请求手机挂断自动接听的电话……"
+        log(.info, .call, "已触发 Voice 自动挂断保护",
+            details: ["trigger": reason, "guard": "AUTO_ANSWER_SESSION_SEQUENCE"])
+        Task { [weak self] in
+            guard let self else { return }
+            var link = existingLink
+            var temporary = false
+            if link == nil {
+                let opened = await Task.detached(priority: .utility) {
+                    ADBInspector.openBridge(at: adb)
+                }.value
+                link = opened.link
+                temporary = link != nil
+            }
+            defer {
+                if temporary, let link {
+                    Task.detached(priority: .utility) {
+                        ADBInspector.closeBridge(at: adb, link: link)
+                    }
+                }
+                self.autoHangupBusy = false
+            }
+            // Never send a termination request for a call which has already
+            // changed on Mac, or after losing its original Android session.
+            guard self.automaticAnswerAcknowledged,
+                  self.livePhoneState == "OFFHOOK",
+                  self.automaticAnswerSession == expectedSession,
+                  self.automaticOffhookSequence == expectedSequence,
+                  let link,
+                  let url = URL(string: "http://127.0.0.1:\(link.localPort)/call/hangup") else {
+                self.autoCallStatus = "自动挂断已取消：手机通话或连接状态已改变"
+                return
+            }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 5
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.setValue(link.token, forHTTPHeaderField: "X-SIMAI-Token")
+            request.setValue(expectedSession, forHTTPHeaderField: "X-SIMAI-Expected-Session")
+            request.setValue(String(expectedSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
+            request.setValue("0", forHTTPHeaderField: "Content-Length")
+            let config = URLSessionConfiguration.ephemeral
+            config.timeoutIntervalForRequest = 5
+            let session = URLSession(configuration: config)
+            defer { session.invalidateAndCancel() }
+            var result = "HANGUP_HTTP_UNAVAILABLE"
+            do {
+                let (body, response) = try await session.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+                if status == 200 && json?["result"] as? String == "hangup_requested" {
+                    result = "HANGUP_REQUESTED"
+                } else if status == 404 {
+                    // Existing v0.3.5 installations remain supported, with
+                    // an extra fresh, sequence-checked ADB snapshot guard.
+                    result = await Task.detached(priority: .userInitiated) {
+                        ADBInspector.guardedLegacyHangup(
+                            at: adb, expectedSession: expectedSession,
+                            expectedSequence: expectedSequence)
+                    }.value
+                } else {
+                    result = "HANGUP_HTTP_\(status)"
+                }
+            } catch {
+                // Do not send an unverified key event after an ambiguous
+                // timeout: Android may have already ended the call.
+                result = "HANGUP_HTTP_TIMEOUT_OR_DISCONNECTED"
+            }
+            self.log(result == "HANGUP_REQUESTED" ||
+                     result == "ENDCALL_KEY_SENT_UNCONFIRMED" ? .info : .warn,
+                     .call, "手机端 Voice 自动挂断结果",
+                     details: ["result": result, "trigger": reason])
+            if result == "HANGUP_REQUESTED" ||
+               result == "ENDCALL_KEY_SENT_UNCONFIRMED" {
+                self.autoCallStatus = "已向手机发送挂断请求，等待 Android 确认 IDLE"
+                if self.liveVoiceActive || self.liveVoiceStarting {
+                    self.stopLiveVoice()
+                } else {
+                    self.pollLiveBridge()
+                }
+            } else {
+                self.autoCallStatus = "Voice 已结束，但自动挂断未成功；请在手机上手动挂断"
+            }
+        }
+    }
+
     func setAutoCallEnabled(_ enabled: Bool) {
         autoCallEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "SIMAI_AUTO_CALL")
         if !enabled {
+            voiceStopCheckGeneration += 1
+            automaticAnswerRequested = false
+            automaticAnswerAcknowledged = false
+            automaticAnswerSession = ""
+            automaticOffhookSequence = 0
+            autoVoiceCaptureObserved = false
+            resumeAIForwardAfterVoicePause = false
             autoCallState.reset()
             voiceSessionPrepared = false
             incomingVoicePending = false
@@ -628,6 +815,17 @@ final class AssistantModel: ObservableObject {
             beginOnDemandVoiceForRinging()
         }
         if newIdle {
+            // Reset the auto-answer guard as soon as the Android service
+            // reports IDLE. Never carry termination authority into a later call.
+            voiceStopCheckGeneration += 1
+            automaticAnswerRequested = false
+            automaticAnswerAcknowledged = false
+            automaticAnswerSession = ""
+            automaticOffhookSequence = 0
+            autoVoiceCaptureObserved = false
+            autoHangupBusy = false
+            autoHangupAttempted = false
+            resumeAIForwardAfterVoicePause = false
             incomingVoicePending = false
             incomingPreflightRunning = false
             incomingPreflightPassed = false
@@ -639,11 +837,21 @@ final class AssistantModel: ObservableObject {
                 NotificationCenter.default.post(
                     name: Notification.Name("SIMAI_CLOSE_VOICE_AFTER_CALL"), object: nil)
             }
-            if !liveVoiceActive && !liveVoiceStarting {
+            if liveVoiceActive || liveVoiceStarting {
+                stopLiveVoice()
+            } else {
                 restoreAutomaticGPTOutput(forceInput: true)
             }
             autoCallStatus = "空闲轻量待命 · 下次来电再启动 Voice"
-        } else if state == "OFFHOOK" && incomingVoicePending && !voiceSessionPrepared {
+        } else if state == "OFFHOOK" && automaticAnswerAcknowledged &&
+                  bridgeCursor.session == automaticAnswerSession {
+            automaticOffhookSequence = bridgeCursor.lastSequence
+            if !embeddedVoiceCaptureActive && autoVoiceCaptureObserved &&
+               embeddedVoiceBrowser.voiceSessionActuallyEnded {
+                scheduleAutomaticHangupAfterVoiceEnds()
+            }
+        }
+        if state == "OFFHOOK" && incomingVoicePending && !voiceSessionPrepared {
             // Someone answered manually while Voice was being prepared.
             incomingVoicePending = false
             incomingVoiceBlockedUntilIdle = true
@@ -669,7 +877,7 @@ final class AssistantModel: ObservableObject {
             }
             autoCallStatus = "检测到响铃，音频输出已准备，正在自动请求 Android 接听……"
             log(.info, .call, "自动来电检测启动接听", details: ["state": "RINGING"])
-            answerIncomingPhoneCall()
+            answerIncomingPhoneCall(automatic: true)
         case .openCallAudio:
             guard !liveVoiceStarting && !liveVoiceActive else { return }
             autoCallAudioRequested = true
@@ -702,8 +910,14 @@ final class AssistantModel: ObservableObject {
                 self?.checkEmbeddedVoiceHealth()
             }
         }
-        autoInspectADBIfNeeded(force: true)
-        pollLiveBridge()
+        // Never race two independent "adb devices" launches on startup.
+        // Bridge connection begins once the initial authorized-device scan
+        // returns, after the Android monitor gets one bounded warm-up.
+        if autoADBDetectionEnabled {
+            autoInspectADBIfNeeded(force: true)
+        } else {
+            pollLiveBridge()
+        }
     }
 
     func setAutoADBDetectionEnabled(_ enabled: Bool) {
@@ -773,9 +987,45 @@ final class AssistantModel: ObservableObject {
                 self.adbWasAuthorized = connected
                 if reconnected && self.liveSyncEnabled && self.bridgeLink == nil {
                     self.resetBridgeRetry()
-                    self.liveBridgeStatus = "自动发现已授权手机，正在恢复来电状态……"
-                    self.pollLiveBridge()
+                    self.beginInitialPhoneMonitorWarmup()
+                } else if !connected && self.liveSyncEnabled {
+                    self.liveBridgeStatus = "正在等待手机 ADB 授权或恢复在线"
                 }
+            }
+        }
+    }
+
+    /// One startup wake-up is cheaper than opening the HTTP port, waiting for
+    /// a timeout, then rebuilding the forward. The helper refuses to override
+    /// the user's explicit "stop listening" preference on Android.
+    private func beginInitialPhoneMonitorWarmup() {
+        guard !initialPhoneMonitorWarmup, bridgeLink == nil,
+              liveSyncEnabled, !adbInstalling else { return }
+        initialPhoneMonitorWarmup = true
+        liveBridgeStatus = "检测到已授权手机，正在恢复电话监听服务……"
+        let adb = selectedADBPath
+        let generation = bridgeGeneration
+        Task.detached(priority: .utility) { [weak self] in
+            let code = ADBInspector.wakePhoneMonitorIfDesired(at: adb)
+            if code == "PHONE_MONITOR_WAKE_REQUESTED" {
+                // Android needs a brief moment to initialize its persistent
+                // snapshot and loopback listener before the first Mac poll.
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+            await MainActor.run {
+                guard let self else { return }
+                self.initialPhoneMonitorWarmup = false
+                guard generation == self.bridgeGeneration,
+                      self.liveSyncEnabled else { return }
+                self.nextPhoneMonitorWakeAt = Date().addingTimeInterval(20)
+                self.log(code == "PHONE_MONITOR_WAKE_REQUESTED" ? .info : .warn,
+                         .call, "手机电话监听启动预热",
+                         details: ["recovery": code])
+                self.liveBridgeStatus = code == "PHONE_MONITOR_USER_DISABLED"
+                    ? "手机端明确停止监听；请在 Companion 中手动开启"
+                    : "手机监听预热完成，正在自动同步状态……"
+                self.bridgeRetryAfter = .distantPast
+                self.pollLiveBridge()
             }
         }
     }
@@ -964,11 +1214,16 @@ final class AssistantModel: ObservableObject {
         bridgeConsecutiveFailures += 1
         let delay = Int(BridgeRetryPolicy.delay(after: bridgeConsecutiveFailures))
         bridgeRetryAfter = Date().addingTimeInterval(TimeInterval(delay))
-        liveBridgeStatus = "连接中断，将在约 \(delay) 秒后重试（可手动重新连接）"
+        let isStartup = Date() < startupBridgeGraceUntil &&
+            bridgeConsecutiveFailures <= 5
+        liveBridgeStatus = isStartup
+            ? "手机启动同步中 · 正在自动恢复电话监听（无需手动重连）"
+            : "连接中断，将在约 \(delay) 秒后自动重试"
         // One warning per outage, then sparse checkpoints. Avoid dozens of
         // redundant JSONL entries when the phone's ADB tunnel remains unreachable.
         if bridgeConsecutiveFailures == 1 || bridgeConsecutiveFailures % 8 == 0 {
-            log(.warn, .call, "ADB 电话状态桥接连接中断",
+            log(isStartup ? .info : .warn, .call,
+                isStartup ? "ADB 电话状态启动阶段正在重试" : "ADB 电话状态桥接连接中断",
                 details: ["errorDomain": domain, "errorCode": code,
                           "retrySeconds": "\(delay)", "failures": "\(bridgeConsecutiveFailures)"])
         }
@@ -1008,6 +1263,7 @@ final class AssistantModel: ObservableObject {
                           "transport": source])
         }
         resetBridgeRetry()
+        startupBridgeGraceUntil = .distantPast
         liveBridgeStatus = source == "ADB_FILE"
             ? "已连接 · ADB 私有状态快照（HTTP 备用）"
             : "已连接 · ADB HTTP 自动同步"
@@ -1025,7 +1281,11 @@ final class AssistantModel: ObservableObject {
                     self.applyBridgeSnapshot(snapshot, source: "ADB_FILE")
                     self.bridgeUsingFileFallback = true
                 } else {
-                    self.bridgeUsingFileFallback = false
+                    // Keep polling the private file during Android startup.
+                    // Alternating to HTTP after every stale snapshot added
+                    // another timeout and made the UI look disconnected.
+                    self.bridgeUsingFileFallback = true
+                    self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(12)
                     self.schedulePhoneMonitorWakeIfNeeded(reason: result.reason)
                     self.noteBridgeFailure(code: result.reason, domain: "SIMAI.ADBFile")
                     self.livePhoneState = "未连接"
@@ -1040,6 +1300,8 @@ final class AssistantModel: ObservableObject {
         // Resume state sync after the explicit audio preview ends.
         guard !liveVoiceStarting, !liveVoiceActive,
               liveSyncEnabled, !adbInstalling, !bridgeBusy,
+              !initialPhoneMonitorWarmup,
+              !(adbChecking && !adbWasAuthorized && bridgeLink == nil),
               Date() >= bridgeRetryAfter else { return }
         bridgeBusy = true
         if bridgeUsingFileFallback && Date() < nextHTTPRecoveryAttempt {
@@ -1253,6 +1515,13 @@ final class AssistantModel: ObservableObject {
                     self.aiReplyUplinkUnderflow = uplinkUnderflow
                     self.aiReplyPeakRMS = peakRMS
                 case .finished(let reason):
+                    if reason == "SESSION_LIMIT_180S" &&
+                       self.automaticAnswerAcknowledged &&
+                       self.livePhoneState == "OFFHOOK" {
+                        // The phone must not stay connected without its PCM
+                        // audio path when the Android helper reaches its cap.
+                        self.requestAutomaticHangup(reason: "PCM_SESSION_LIMIT")
+                    }
                     if self.autoCallAudioRequested {
                         self.autoCallStatus = "自动电话音频已停止：" + reason
                         self.autoCallAudioRequested = false
@@ -1528,8 +1797,16 @@ final class AssistantModel: ObservableObject {
     /// Explicit user-initiated real-call answer request only. The Android
     /// Companion re-checks its own call state, refuses all non-ringing calls,
     /// and requires separate ANSWER_PHONE_CALLS permission.
-    func answerIncomingPhoneCall() {
+    func answerIncomingPhoneCall(automatic: Bool = false) {
         guard !answerCallBusy && !adbInstalling else { return }
+        if automatic {
+            automaticAnswerRequested = true
+            automaticAnswerAcknowledged = false
+            automaticAnswerSession = ""
+            automaticOffhookSequence = 0
+            autoVoiceCaptureObserved = embeddedVoiceCaptureActive
+            autoHangupAttempted = false
+        }
         answerCallBusy = true
         answerCallStatus = "正在安全检查 ADB 和手机响铃状态……"
         let path = selectedADBPath
@@ -1539,6 +1816,7 @@ final class AssistantModel: ObservableObject {
                 ADBInspector.openBridge(at: path)
             }.value
             guard let link = attempt.link else {
+                if automatic { self.automaticAnswerRequested = false }
                 self.answerCallBusy = false
                 self.answerCallStatus = "无法连接手机电话监听服务；请确认 Companion 已启动且只有一台已授权手机"
                 self.log(.warn, .system, "手动接听未建立手机桥接",
@@ -1574,15 +1852,30 @@ final class AssistantModel: ObservableObject {
                 let parsed = (try? JSONSerialization.jsonObject(with: body))
                     as? [String: Any]
                 if http == 200 && parsed?["result"] as? String == "answer_requested" {
+                    if automatic && ["RINGING", "OFFHOOK"].contains(self.livePhoneState) {
+                        self.automaticAnswerAcknowledged = true
+                        self.automaticAnswerSession = self.bridgeCursor.session
+                        self.autoVoiceCaptureObserved =
+                            self.autoVoiceCaptureObserved || self.embeddedVoiceCaptureActive
+                        if self.livePhoneState == "OFFHOOK" {
+                            self.automaticOffhookSequence = self.bridgeCursor.lastSequence
+                            if !self.embeddedVoiceCaptureActive &&
+                               self.autoVoiceCaptureObserved &&
+                               self.embeddedVoiceBrowser.voiceSessionActuallyEnded {
+                                self.scheduleAutomaticHangupAfterVoiceEnds()
+                            }
+                        }
+                    }
                     self.answerCallStatus = "已向 Android 发出接听请求；请确认手机状态转为 OFFHOOK，再启动 GPT 音频"
                     self.log(.info, .system, "用户主动请求接听当前响铃电话",
                              details: ["result": "ANSWER_REQUESTED"])
                 } else {
+                    if automatic { self.automaticAnswerRequested = false }
                     switch http {
                     case 403:
                         self.answerCallStatus = "手机拒绝接听：请在 Companion 授权「接听电话」"
                     case 404:
-                        self.answerCallStatus = "手机 Companion 版本过旧，请更新至 V0.3.5"
+                        self.answerCallStatus = "手机 Companion 版本过旧，请更新至 V0.3.6"
                     case 409:
                         self.answerCallStatus = "手机当前并未响铃；不会接听其它通话"
                     case 503:
@@ -1595,6 +1888,7 @@ final class AssistantModel: ObservableObject {
                                        "http": "\(http)"])
                 }
             } catch {
+                if automatic { self.automaticAnswerRequested = false }
                 self.answerCallStatus = "手机接听接口超时或连接中断；请检查手机界面，避免重复接听"
                 self.log(.warn, .system, "人工接听请求网络失败",
                          details: ["reason": "MANUAL_ANSWER_TIMEOUT"])

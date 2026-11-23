@@ -170,6 +170,8 @@ final class PhoneEventBridge {
         String first = readHeaderLine(in, 256);
         if (first == null) return;
         String accessToken = "";
+        String expectedSession = "";
+        int expectedSequence = -1;
         int contentLength = -1;
         String contentType = "";
         boolean headersEnded = false;
@@ -183,6 +185,13 @@ final class PhoneEventBridge {
             String lower = line.toLowerCase(Locale.US);
             if (lower.startsWith("x-simai-token:"))
                 accessToken = line.substring("x-simai-token:".length()).trim();
+            else if (lower.startsWith("x-simai-expected-session:"))
+                expectedSession = line.substring("x-simai-expected-session:".length()).trim();
+            else if (lower.startsWith("x-simai-expected-sequence:")) {
+                try { expectedSequence = Integer.parseInt(
+                        line.substring("x-simai-expected-sequence:".length()).trim()); }
+                catch (NumberFormatException invalid) { return; }
+            }
             else if (lower.startsWith("content-length:")) {
                 try { contentLength = Integer.parseInt(line.substring(15).trim()); }
                 catch (NumberFormatException invalid) { return; }
@@ -228,6 +237,53 @@ final class PhoneEventBridge {
                 reply(client, 403, "{\"error\":\"answer_permission_denied\"}");
             } catch (Exception unavailable) {
                 reply(client, 503, "{\"error\":\"answer_unavailable\"}");
+            }
+            return;
+        }
+
+        if (first.startsWith("POST /call/hangup HTTP/1.")) {
+            // Only a previously accepted, tracked call can be terminated.
+            // The Mac must supply the current Android bridge session and
+            // exact OFFHOOK sequence from its authenticated status snapshot.
+            // This prevents a delayed Voice-ended request from hanging up
+            // a newer/unrelated call after a bridge or phone-state change.
+            if (contentLength > 0 || expectedSequence <= 0 ||
+                    expectedSession.isEmpty()) {
+                reply(client, 400, "{\"error\":\"missing_call_guard\"}");
+                return;
+            }
+            if (context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                reply(client, 403, "{\"error\":\"answer_permission_required\"}");
+                return;
+            }
+            try {
+                TelephonyManager phone = (TelephonyManager)
+                        context.getSystemService(Context.TELEPHONY_SERVICE);
+                TelecomManager telecom = (TelecomManager)
+                        context.getSystemService(Context.TELECOM_SERVICE);
+                synchronized (this) {
+                    if (!active || !session.equals(expectedSession) ||
+                            sequence != expectedSequence || !"OFFHOOK".equals(lastState) ||
+                            phone == null || telecom == null ||
+                            phone.getCallState() != TelephonyManager.CALL_STATE_OFFHOOK) {
+                        reply(client, 409, "{\"error\":\"call_changed_or_not_active\"}");
+                        return;
+                    }
+                    // Android 13 exposes this permission-gated legacy API.
+                    // OEM restrictions and emergency call protection still apply.
+                    @SuppressWarnings("deprecation")
+                    boolean requested = telecom.endCall();
+                    if (requested) {
+                        reply(client, 200, "{\"ok\":true,\"result\":\"hangup_requested\"}");
+                    } else {
+                        reply(client, 503, "{\"error\":\"hangup_unavailable\"}");
+                    }
+                }
+            } catch (SecurityException permission) {
+                reply(client, 403, "{\"error\":\"hangup_permission_denied\"}");
+            } catch (Exception unavailable) {
+                reply(client, 503, "{\"error\":\"hangup_unavailable\"}");
             }
             return;
         }
