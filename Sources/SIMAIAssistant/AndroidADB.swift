@@ -147,6 +147,41 @@ enum ADBInspector {
         return .init(adb: adb, scrcpy: scrcpy, serial: ready[0].serial, code: "SCREEN_READY")
     }
 
+    /// Open only the OS app details screen; no permission grants or security
+    /// setting changes are issued by ADB. Any approval is a user tap.
+    static func openCompanionSettings(at selected: String?) -> ADBInstallOutcome {
+        guard let adb = executable(at: selected) else {
+            return .init(succeeded: false, status: "未找到 adb")
+        }
+        let devices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 12) {
+        case .completed(0, let output): devices = parseDevices(output)
+        case .timedOut:
+            return .init(succeeded: false, status: "ADB 查询手机超时")
+        default:
+            return .init(succeeded: false, status: "ADB 设备查询失败")
+        }
+        let ready = devices.filter { $0.state == "device" }
+        guard ready.count == 1 else {
+            return .init(succeeded: false,
+                         status: "请仅连接一台已授权的 Android 手机，再打开权限设置")
+        }
+        switch run(adb, args: [
+            "-s", ready[0].serial, "shell", "am", "start",
+            "-a", "android.settings.APPLICATION_DETAILS_SETTINGS",
+            "-d", "package:com.popowk.simai.companion"
+        ], timeout: 12) {
+        case .completed(0, _):
+            return .init(succeeded: true,
+                         status: "已打开 Android 应用详情页，可在手机镜像窗口进入权限设置并手动确认")
+        case .timedOut:
+            return .init(succeeded: false, status: "打开应用设置超时，请检查手机锁屏与授权")
+        default:
+            return .init(succeeded: false,
+                         status: "无法打开 Android 应用详情页；确认 Companion 已安装")
+        }
+    }
+
     static func discoveryLabel(at selected: String?) -> String {
         guard let adb = executable(at: selected) else { return "未发现可执行的 ADB" }
         let path = adb.path
