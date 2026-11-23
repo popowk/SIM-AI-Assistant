@@ -1139,6 +1139,23 @@ final class AssistantModel: ObservableObject {
         }
     }
 
+    func openPhonePermissionSettings() {
+        // Display scrcpy for the user's own approval. Never approve system
+        // dialogs by scripted taps or platform privilege escalation.
+        openPhoneScreenControl()
+        let path = selectedADBPath
+        Task.detached(priority: .utility) { [weak self] in
+            let outcome = ADBInspector.openCompanionSettings(at: path)
+            await MainActor.run {
+                guard let self else { return }
+                self.screenControlStatus = outcome.status
+                self.log(outcome.succeeded ? .info : .warn, .system,
+                         "用户要求打开手机应用系统权限页面",
+                         details: ["success": "\(outcome.succeeded)"])
+            }
+        }
+    }
+
     func closePhoneScreenControl() {
         let process = screenControlProcess
         screenControlProcess = nil
