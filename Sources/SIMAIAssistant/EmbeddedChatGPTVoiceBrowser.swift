@@ -719,6 +719,22 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         }
     }
 
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        // Helps distinguish an actual ChatGPT navigation from a programmatic
+        // release/timeout. Do not log URLs, cookies, or page content.
+        guard loaded else { return }
+        onDiagnostic?("VOICE_WEBVIEW_NAVIGATION_STARTED")
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        // WebKit can crash/restart separately from the SIM AI process.
+        // Never silently navigate away during an active cellular call.
+        updateIsolatedOutputReady(false)
+        updateIsolatedMicrophoneReady(false)
+        status = "ChatGPT 网页进程已停止；请重新加载，程序不会在通话中擅自清空页面"
+        onDiagnostic?("VOICE_WEB_CONTENT_PROCESS_TERMINATED")
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard loaded else { return }
         updateIsolatedOutputReady(false)
