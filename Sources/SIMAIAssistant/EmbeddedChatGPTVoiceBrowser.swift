@@ -967,6 +967,8 @@ struct EmbeddedChatGPTVoiceWindow: View {
                     .font(.caption.weight(.medium))
                 Text(browser.isolatedMicrophoneStatus)
                     .font(.caption).foregroundStyle(.secondary)
+                Text(browser.microphoneSignalStatus)
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Label(browser.isolatedOutputReady ? "独立音频路由已就绪" : "独立音频路由待验证",
                           systemImage: browser.isolatedOutputReady
@@ -992,11 +994,9 @@ struct EmbeddedChatGPTVoiceWindow: View {
                 .foregroundStyle(.secondary)
             EmbeddedChatGPTWebView(controller: browser)
                 .onAppear { browser.loadIfNeeded() }
-                .onDisappear {
-                    if model.livePhoneState == "IDLE" {
-                        browser.releaseForIdle()
-                    }
-                }
+                // Browser teardown belongs to the owner model only AFTER
+                // its window has been hidden. SwiftUI disappearance alone
+                // must not blank a page during unrelated view transitions.
                 .frame(minHeight: 500)
         }
         .padding(12)
