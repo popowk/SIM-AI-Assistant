@@ -1,5 +1,13 @@
 # 变更记录
 
+## 0.4.25（接听权限与独立回执诊断）— 2026-11-24
+
+- 根据 00:28 诊断包，Mac v0.4.24 Build41 已运行；在 RINGING 后等 6 秒及 14 秒才请求接听，Mac 独立通道两次均返回 ANSWER_FALLBACK_NO_ACK，HTTP 返回 409 或超时，均无 OFFHOOK，故不能把故障认定为 APK 接听权限问题。
+- Android Companion v0.3.10（versionCode 15）在私有状态快照增加匿名字段：ANSWER_PHONE_CALLS 是否授权、独立接听轮询线程是否活跃、当前已处理的来电序列和固定处理结果码。每次处理接听请求立即更新原 AtomicFile 状态，除单独回执文件外提供第二确认通道。
+- Mac 在 ADB 状态快照直接判断权限缺失与接听线程暂停；单独回执未读到时，允许只从同一服务会话及同一响铃序列的原状态快照确认接听结果，避免 Android 已处理而 Mac 错判 NO_ACK；仍然拒绝过期/其他来电。
+- 增加旧版字段兼容性单元测试。Mac v0.4.25 Build42；需要升级手机 Companion 才能得到新增匿名诊断字段，未进行 vivo 真实电话验收。
+
+
 ## 0.4.24（HTTP 失效时独立 Android 私有接听）— 2026-11-24
 
 - 根据 00:06 诊断：RINGING 已被 ADB 私有快照识别，Voice 就绪后 HTTP 接听超时；原备用方式仍使用同一 HTTP 端口和 toybox nc，最终无 OFFHOOK。
