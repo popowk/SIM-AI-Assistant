@@ -209,6 +209,8 @@ struct DashboardView: View {
                 .disabled(model.screenControlStarting || model.screenControlRunning)
                 Button("关闭屏幕控制") { model.closePhoneScreenControl() }
                     .disabled(!model.screenControlRunning)
+                Button("打开手机权限设置") { model.openPhonePermissionSettings() }
+                    .disabled(model.screenControlStarting)
                 if model.screenControlStarting { ProgressView().controlSize(.small) }
             }
             .buttonStyle(.bordered)
