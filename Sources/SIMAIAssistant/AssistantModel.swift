@@ -126,6 +126,7 @@ final class AssistantModel: ObservableObject {
     private var nextHTTPRecoveryAttempt = Date.distantPast
     private var bridgeRetryAfter = Date.distantPast
     private var bridgeConsecutiveFailures = 0
+    private var nextPhoneMonitorWakeAt = Date.distantPast
     private(set) var sessionID = UUID().uuidString
     private(set) var lastError: DiagnosticEvent?
 
@@ -929,6 +930,34 @@ final class AssistantModel: ObservableObject {
         bridgeConsecutiveFailures = 0
     }
 
+    /// When the Android foreground monitor is stale, request a bounded,
+    /// permission-preserving wake instead of waiting for a user to reopen it.
+    /// The Companion's explicit "stop listening" preference is respected.
+    private func schedulePhoneMonitorWakeIfNeeded(reason: String) {
+        guard ["SNAPSHOT_INVALID_OR_STALE", "SNAPSHOT_UNAVAILABLE"].contains(reason),
+              liveSyncEnabled, !adbInstalling,
+              Date() >= nextPhoneMonitorWakeAt else { return }
+        nextPhoneMonitorWakeAt = Date().addingTimeInterval(45)
+        let adb = selectedADBPath
+        Task.detached(priority: .utility) { [weak self] in
+            let code = ADBInspector.wakePhoneMonitorIfDesired(at: adb)
+            await MainActor.run {
+                guard let self, self.liveSyncEnabled else { return }
+                self.log(code == "PHONE_MONITOR_WAKE_REQUESTED" ? .info : .warn,
+                         .call, "已检查 Android 电话监听服务自动恢复",
+                         details: ["recovery": code])
+                if code == "PHONE_MONITOR_WAKE_REQUESTED" {
+                    // ADB remains authorized. Prefer fresh file snapshots
+                    // while the phone's HTTP listener is starting.
+                    self.resetBridgeRetry()
+                    self.bridgeUsingFileFallback = true
+                    self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(12)
+                    self.pollLiveBridge()
+                }
+            }
+        }
+    }
+
     private func noteBridgeFailure(code: String, domain: String) {
         bridgeConsecutiveFailures += 1
         let delay = Int(BridgeRetryPolicy.delay(after: bridgeConsecutiveFailures))
@@ -995,6 +1024,7 @@ final class AssistantModel: ObservableObject {
                     self.bridgeUsingFileFallback = true
                 } else {
                     self.bridgeUsingFileFallback = false
+                    self.schedulePhoneMonitorWakeIfNeeded(reason: result.reason)
                     self.noteBridgeFailure(code: result.reason, domain: "SIMAI.ADBFile")
                     self.livePhoneState = "未连接"
                 }
@@ -1016,16 +1046,15 @@ final class AssistantModel: ObservableObject {
         }
         if let link = bridgeLink {
             let generation = bridgeGeneration
-            // Android retains at most 64 events. Fetch the bounded history so a freshly
-            // restarted Android session is not missed when its sequence starts from 1.
-            // PhoneBridgeCursor filters all duplicate events on the Mac.
-            let since = 0
+            // The cursor establishes an initial baseline so history from a
+            // recovering phone is never misreported as live transitions.
+            let since = bridgeCursor.lastSequence
             Task { [weak self] in
                 guard let self else { return }
                 var request = URLRequest(url: URL(
                     string: "http://127.0.0.1:\(link.localPort)/events?since=\(since)")!)
                 request.httpMethod = "GET"
-                request.timeoutInterval = 6.0
+                request.timeoutInterval = 3.0
                 request.setValue(link.token, forHTTPHeaderField: "X-SIMAI-Token")
                 request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
                 do {
@@ -1070,10 +1099,18 @@ final class AssistantModel: ObservableObject {
                         self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(20)
                         self.applyBridgeSnapshot(snapshot, source: "ADB_FILE")
                     } else {
+                        self.schedulePhoneMonitorWakeIfNeeded(reason: fallback.reason)
                         self.noteBridgeFailure(code: fallback.reason, domain: "SIMAI.ADBFile")
                         self.livePhoneState = "未连接"
                         if self.bridgeConsecutiveFailures == 1 { self.inspectBridgeHealth() }
-                        if self.bridgeConsecutiveFailures >= 2 { self.closeLiveBridge() }
+                        // Preserve a valid ADB forward if only the Android
+                        // listener or its snapshot is stale. Reopening the
+                        // tunnel repeatedly delayed recovery in real logs.
+                        if self.bridgeConsecutiveFailures >= 3 &&
+                           ["ADB_NOT_READY", "ADB_ENUMERATION_FAILED",
+                            "ADB_ENUMERATION_TIMEOUT"].contains(fallback.reason) {
+                            self.closeLiveBridge()
+                        }
                     }
                 }
                 self.bridgeBusy = false
@@ -1100,7 +1137,11 @@ final class AssistantModel: ObservableObject {
                     self.adbStatus = "ADB 已自动识别 1 台已授权手机"
                     self.adbDiscoveryDescription = ADBInspector.discoveryLabel(at: path)
                     self.adbWasAuthorized = true
-                    // Keep the previous Android session and sequence across ADB port changes.
+                    // On first connect, read the private snapshot immediately.
+                    // Waiting for an HTTP request to time out made startup
+                    // take over a minute when Android's listener was asleep.
+                    self.bridgeUsingFileFallback = true
+                    self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(10)
                     self.liveBridgeStatus = result.message
                     if self.bridgeConsecutiveFailures == 0 {
                         self.log(.info, .call, "ADB 端口转发连接建立（未读取设备序列号）")
