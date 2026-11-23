@@ -886,6 +886,9 @@ final class AssistantModel: ObservableObject {
                     self.aiReplyReturnStatus = "电话音频已结束，GPT 回复路由已释放"
                     self.liveVoiceStatus = "实时语音已停止（\(reason)）"
                     self.voiceStream = nil
+                    // The Android helper also enforces a 180s session timeout,
+                    // so restore global sound output even without an IDLE event.
+                    self.restoreAutomaticGPTOutput()
                     // Resume anonymous call-state synchronization without
                     // rebuilding the ADB connection unnecessarily.
                     self.pollLiveBridge()
