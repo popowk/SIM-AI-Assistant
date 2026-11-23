@@ -24,9 +24,11 @@ import android.widget.TextView;
 public final class MainActivity extends Activity {
     private static final int PHONE_PERMISSION_REQUEST = 1021;
     private static final int SMS_PERMISSION_REQUEST = 1022;
-    private static final int ANSWER_PERMISSION_REQUEST = 1023;
+    private static final int ANSWER_PERMISSION_REQUEST = 1023; // legacy callback
     private static final String ONBOARDING_PREFS = "simai_initial_setup";
     private static final String KEY_WIZARD_SHOWN = "permissions_wizard_shown";
+    private static final String KEY_PHONE_SETUP_VERSION = "phone_setup_requested_version";
+    private static final int CURRENT_SETUP_VERSION = 12;
     private static final String KEY_MONITOR_DESIRED = "phone_state_monitor_desired";
     private boolean wizardInProgress = false;
     private TextView state;
@@ -51,43 +53,26 @@ public final class MainActivity extends Activity {
         scroller.addView(column);
 
         TextView title = new TextView(this);
-        title.setText("SIM AI Companion · V0.3.6");
+        title.setText("SIM AI Companion · V0.3.7");
         title.setTextSize(22f);
         column.addView(title);
         TextView description = new TextView(this);
-        description.setText("\nAndroid 电话状态 + 飞书短信通知 + Mac 接听／结束自动电话（可选授权）。\n默认不自动接听；保留 vivo 原来的拨号应用与蓝牙功能。\n");
+        description.setText("\n一键配置电话状态、Mac 接听及挂断权限。仅在 Mac 明确启用自动值守且 Voice 已就绪时允许请求接听。\n短信转发权限独立设置；保留 vivo 原来的拨号应用与蓝牙功能。\n");
         column.addView(description);
 
         permission = new TextView(this);
         column.addView(permission);
         Button grant = new Button(this);
-        grant.setText("授权电话状态读取");
-        grant.setOnClickListener(v -> requestPhonePermissionAndAutoStart());
+        grant.setText("一键开启电话助手（电话状态＋Mac 接听／结束）");
+        grant.setOnClickListener(v -> {
+            setMonitorDesired(true);
+            requestPhonePermissionAndAutoStart();
+        });
         column.addView(grant);
-
-        Button answerGrant = new Button(this);
-        answerGrant.setText("授权 Mac 控制接听与结束电话（可选）");
-        answerGrant.setOnClickListener(v ->
-                new android.app.AlertDialog.Builder(this)
-                        .setTitle("允许 Mac 管理接听及结束通话？")
-                        .setMessage("授权后，Mac 端可以在 Voice 已就绪时请求自动接听；对于本应用自动接听且会话校验一致的电话，Voice 结束后可以请求结束通话。不会改为默认拨号应用，不会记录来电号码。")
-                        .setNegativeButton("取消", null)
-                        .setPositiveButton("继续系统授权", (dialog, which) -> requestPermissions(
-                                new String[]{Manifest.permission.ANSWER_PHONE_CALLS},
-                                ANSWER_PERMISSION_REQUEST)).show());
-        column.addView(answerGrant);
 
         state = new TextView(this);
         state.setTextSize(18);
         column.addView(state);
-        Button start = new Button(this);
-        start.setText("开始监听电话状态");
-        start.setOnClickListener(v -> {
-            setMonitorDesired(true);
-            requestPhonePermissionAndAutoStart();
-        });
-        column.addView(start);
-
         Button stop = new Button(this);
         stop.setText("停止监听");
         stop.setOnClickListener(v -> {
@@ -264,52 +249,42 @@ public final class MainActivity extends Activity {
     }
 
     private void requestPhonePermissionAndAutoStart() {
-        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
-                == PackageManager.PERMISSION_GRANTED) {
+        // A single app action requests BOTH ordinary Android dangerous phone
+        // permissions. Android itself decides whether one or more OS dialogs
+        // are necessary; no second Companion button or in-app confirmation.
+        boolean canRead = checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
+                == PackageManager.PERMISSION_GRANTED;
+        boolean canAnswer = checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
+                == PackageManager.PERMISSION_GRANTED;
+        if (canRead && canAnswer) {
             startPhoneMonitorIfAllowed();
-            if (wizardInProgress) requestSMSPermissionIfNeeded();
-        } else {
-            requestPermissions(new String[]{Manifest.permission.READ_PHONE_STATE},
-                    PHONE_PERMISSION_REQUEST);
-        }
-    }
-
-    private void requestSMSPermissionIfNeeded() {
-        if (!wizardInProgress) return;
-        if (checkSelfPermission(Manifest.permission.RECEIVE_SMS)
-                == PackageManager.PERMISSION_GRANTED) {
-            wizardInProgress = false;
             refresh();
-            return;
+        } else {
+            java.util.ArrayList<String> missing = new java.util.ArrayList<>();
+            if (!canRead) missing.add(Manifest.permission.READ_PHONE_STATE);
+            if (!canAnswer) missing.add(Manifest.permission.ANSWER_PHONE_CALLS);
+            requestPermissions(missing.toArray(new String[0]), PHONE_PERMISSION_REQUEST);
         }
-        requestPermissions(new String[]{Manifest.permission.RECEIVE_SMS},
-                SMS_PERMISSION_REQUEST);
     }
 
     private void offerFirstRunSetup() {
         android.content.SharedPreferences setup =
                 getSharedPreferences(ONBOARDING_PREFS, MODE_PRIVATE);
-        if (setup.getBoolean(KEY_WIZARD_SHOWN, false)) return;
-        setup.edit().putBoolean(KEY_WIZARD_SHOWN, true).apply();
-        new android.app.AlertDialog.Builder(this)
-                .setTitle("安装完成 · 自动初始化")
-                .setMessage("应用将默认启用锁屏运行增强和自动短信通知。下一步会由 Android 依次请求「电话状态」与「接收短信」权限；授予电话权限后将自动启动电话状态监听。\n\n短信转发仅在收到系统 SMS 广播、已获得短信权限、且你配置了飞书机器人时发生；包含验证码的全文会发送给你指定的飞书群。部分定向验证码不会向本应用广播。是否现在开始系统授权？")
-                .setPositiveButton("开始授权并启动", (dialog, which) -> {
-                    wizardInProgress = true;
-                    requestPhonePermissionAndAutoStart();
-                })
-                .setNegativeButton("稍后手动授权", (dialog, which) -> {
-                    wizardInProgress = false;
-                    refresh();
-                })
-                .show();
+        if (!monitorDesired()) return; // explicit Android user stop wins
+        if (setup.getInt(KEY_PHONE_SETUP_VERSION, 0) >= CURRENT_SETUP_VERSION) return;
+        // Mark before requesting to avoid repeated prompting after denial.
+        // Installing / upgrading through the user's single Mac action
+        // launches this Activity; an Android OS permission dialog may appear.
+        setup.edit().putInt(KEY_PHONE_SETUP_VERSION, CURRENT_SETUP_VERSION)
+                .putBoolean(KEY_WIZARD_SHOWN, true).apply();
+        requestPhonePermissionAndAutoStart();
     }
 
     private void refresh() {
         permission.setText("电话状态权限：" + (checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
             == PackageManager.PERMISSION_GRANTED ? "已授权" : "未授权") +
-            " · Mac 人工接听：" + (checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
-            == PackageManager.PERMISSION_GRANTED ? "已授权" : "未授权（可选）"));
+            " · Mac 自动接听／挂断：" + (checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
+            == PackageManager.PERMISSION_GRANTED ? "已授权" : "未授权，可点一键开启"));
         state.setText("服务：" + (CallMonitorService.running ? "运行中" : "停止")
                 + "   状态：" + CallMonitorService.lastState);
         if (smsStatus != null) {
@@ -334,17 +309,18 @@ public final class MainActivity extends Activity {
             if (granted) {
                 startPhoneMonitorIfAllowed();
             } else {
-                Toast.makeText(this, "系统未授权电话状态；可在应用设置中手动开启",
+                Toast.makeText(this, "电话状态读取权限尚未授权；电话监听无法启动",
                         Toast.LENGTH_LONG).show();
             }
-            if (wizardInProgress) requestSMSPermissionIfNeeded();
-        } else if (requestCode == ANSWER_PERMISSION_REQUEST) {
-            Toast.makeText(this,
-                    checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
-                            == PackageManager.PERMISSION_GRANTED
-                    ? "电话接听／结束权限已授权；仅允许用户启用的自动值守或人工操作"
-                    : "人工接听权限未获授权；原有电话与短信功能不受影响",
+            boolean answerGranted = checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
+                    == PackageManager.PERMISSION_GRANTED;
+            Toast.makeText(this, answerGranted
+                    ? "电话助手权限已就绪；接听与挂断无需额外授权按钮"
+                    : "接听／挂断权限未获系统允许；可以在一键开启中重试",
                     Toast.LENGTH_LONG).show();
+        } else if (requestCode == ANSWER_PERMISSION_REQUEST) {
+            // Compatibility for a permission dialog opened before upgrading.
+            refresh();
         } else if (requestCode == SMS_PERMISSION_REQUEST) {
             wizardInProgress = false;
             boolean granted = checkSelfPermission(Manifest.permission.RECEIVE_SMS)
