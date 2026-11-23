@@ -501,6 +501,7 @@ final class PhoneEventBridge {
         body.put("answerPermissionGranted",
                 context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
                     == PackageManager.PERMISSION_GRANTED);
+        body.put("adbBroadcastAnswerAvailable", true);
         body.put("privateAnswerPollerActive",
                 active && lastPrivateAnswerPollAt > 0 &&
                 System.currentTimeMillis() - lastPrivateAnswerPollAt < 5000);
