@@ -6,7 +6,7 @@ import SIMAICore
 struct DashboardView: View {
     @EnvironmentObject private var model: AssistantModel
     @Environment(\.openWindow) private var openWindow
-    @Environment(\.dismissWindow) private var dismissWindow
+
     @State private var previewExport = false
     @State private var confirmDownlink = false
     @State private var confirmUplink = false
@@ -58,7 +58,8 @@ struct DashboardView: View {
         }
         .onReceive(NotificationCenter.default.publisher(
             for: Notification.Name("SIMAI_CLOSE_VOICE_AFTER_CALL"))) { _ in
-            dismissWindow(id: "embedded-voice")
+            NSApp.windows.filter { $0.title == "ChatGPT Voice · 内嵌浏览器" }
+                .forEach { $0.close() }
         }
         .confirmationDialog("测试通话下行音频？", isPresented: $confirmDownlink, titleVisibility: .visible) {
             Button("已取得同意，开始 2 秒下行电平测试") {
