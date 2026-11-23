@@ -1,4 +1,6 @@
-# SIM AI Assistant · V0.4.25（接听权限和私有回执诊断）
+# SIM AI Assistant · V0.4.26（修复同一通来电的手动接听 PCM 与广播兜底）
+
+> Mac v0.4.26 Build43 / Android Companion v0.3.11：前一版真实日志显示 APK 已授予 ANSWER_PHONE_CALLS，卡在 ADB 私有接听 NO_ACK、HTTP 超时，以及手动接通后 PCM 根本没有启动；此次让已识别的同一通手动接通电话自动连接 GPT Voice PCM，并增加仅系统/ADB shell 可发送、需会话/响铃序列匹配的 Android 广播接听兜底。安装后仍需真实来电测试验证；不能仅凭 WebKit 已选中 BlackHole 2ch 就判断 GPT 收到语音。
 
 > Mac v0.4.25 Build42 / Companion v0.3.10：手机端明确报告 ANSWER_PHONE_CALLS 权限、私有接听服务状态及处理结果。独立接听回执文件失联时，Mac 可从同一来电的 AtomicFile 状态快照确认结果。若诊断报权限缺失，需在 Android 系统授权；仅凭 NO_ACK 不等于权限被拒绝。
 
