@@ -185,7 +185,12 @@ struct DashboardView: View {
             statusPill(title: "电话状态", value: model.livePhoneState, symbol: "phone.arrow.down.left")
             statusPill(title: "手机连接", value: model.liveSyncEnabled ? "ADB 自动同步" : "已暂停",
                        symbol: "network")
-            statusPill(title: "Mac 音频", value: "\(model.audio.devices.count) 个设备",
+            statusPill(title: "GPT 虚拟设备",
+                       value: model.audio.devices.contains(where: {
+                           $0.displayName.caseInsensitiveCompare("BlackHole 2ch") == .orderedSame
+                       }) && model.audio.devices.contains(where: {
+                           $0.displayName.caseInsensitiveCompare("BlackHole 16ch") == .orderedSame
+                       }) ? "2ch + 16ch 已安装" : "需要安装虚拟声卡",
                        symbol: "waveform")
         }
     }
