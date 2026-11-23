@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Remove old assets only from the rolling dev-latest release.
-# Keep Mac v0.4.24 and Android v0.3.9 as rollback during real-call validation.
+# Keep Mac v0.4.25 and Android v0.3.10 as rollback during real-call validation.
 set -euo pipefail
 
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY missing}"
@@ -17,10 +17,10 @@ assets="$(gh api --paginate "repos/$repo/releases/$release_id/assets?per_page=10
   --jq '.[] | [.id, .name] | join(" ")')"
 names="$(printf '%s\n' "$assets" | cut -d ' ' -f2)"
 for required in \
-  SIM-AI-Assistant-v0.4.25-macos-arm64.zip \
-  SIM-AI-Assistant-v0.4.25-macos-arm64.zip.sha256 \
-  SIMAI-Companion-v0.3.10-debug.apk \
-  SIMAI-Companion-v0.3.10-debug.apk.sha256 \
+  SIM-AI-Assistant-v0.4.26-macos-arm64.zip \
+  SIM-AI-Assistant-v0.4.26-macos-arm64.zip.sha256 \
+  SIMAI-Companion-v0.3.11-debug.apk \
+  SIMAI-Companion-v0.3.11-debug.apk.sha256 \
   SIMAI-Audio-Probe.jar \
   SIMAI-Android-Signing.txt; do
   printf '%s\n' "$names" | grep -Fxq "$required" || {
@@ -34,6 +34,10 @@ kept=0
 while read -r asset_id asset_name; do
   [[ -n "$asset_id" && -n "$asset_name" ]] || continue
   case "$asset_name" in
+    SIM-AI-Assistant-v0.4.26-macos-arm64.zip|\
+    SIM-AI-Assistant-v0.4.26-macos-arm64.zip.sha256|\
+    SIMAI-Companion-v0.3.11-debug.apk|\
+    SIMAI-Companion-v0.3.11-debug.apk.sha256|\
     SIM-AI-Assistant-v0.4.25-macos-arm64.zip|\
     SIM-AI-Assistant-v0.4.25-macos-arm64.zip.sha256|\
     SIM-AI-Assistant-v0.4.23-macos-arm64.zip|\
