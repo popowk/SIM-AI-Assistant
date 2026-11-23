@@ -469,6 +469,10 @@ final class PhoneAudioStream {
     private var chatGPTVirtualMic: LiveMacSpeaker?
     private var aiReplyCapture: LiveAIReplyCapture?
     private var aiReplyToPhone = false
+    // The phone downlink and GPT return were both played through the Mac's
+    // physical speaker. During AI mode only the GPT return is monitored by
+    // default; the caller still reaches BlackHole 2ch and GPT unchanged.
+    private var callerMonitorEnabled = true
     private let physicalMonitorOutput: AudioDeviceID?
     private var setup: ADBAudioStreamSetup?
     private var active = false
@@ -485,6 +489,12 @@ final class PhoneAudioStream {
     var isActive: Bool {
         gate.lock(); defer { gate.unlock() }
         return active && !closed
+    }
+
+    func setCallerMonitorEnabled(_ enabled: Bool) {
+        gate.lock()
+        callerMonitorEnabled = enabled
+        gate.unlock()
     }
 
     func start(adb: String?, jar: URL) {
@@ -838,10 +848,11 @@ final class PhoneAudioStream {
                 power += normalized * normalized
             }
             downlinkPeakRMS = max(downlinkPeakRMS, sqrt(power / 320.0))
-            speaker.feed(frame)
             gate.lock()
+            let callerMonitor = callerMonitorEnabled
             let virtualMic = chatGPTVirtualMic
             gate.unlock()
+            if callerMonitor { speaker.feed(frame) }
             virtualMic?.feed(frame)
             received += 1
             if received % 50 == 0 {
