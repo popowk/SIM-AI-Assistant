@@ -37,6 +37,15 @@ struct ADBAudioStreamResult {
 
 /// Only fixed status categories; credentials, phone serial, and request bytes
 /// must never appear in diagnostics or user-visible status text.
+/// ADB scrcpy preparation never exports a device identifier to diagnostics.
+/// The identifier is only passed in memory to the local scrcpy child process.
+struct ADBScreenControlPreparation {
+    let adb: URL?
+    let scrcpy: URL?
+    let serial: String?
+    let code: String
+}
+
 struct ADBFeishuConfigResult {
     let succeeded: Bool
     let code: String
@@ -97,6 +106,45 @@ enum ADBInspector {
             .split(separator: ":").map { String($0) + "/adb" }
         return paths.first(where: { manager.isExecutableFile(atPath: $0) })
             .map(URL.init(fileURLWithPath:))
+    }
+
+    /// Find a local scrcpy executable. Nothing is downloaded automatically;
+    /// users install the official tool themselves through Homebrew.
+    static func scrcpyExecutable() -> URL? {
+        let manager = FileManager.default
+        let candidates = [
+            "/opt/homebrew/bin/scrcpy", "/usr/local/bin/scrcpy",
+            "/opt/local/bin/scrcpy"
+        ] + (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":").map { String($0) + "/scrcpy" }
+        return candidates.first(where: { manager.isExecutableFile(atPath: $0) })
+            .map { URL(fileURLWithPath: $0) }
+    }
+
+    /// The screen is intentionally NOT opened for unauthorized or ambiguous
+    /// devices. scrcpy never grants SMS/phone privileges itself; the user
+    /// must operate any system permission dialogs with their own clicks.
+    static func prepareScreenControl(at selected: String?) -> ADBScreenControlPreparation {
+        func fail(_ code: String) -> ADBScreenControlPreparation {
+            .init(adb: nil, scrcpy: nil, serial: nil, code: code)
+        }
+        guard let adb = executable(at: selected) else { return fail("SCREEN_ADB_MISSING") }
+        guard let scrcpy = scrcpyExecutable() else { return fail("SCREEN_SCRCPY_MISSING") }
+        let devices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 12) {
+        case .completed(0, let output): devices = parseDevices(output)
+        case .timedOut: return fail("SCREEN_ADB_TIMEOUT")
+        default: return fail("SCREEN_ADB_QUERY_FAILED")
+        }
+        let ready = devices.filter { $0.state == "device" }
+        if ready.count != 1 {
+            if ready.count > 1 { return fail("SCREEN_MULTIPLE_DEVICES") }
+            if devices.contains(where: { $0.state == "unauthorized" }) {
+                return fail("SCREEN_ADB_UNAUTHORIZED")
+            }
+            return fail("SCREEN_DEVICE_NOT_READY")
+        }
+        return .init(adb: adb, scrcpy: scrcpy, serial: ready[0].serial, code: "SCREEN_READY")
     }
 
     static func discoveryLabel(at selected: String?) -> String {
