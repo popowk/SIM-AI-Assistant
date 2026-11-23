@@ -64,6 +64,7 @@ final class AssistantModel: ObservableObject {
     @Published var aiReplyUplinkUnderflow = 0
     @Published var aiReplyPeakRMS = 0.0
     @Published var liveVoiceRxFrames = 0
+    private var liveDownlinkPeakRMS = 0.0
     @Published var liveVoiceTxFrames = 0
     @Published var liveVoiceDropFrames = 0
     @Published var liveVoiceMicUnderflows = 0
@@ -921,6 +922,7 @@ final class AssistantModel: ObservableObject {
         aiReplyUplinkUnderflow = 0
         aiReplyPeakRMS = 0
         liveVoiceRxFrames = 0
+        liveDownlinkPeakRMS = 0
         liveVoiceTxFrames = 0
         liveVoiceDropFrames = 0
         liveVoiceMicUnderflows = 0
@@ -965,6 +967,8 @@ final class AssistantModel: ObservableObject {
                     self.liveVoiceUplinkLateFrames = txLate
                     self.liveVoiceMicBufferedMs = micBufferedMs
                     self.chatGPTVoiceRouteDropped = voiceRouteDropped
+                case .downlinkSignal(let peakRMS):
+                    self.liveDownlinkPeakRMS = peakRMS
                 case .aiReturnMetrics(let captured, let monitorDropped, let uplinkUnderflow, let peakRMS):
                     self.aiReplyReceivedFrames = captured
                     self.aiReplyMonitorDropped = monitorDropped
@@ -991,9 +995,18 @@ final class AssistantModel: ObservableObject {
                     // Resume anonymous call-state synchronization without
                     // rebuilding the ADB connection unnecessarily.
                     self.pollLiveBridge()
+                    if self.liveVoiceRxFrames > 100 && self.liveDownlinkPeakRMS < 0.001 {
+                        self.log(.warn, .audio, "电话 PCM 已接收但未检测到明显的人声电平",
+                                 details: ["reason": "PHONE_DOWNLINK_POSSIBLY_SILENT"])
+                    }
+                    if self.aiReplyReceivedFrames > 100 && self.aiReplyPeakRMS < 0.001 {
+                        self.log(.warn, .audio, "GPT 回复采集帧存在但未检测到明显输出声音",
+                                 details: ["reason": "GPT_OUTPUT_SILENT_OR_NOT_ROUTED"])
+                    }
                     self.log(reason == "USER_STOPPED" ? .info : .warn, .audio,
                         "实时电话音频会话结束", details: [
                             "reason": reason, "rxFrames": "\(self.liveVoiceRxFrames)",
+                            "phoneDownlinkPeakRMS": String(format: "%.5f", self.liveDownlinkPeakRMS),
                             "txFrames": "\(self.liveVoiceTxFrames)",
                             "dropped": "\(self.liveVoiceDropFrames)",
                             "micUnderflows": "\(self.liveVoiceMicUnderflows)",
