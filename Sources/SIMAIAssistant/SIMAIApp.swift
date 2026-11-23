@@ -50,7 +50,7 @@ private struct MenuBarCommands: View {
             model.restoreAutomaticGPTOutput(forceInput: true, userRequested: true)
         }
         Divider()
-        Text("v0.4.26 · 修复手动接听 PCM")
+        Text("v0.4.27 · 恢复成功接听链路")
         Button("退出 SIM AI Assistant") {
             model.shutdownForAppExit()
             NSApp.terminate(nil)
