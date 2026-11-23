@@ -4,6 +4,19 @@ import XCTest
 
 final class SIMAICoreTests: XCTestCase {
 
+    func testConfiguredChatGPTDestinationOnlyAllowsOfficialHTTPS() {
+        XCTAssertEqual(ChatGPTDestination.validated(" https://chatgpt.com/g/g-example/telephone ")?.absoluteString,
+                       "https://chatgpt.com/g/g-example/telephone")
+        XCTAssertEqual(ChatGPTDestination.validated("https://chatgpt.com/c/example")?.absoluteString,
+                       "https://chatgpt.com/c/example")
+        XCTAssertNil(ChatGPTDestination.validated("https://chatgpt.com.evil.example/g/anything"))
+        XCTAssertNil(ChatGPTDestination.validated("http://chatgpt.com/"))
+        XCTAssertNil(ChatGPTDestination.validated("https://user:pass@chatgpt.com/"))
+        XCTAssertNil(ChatGPTDestination.validated("https://chatgpt.com/g/x?access_token=private"))
+        XCTAssertNil(ChatGPTDestination.validated("https://chatgpt.com/#fragment"))
+        XCTAssertNil(ChatGPTDestination.validated("https://chatgpt.com:444/"))
+    }
+
     func testAutomaticCallsNeedVoiceReadinessAndOnlyAnswerOnce() {
         var machine = AutoCallStateMachine()
         XCTAssertEqual(machine.update(state: "RINGING", armed: false), .none)
