@@ -23,6 +23,7 @@ public struct PhoneBridgeSnapshot: Codable, Equatable {
     /// Only anonymous Android-side diagnostics; old APKs may omit these keys.
     public var answerPermissionGranted: Bool? = nil
     public var privateAnswerPollerActive: Bool? = nil
+    public var adbBroadcastAnswerAvailable: Bool? = nil
     public var privateAnswerSequence: Int? = nil
     public var privateAnswerResult: String? = nil
 
