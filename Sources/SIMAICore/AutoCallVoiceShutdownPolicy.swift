@@ -9,7 +9,11 @@ public enum AutoCallVoiceShutdownPolicy {
         automaticAudioSession && reason == "AUDIO_REMOTE_CLOSED"
     }
 
-    public static func closeOnPhoneIdle(autoAnswerAcknowledged: Bool) -> Bool {
-        autoAnswerAcknowledged
+    /// Any ring-triggered Voice page belongs to the current phone session,
+    /// even if the HTTP answer acknowledgement times out. A manual browser
+    /// page without a ringing owner must remain intact.
+    public static func closeOnPhoneIdle(autoAnswerAcknowledged: Bool,
+                                        voiceStartedForRinging: Bool = false) -> Bool {
+        autoAnswerAcknowledged || voiceStartedForRinging
     }
 }
