@@ -166,7 +166,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("自动接听 · 内嵌 GPT Voice · V0.4.20")
+                Text("自动接听 · 内嵌 GPT Voice · V0.4.21")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
