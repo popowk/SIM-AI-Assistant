@@ -51,11 +51,11 @@ public final class MainActivity extends Activity {
         scroller.addView(column);
 
         TextView title = new TextView(this);
-        title.setText("SIM AI Companion · V0.3.5");
+        title.setText("SIM AI Companion · V0.3.6");
         title.setTextSize(22f);
         column.addView(title);
         TextView description = new TextView(this);
-        description.setText("\nAndroid 电话状态 + 飞书短信通知 + Mac 人工接听（可选授权）。\n默认不自动接听；保留 vivo 原来的拨号应用与蓝牙功能。\n");
+        description.setText("\nAndroid 电话状态 + 飞书短信通知 + Mac 接听／结束自动电话（可选授权）。\n默认不自动接听；保留 vivo 原来的拨号应用与蓝牙功能。\n");
         column.addView(description);
 
         permission = new TextView(this);
@@ -66,11 +66,11 @@ public final class MainActivity extends Activity {
         column.addView(grant);
 
         Button answerGrant = new Button(this);
-        answerGrant.setText("授权 Mac 端人工接听电话（可选）");
+        answerGrant.setText("授权 Mac 控制接听与结束电话（可选）");
         answerGrant.setOnClickListener(v ->
                 new android.app.AlertDialog.Builder(this)
-                        .setTitle("允许 Mac 手动接听来电？")
-                        .setMessage("授权后，只有在 Mac 显式点击「人工接听当前来电」且电话确实处于响铃状态时，本应用才会向 Android 系统发出接听请求。不会自动接听、不会接管默认拨号应用，也不会把通话音频自动发送给 ChatGPT。")
+                        .setTitle("允许 Mac 管理接听及结束通话？")
+                        .setMessage("授权后，Mac 端可以在 Voice 已就绪时请求自动接听；对于本应用自动接听且会话校验一致的电话，Voice 结束后可以请求结束通话。不会改为默认拨号应用，不会记录来电号码。")
                         .setNegativeButton("取消", null)
                         .setPositiveButton("继续系统授权", (dialog, which) -> requestPermissions(
                                 new String[]{Manifest.permission.ANSWER_PHONE_CALLS},
@@ -342,7 +342,7 @@ public final class MainActivity extends Activity {
             Toast.makeText(this,
                     checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
                             == PackageManager.PERMISSION_GRANTED
-                    ? "人工接听已授权；仍需在 Mac 手动点击接听按钮"
+                    ? "电话接听／结束权限已授权；仅允许用户启用的自动值守或人工操作"
                     : "人工接听权限未获授权；原有电话与短信功能不受影响",
                     Toast.LENGTH_LONG).show();
         } else if (requestCode == SMS_PERMISSION_REQUEST) {
