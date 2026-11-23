@@ -52,6 +52,9 @@ final class PhoneEventBridge {
     private ServerSocket listener;
     private Thread worker;
     private ThreadPoolExecutor requests;
+    private final File privateAnswerRequest;
+    private final File privateAnswerResult;
+    private ScheduledExecutorService privateAnswerPoller;
 
     private static final class CallEvent {
         final int seq;
@@ -66,6 +69,8 @@ final class PhoneEventBridge {
         this.context = context.getApplicationContext();
         token = loadToken(context);
         snapshotFile = new AtomicFile(new File(context.getFilesDir(), "bridge-snapshot.json"));
+        privateAnswerRequest = new File(context.getFilesDir(), "bridge-answer-request");
+        privateAnswerResult = new File(context.getFilesDir(), "bridge-answer-result");
     }
 
     private static String loadToken(Context context) throws Exception {
@@ -122,6 +127,13 @@ final class PhoneEventBridge {
                 synchronized (PhoneEventBridge.this) { persistSnapshot(); }
             }
         }, 10, 10, TimeUnit.SECONDS);
+        privateAnswerPoller = Executors.newSingleThreadScheduledExecutor(job -> {
+            Thread thread = new Thread(job, "SIMAI-PrivateAnswer");
+            thread.setDaemon(true);
+            return thread;
+        });
+        privateAnswerPoller.scheduleWithFixedDelay(this::processPrivateAnswerRequest,
+                0, 250, TimeUnit.MILLISECONDS);
         worker = new Thread(this::serve, "SIMAI-CallEventBridge");
         worker.setDaemon(true);
         worker.start();
@@ -131,6 +143,7 @@ final class PhoneEventBridge {
     void stop() {
         active = false;
         if (heartbeat != null) heartbeat.shutdownNow();
+        if (privateAnswerPoller != null) privateAnswerPoller.shutdownNow();
         synchronized (this) { persistSnapshot(); }
         try { if (listener != null) listener.close(); } catch (Exception ignored) {}
         if (worker != null) worker.interrupt();
@@ -160,6 +173,65 @@ final class PhoneEventBridge {
                 if (active) Log.w("SIMAICompanion", "Bridge accept failed: "
                         + error.getClass().getSimpleName());
             }
+        }
+    }
+
+    /** One-shot answer path independent of Android's HTTP listener. */
+    private void processPrivateAnswerRequest() {
+        if (!active || !privateAnswerRequest.isFile()) return;
+        String request;
+        try (FileInputStream input = new FileInputStream(privateAnswerRequest)) {
+            if (privateAnswerRequest.length() > 128 ||
+                    System.currentTimeMillis() - privateAnswerRequest.lastModified() > 10000) {
+                privateAnswerRequest.delete();
+                return;
+            }
+            byte[] bytes = new byte[128];
+            int count = input.read(bytes);
+            if (count <= 0 || count == bytes.length) {
+                privateAnswerRequest.delete();
+                return;
+            }
+            request = new String(bytes, 0, count, StandardCharsets.US_ASCII).trim();
+        } catch (Exception unavailable) { return; }
+        if (!privateAnswerRequest.delete()) return;
+        String[] parts = request.split("\\|", -1);
+        if (parts.length != 2 || !parts[0].matches("[a-fA-F0-9-]{36}")) return;
+        int ringSequence;
+        try { ringSequence = Integer.parseInt(parts[1]); }
+        catch (NumberFormatException invalid) { return; }
+        String result = acceptGuardedPrivateAnswer(parts[0], ringSequence);
+        String acknowledgement = parts[0] + "|" + parts[1] + "|" + result + "\n";
+        File temp = new File(context.getFilesDir(), "bridge-answer-result.tmp");
+        try (FileOutputStream output = new FileOutputStream(temp, false)) {
+            output.write(acknowledgement.getBytes(StandardCharsets.US_ASCII));
+            output.flush();
+        } catch (Exception unavailable) { return; }
+        if (!temp.renameTo(privateAnswerResult))
+            Log.w("SIMAICompanion", "Private answer acknowledgement unavailable");
+    }
+
+    private synchronized String acceptGuardedPrivateAnswer(
+            String expectedSession, int ringSequence) {
+        if (!active || !session.equals(expectedSession) || ringSequence <= 0 ||
+                sequence != ringSequence || !"RINGING".equals(lastState))
+            return "RING_CHANGED";
+        if (context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
+                != PackageManager.PERMISSION_GRANTED) return "PERMISSION_REQUIRED";
+        try {
+            TelephonyManager phone = (TelephonyManager)
+                    context.getSystemService(Context.TELEPHONY_SERVICE);
+            TelecomManager telecom = (TelecomManager)
+                    context.getSystemService(Context.TELECOM_SERVICE);
+            if (phone == null || telecom == null ||
+                    phone.getCallState() != TelephonyManager.CALL_STATE_RINGING)
+                return "NOT_RINGING";
+            telecom.acceptRingingCall();
+            return "ANSWER_REQUESTED";
+        } catch (SecurityException permission) {
+            return "PERMISSION_REQUIRED";
+        } catch (Exception unavailable) {
+            return "ANSWER_UNAVAILABLE";
         }
     }
 
@@ -206,8 +278,7 @@ final class PhoneEventBridge {
         }
 
         if (first.startsWith("POST /call/answer HTTP/1.")) {
-            // Explicit Mac user action through the existing private ADB token.
-            // No auto-answer, incoming-number processing, or call recording.
+            // Authorized call action; no phone numbers or audio are processed.
             // Check the actual device call state just before the action; a
             // stale RINGING event must not answer a different call later.
             if (contentLength > 0) {
@@ -224,6 +295,12 @@ final class PhoneEventBridge {
                         context.getSystemService(Context.TELEPHONY_SERVICE);
                 TelecomManager telecom = (TelecomManager)
                         context.getSystemService(Context.TELECOM_SERVICE);
+                if ((!expectedSession.isEmpty() || expectedSequence > 0) &&
+                        (!session.equals(expectedSession) ||
+                         sequence != expectedSequence || !"RINGING".equals(lastState))) {
+                    reply(client, 409, "{\"error\":\"ring_changed\"}");
+                    return;
+                }
                 if (phone == null || telecom == null ||
                         phone.getCallState() != TelephonyManager.CALL_STATE_RINGING) {
                     reply(client, 409, "{\"error\":\"not_ringing\"}");
