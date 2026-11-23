@@ -25,6 +25,8 @@ final class AssistantModel: ObservableObject {
     @Published var liveSyncEnabled = UserDefaults.standard.object(forKey: "SIMAI_LIVE_SYNC") as? Bool ?? true
     @Published var liveBridgeStatus = "正在检查 ADB 连接"
     @Published var livePhoneState = "未连接"
+    @Published var answerCallBusy = false
+    @Published var answerCallStatus = "尚未请求接听；需手机授予「接听电话」权限"
     @Published var liveBridgeLastSync: Date?
     @Published var adbTransportHealth = "尚未检查"
     @Published var adbShellHealth = "尚未检查"
@@ -73,8 +75,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.7"
-    let buildNumber = "24"
+    let version = "0.4.8"
+    let buildNumber = "25"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
@@ -841,6 +843,83 @@ final class AssistantModel: ObservableObject {
         }
     }
 
+    /// Explicit user-initiated real-call answer request only. The Android
+    /// Companion re-checks its own call state, refuses all non-ringing calls,
+    /// and requires separate ANSWER_PHONE_CALLS permission.
+    func answerIncomingPhoneCall() {
+        guard !answerCallBusy && !adbInstalling else { return }
+        answerCallBusy = true
+        answerCallStatus = "正在安全检查 ADB 和手机响铃状态……"
+        let path = selectedADBPath
+        Task { [weak self] in
+            guard let self else { return }
+            let attempt = await Task.detached(priority: .userInitiated) {
+                ADBInspector.openBridge(at: path)
+            }.value
+            guard let link = attempt.link else {
+                self.answerCallBusy = false
+                self.answerCallStatus = "无法连接手机电话监听服务；请确认 Companion 已启动且只有一台已授权手机"
+                self.log(.warn, .system, "手动接听未建立手机桥接",
+                         details: ["reason": "MANUAL_ANSWER_BRIDGE_UNAVAILABLE"])
+                return
+            }
+            defer {
+                let disposable = link
+                Task.detached(priority: .utility) {
+                    ADBInspector.closeBridge(at: path, link: disposable)
+                }
+                self.answerCallBusy = false
+            }
+            guard let url = URL(string: "http://127.0.0.1:\(link.localPort)/call/answer") else {
+                self.answerCallStatus = "本地接听请求地址无效"
+                return
+            }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 6
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.setValue(link.token, forHTTPHeaderField: "X-SIMAI-Token")
+            request.setValue("0", forHTTPHeaderField: "Content-Length")
+            let config = URLSessionConfiguration.ephemeral
+            config.timeoutIntervalForRequest = 6
+            let session = URLSession(configuration: config)
+            defer { session.invalidateAndCancel() }
+            do {
+                let (body, response) = try await session.data(for: request)
+                let http = (response as? HTTPURLResponse)?.statusCode ?? 0
+                // Only these fixed status codes are interpreted. Never log
+                // raw server responses, phone identifiers, or bearer tokens.
+                let parsed = (try? JSONSerialization.jsonObject(with: body))
+                    as? [String: Any]
+                if http == 200 && parsed?["result"] as? String == "answer_requested" {
+                    self.answerCallStatus = "已向 Android 发出接听请求；请确认手机状态转为 OFFHOOK，再启动 GPT 音频"
+                    self.log(.info, .system, "用户主动请求接听当前响铃电话",
+                             details: ["result": "ANSWER_REQUESTED"])
+                } else {
+                    switch http {
+                    case 403:
+                        self.answerCallStatus = "手机拒绝接听：请在 Companion 授权「接听电话」"
+                    case 404:
+                        self.answerCallStatus = "手机 Companion 版本过旧，请更新至 V0.3.5"
+                    case 409:
+                        self.answerCallStatus = "手机当前并未响铃；不会接听其它通话"
+                    case 503:
+                        self.answerCallStatus = "手机系统暂不允许外部接听，请使用 scrcpy 手动点击接听"
+                    default:
+                        self.answerCallStatus = "接听请求未成功；请使用手机屏幕控制检查通话状态"
+                    }
+                    self.log(.warn, .system, "Android 拒绝接听请求",
+                             details: ["reason": "MANUAL_ANSWER_REJECTED",
+                                       "http": "\(http)"])
+                }
+            } catch {
+                self.answerCallStatus = "手机接听接口超时或连接中断；请检查手机界面，避免重复接听"
+                self.log(.warn, .system, "人工接听请求网络失败",
+                         details: ["reason": "MANUAL_ANSWER_TIMEOUT"])
+            }
+        }
+    }
+
     func runPhoneAudioProbe(_ action: AndroidAudioProbeAction) {
         guard !audioProbeBusy && !adbInstalling && !liveVoiceActive && !liveVoiceStarting else { return }
         // Mac call-state notifications are best-effort and may arrive late when
@@ -1181,7 +1260,7 @@ final class AssistantModel: ObservableObject {
         apkInstallStatus = "正在安装；如手机要求确认，请在 Mac 打开的手机屏幕窗口中手动操作……"
         let adb = selectedADBPath
         log(.info, .system, "用户确认开始安装或覆盖 Android 伴侣 APK",
-            details: ["version": "0.3.4"])
+            details: ["version": "0.3.5"])
         Task.detached(priority: .userInitiated) { [weak self] in
             let outcome = ADBInspector.install(at: adb, apk: resource)
             await MainActor.run {
