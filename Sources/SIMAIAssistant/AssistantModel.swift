@@ -93,8 +93,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.16"
-    let buildNumber = "33"
+    let version = "0.4.17"
+    let buildNumber = "34"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -1838,7 +1838,7 @@ final class AssistantModel: ObservableObject {
                     case 403:
                         self.answerCallStatus = "手机拒绝接听：请在 Companion 授权「接听电话」"
                     case 404:
-                        self.answerCallStatus = "手机 Companion 版本过旧，请更新至 V0.3.5"
+                        self.answerCallStatus = "手机 Companion 版本过旧，请更新至 V0.3.6"
                     case 409:
                         self.answerCallStatus = "手机当前并未响铃；不会接听其它通话"
                     case 503:
