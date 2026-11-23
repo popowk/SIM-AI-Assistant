@@ -86,7 +86,7 @@ final class AssistantModel: ObservableObject {
     let buildNumber = "27"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
-    private let audioInspector = AudioInspector()
+    private var audioInspector = AudioInspector()
     private let voiceOutputRouter = AutoVoiceOutputRouter()
     private let microphoneProbe = MicrophoneLevelProbe()
     private var voiceStream: PhoneAudioStream?
@@ -131,6 +131,12 @@ final class AssistantModel: ObservableObject {
         }
         log(.info, .system, "程序启动，诊断日志已初始化")
         let recoveredOutput = voiceOutputRouter.recoverPreviousSession()
+        if recoveredOutput == "ROUTE_RESTORED" {
+            // AudioInspector was initialized before recovery. Refresh its
+            // captured defaults so the older manual-recovery button cannot
+            // accidentally restore a stale BlackHole default on this launch.
+            audioInspector = AudioInspector()
+        }
         if recoveredOutput != "ROUTE_NOT_OWNED" {
             automaticGPTOutputStatus = recoveredOutput == "ROUTE_RESTORED"
                 ? "已恢复上一次异常退出前的 Mac 声音输出"
