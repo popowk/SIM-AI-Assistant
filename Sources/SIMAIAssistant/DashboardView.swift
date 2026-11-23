@@ -22,21 +22,29 @@ struct DashboardView: View {
     @State private var showFeishuWebhook = false
     @State private var requestedBlackHoleChannels = 16
     @State private var confirmBlackHoleDownload = false
+    @State private var showAdvancedTools = false
+    @State private var showFeishuSettings = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
                 statusBar
-                adbPanel
                 phoneAnswerPanel
-                feishuPanel
-                phoneAudioPanel
-                liveVoicePanel
-                chatGPTVoicePanel
-                aiReplyPanel
-                audioPanel
-                diagnosticPanel
+                quickSetupPanel
+                DisclosureGroup("飞书短信配置", isExpanded: $showFeishuSettings) {
+                    feishuPanel
+                        .padding(.top, 8)
+                }
+                .font(.subheadline)
+                DisclosureGroup("高级维护与诊断日志", isExpanded: $showAdvancedTools) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        adbPanel
+                        diagnosticPanel
+                    }
+                    .padding(.top, 8)
+                }
+                .font(.subheadline)
                 footer
             }
             .padding(22)
@@ -164,7 +172,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("电话音频 + GPT Voice + 官方声卡一键安装 · V0.4.11")
+                Text("自动接听 · GPT 音频路由 · V0.4.12")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -324,85 +332,98 @@ struct DashboardView: View {
     }
 
     private var phoneAnswerPanel: some View {
-        panel("电话 AI 自动值守 · 接听与音频状态机", symbol: "phone.arrow.up.right") {
-            Toggle("自动接听与连接电话音频（默认开启）", isOn: Binding(
+        panel("AI 电话自动值守", symbol: "phone.arrow.up.right") {
+            Toggle("自动接听电话", isOn: Binding(
                 get: { model.autoCallEnabled },
                 set: { model.setAutoCallEnabled($0) }
             ))
-            Toggle("GPT 通话时自动切换 BlackHole 16ch，结束后恢复原输出（默认开启）",
-                   isOn: Binding(
-                       get: { model.automaticGPTOutputEnabled },
-                       set: { model.setAutomaticGPTOutputEnabled($0) }
-                   ))
-            Text(model.automaticGPTOutputStatus)
-                .font(.caption.weight(.medium))
+            Toggle("自动配置 GPT 虚拟麦克风及扬声器", isOn: Binding(
+                get: { model.automaticGPTOutputEnabled },
+                set: { model.setAutomaticGPTOutputEnabled($0) }
+            ))
             HStack {
-                Button("立即恢复原声音输出") { model.restoreAutomaticGPTOutput() }
-                    .buttonStyle(.bordered)
-                Button("刷新音频设备") { model.refresh() }
-                    .buttonStyle(.bordered)
-            }
-            Text("自动切换只改变 macOS 默认播放输出，不改变麦克风。通话期间系统输出到 BlackHole 16ch 的其它声音也可能被发送给电话对方，请关闭通知和无关程序音频。")
-                .font(.caption).foregroundStyle(.orange)
-            Text("安装并首次授权后，无需每次来电手动点击：监听到 RINGING 就自动请求接听，确认 OFFHOOK 才启动 PCM，结束后自动释放。为避免接起后无人回答，必须先准备好语音助手会话；仅有 BlackHole 不等于 GPT 已在线。")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Button(model.voiceSessionPrepared ? "已预备自动值守" : "确认官方 Voice 已启动，预备自动值守") {
+                Button(model.voiceSessionPrepared ? "Voice 会话已预备" : "确认 ChatGPT Voice 已启动") {
                     model.setVoiceSessionPrepared(true)
                 }
-                .disabled(!model.autoCallEnabled || model.voiceSessionPrepared)
+                .disabled(model.voiceSessionPrepared || !model.autoCallEnabled)
                 .buttonStyle(.borderedProminent)
-                Button("退出自动值守") { model.setVoiceSessionPrepared(false) }
-                    .disabled(!model.voiceSessionPrepared)
-                    .buttonStyle(.bordered)
-            }
-            Text(model.autoCallStatus).font(.caption.weight(.medium))
-            Text("ChatGPT Plus 官方 Voice 无法由第三方程序自动启动或验证会话；当前自动模式只能复用已启动的 Voice。若要求开机后完全无人干预，还需要另接可编程的语音模型服务或本地模型，不能以 Plus 订阅实现。")
-                .font(.caption).foregroundStyle(.orange)
-            Divider()
-            Text("人工控制与备用接听").font(.headline)
-            Text("仍保留原生 vivo 拨号和人工点击路径，供异常时使用。")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Text("手机状态：\(model.livePhoneState)")
-                    .font(.subheadline.weight(.medium))
-                Button("人工接听当前来电") { confirmManualAnswer = true }
-                    .disabled(model.answerCallBusy || model.adbInstalling)
-                    .buttonStyle(.borderedProminent)
-                Button("打开手机屏幕") { model.openPhoneScreenControl() }
-                    .disabled(model.screenControlStarting)
-            }
-            if model.answerCallBusy { ProgressView("正在请求 Android 接听……").controlSize(.small) }
-            Text(model.answerCallStatus).font(.caption).foregroundStyle(.secondary)
-            Divider()
-            Text("接听后如何让 GPT 与对方对话")
-                .font(.headline)
-            Text("① 首次在官方 ChatGPT Voice 中选择 BlackHole 2ch 作为麦克风，并开启 Voice 会话。② Mac 会在已准备的通话开始时自动将默认声音输出切换至 BlackHole 16ch，无需到系统设置手动选。③ 手机通话结束、退出程序或音频异常中断后，会尝试恢复原来的耳机／扬声器。")
-                .font(.caption).foregroundStyle(.secondary)
-            Button("打开 ChatGPT Voice 网页") {
-                if let url = URL(string: "https://chatgpt.com/") {
-                    NSWorkspace.shared.open(url)
-                }
-            }
-            .buttonStyle(.bordered)
-            HStack {
-                Button("确认后：一键开启 GPT 双向电话") {
-                    confirmGPTTwoWay = true
-                }
-                .disabled(!model.liveVoiceActive || model.aiReplyToPhoneEnabled ||
-                          model.selectedVoiceMonitorOutputID.isEmpty)
-                .buttonStyle(.borderedProminent)
-                Button("立即停止 GPT 语音回传") {
+                Button("停止自动值守") {
+                    model.setVoiceSessionPrepared(false)
                     model.stopGPTTwoWayPhoneBridge()
                 }
-                .disabled(!model.chatGPTVoiceRouteEnabled &&
-                          !model.aiReplyMonitorEnabled && !model.aiReplyToPhoneEnabled)
+                .disabled(!model.voiceSessionPrepared && !model.aiReplyToPhoneEnabled)
                 .buttonStyle(.bordered)
+                Button("打开 ChatGPT Voice") {
+                    if let url = URL(string: "https://chatgpt.com/") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .buttonStyle(.link)
             }
-            Text(model.aiReplyReturnStatus).font(.caption).foregroundStyle(.secondary)
+            Text(model.autoCallStatus).font(.subheadline.weight(.medium))
+            Text(model.automaticGPTOutputStatus)
+                .font(.caption).foregroundStyle(.secondary)
+            if model.liveVoiceActive {
+                Text("正在通话 · \(model.liveVoiceStatus)")
+                    .font(.caption.weight(.medium))
+                Button("立即停止 GPT 声音回传") { model.stopGPTTwoWayPhoneBridge() }
+                    .buttonStyle(.borderedProminent)
+            }
+            Text("新版会自动设置 macOS 默认麦克风为 BlackHole 2ch、播放输出为 BlackHole 16ch。ChatGPT 网页若曾单独固定其它麦克风，可能仍需在网页中改选一次；程序不能验证官方 Voice 是否真正在线。")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("当前自动值守只复用已启动的官方 Voice。通话和音频测试结果自动写入诊断日志，不再显示逐帧数据。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
 
-            Text("接听自动化只在本次程序已预备 Voice 会话后生效。Plus Voice 不能由第三方静默启动或验证；部分 vivo 固件也可能禁止接听 API。电话音频仍有 180 秒上限。")
-                .font(.caption).foregroundStyle(.orange)
+    private var quickSetupPanel: some View {
+        panel("设备与首次配置", symbol: "checkmark.shield") {
+            let have2 = model.audio.devices.contains {
+                $0.displayName.caseInsensitiveCompare("BlackHole 2ch") == .orderedSame
+            }
+            let have16 = model.audio.devices.contains {
+                $0.displayName.caseInsensitiveCompare("BlackHole 16ch") == .orderedSame
+            }
+            HStack {
+                Label("虚拟麦克风 2ch：\(have2 ? "已安装" : "缺失")",
+                      systemImage: have2 ? "checkmark.circle.fill" : "exclamationmark.circle")
+                Spacer()
+                Label("虚拟输出 16ch：\(have16 ? "已安装" : "缺失")",
+                      systemImage: have16 ? "checkmark.circle.fill" : "exclamationmark.circle")
+            }
+            .font(.caption)
+            if !have2 || !have16 {
+                HStack {
+                    if !have2 {
+                        Button("安装 BlackHole 2ch") {
+                            requestedBlackHoleChannels = 2
+                            confirmBlackHoleDownload = true
+                        }
+                    }
+                    if !have16 {
+                        Button("安装 BlackHole 16ch") {
+                            requestedBlackHoleChannels = 16
+                            confirmBlackHoleDownload = true
+                        }
+                    }
+                    if model.blackHoleInstallerBusy { ProgressView().controlSize(.small) }
+                }
+                .disabled(model.blackHoleInstallerBusy)
+                .buttonStyle(.bordered)
+                Text(model.blackHoleInstallerStatus)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                Button("检查设备") { model.refresh(); model.inspectADB() }
+                    .disabled(model.adbChecking)
+                Button("安装／更新手机 Companion") { confirmAPKInstall = true }
+                    .disabled(model.adbInstalling || !model.embeddedAPKAvailable)
+                Button("打开手机控制") { model.openPhoneScreenControl() }
+                    .disabled(model.screenControlStarting)
+            }
+            .buttonStyle(.bordered)
+            Text("手机：\(model.liveBridgeStatus) · 飞书：\(model.feishuSavedOnMac ? "Mac 已保存配置" : "未保存配置")")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -725,24 +746,8 @@ struct DashboardView: View {
             Text("当前会话：\(model.sessionID)")
                 .font(.caption2.monospaced()).foregroundStyle(.secondary)
                 .textSelection(.enabled)
-            VStack(alignment: .leading, spacing: 5) {
-                ForEach(model.events.prefix(30)) { event in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(event.timestamp.formatted(date: .omitted, time: .standard))
-                            .foregroundStyle(.secondary).frame(width: 82, alignment: .leading)
-                        Text(event.level.rawValue)
-                            .foregroundStyle(event.level == .error ? Color.red : Color.secondary)
-                            .frame(width: 48, alignment: .leading)
-                        Text(event.code ?? event.module.rawValue)
-                            .foregroundStyle(.secondary).frame(width: 100, alignment: .leading)
-                        Text(event.message).frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .font(.caption.monospaced())
-                }
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.black.opacity(0.05), in: RoundedRectangle(cornerRadius: 9))
+            Text("原有逐帧电平、上行欠载、BlackHole 路由和 ADB 事件全部保留在本地 JSONL 日志中；正常使用无需查看详细数据。")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -751,7 +756,7 @@ struct DashboardView: View {
             Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.4.11 (28)").font(.caption.monospaced())
+            Text("0.4.12 (29)").font(.caption.monospaced())
         }
     }
 
