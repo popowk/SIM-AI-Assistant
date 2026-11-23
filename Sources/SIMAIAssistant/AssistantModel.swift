@@ -180,6 +180,7 @@ final class AssistantModel: ObservableObject {
         resumeAIForwardAfterIsolationRestored = false
         resumeAIForwardAfterMicrophoneRestored = false
         voiceSessionPrepared = false
+        autoStartedWebVoiceForRing = false
         hideEmbeddedVoiceWindow(force: true)
         embeddedVoiceBrowser.releaseForIdle()
         log(.info, .audio, "已在手机通话结束后关闭自动 Voice 网页及麦克风",
@@ -190,6 +191,9 @@ final class AssistantModel: ObservableObject {
     private var autoCallState = AutoCallStateMachine()
     private var autoCallAudioRequested = false
     private var incomingVoicePending = false
+    /// The current ringing session owns this WebKit Voice page even if the
+    /// Android answer response was lost. It is safe to close on real IDLE.
+    private var autoStartedWebVoiceForRing = false
     private var incomingVoiceBlockedUntilIdle = false
     private var incomingPreflightRunning = false
     private var incomingPreflightPassed = false
@@ -680,6 +684,9 @@ final class AssistantModel: ObservableObject {
                 }
                 self.incomingPreflightPassed = true
                 self.autoCallStatus = "音频预检成功：正在加载网页并启动 Voice"
+                // Ownership begins when we start the ring-triggered page,
+                // not only after the unreliable HTTP /call/answer returns.
+                self.autoStartedWebVoiceForRing = true
                 self.showEmbeddedVoiceWindow(activate: false)
                 self.checkEmbeddedVoiceHealth()
             }
@@ -1082,7 +1089,8 @@ final class AssistantModel: ObservableObject {
             // Close only sessions our app acknowledged as auto-answered;
             // a manually opened ChatGPT tab is otherwise left alone.
             if AutoCallVoiceShutdownPolicy.closeOnPhoneIdle(
-                autoAnswerAcknowledged: automaticAnswerAcknowledged
+                autoAnswerAcknowledged: automaticAnswerAcknowledged,
+                voiceStartedForRinging: autoStartedWebVoiceForRing
             ) {
                 endAutoAnsweredVoiceBrowser(reason: "PHONE_IDLED")
             }
@@ -1143,7 +1151,7 @@ final class AssistantModel: ObservableObject {
         )
         let armed = autoCallEnabled && voiceSessionPrepared && browserReady &&
             automaticVoiceReadinessIssues().isEmpty && !adbInstalling &&
-            !audioProbeBusy
+            !audioProbeBusy && (state != "OFFHOOK" || automaticAnswerAcknowledged)
         let action = autoCallState.update(state: state, armed: armed)
         switch action {
         case .answerIncoming:
@@ -2144,6 +2152,8 @@ final class AssistantModel: ObservableObject {
         if automatic {
             automaticAnswerRequested = true
             automaticAnswerAcknowledged = false
+            // Preserve the ring's session ownership through HTTP failure,
+            // so a later IDLE always closes Voice and releases the mic.
             automaticAnswerSession = ""
             automaticOffhookSequence = 0
             autoVoiceCaptureObserved = embeddedVoiceCaptureActive
