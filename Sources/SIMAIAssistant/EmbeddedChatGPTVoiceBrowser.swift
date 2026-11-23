@@ -23,7 +23,6 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     override init() {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
-        configuration.allowsInlineMediaPlayback = true
         // WebRTC can still require an OS prompt and a real browser gesture.
         // This property only configures media autoplay, not mic authorization.
         configuration.mediaTypesRequiringUserActionForPlayback = []
