@@ -383,22 +383,28 @@ private final class LiveAIReplyCapture {
                 if count > 0 && n > 1 {
                     var bestIndex = selectedSourceChannel
                     var bestPower = 0.0
+                    var selectedPower = 0.0
+                    let stride = Int(buffer.format.channelCount)
                     for channel in 0..<n {
                         var power = 0.0
                         for frame in 0..<count {
                             let sample = buffer.format.isInterleaved
-                                ? channels[0][frame * n + channel]
+                                ? channels[0][frame * stride + channel]
                                 : channels[channel][frame]
                             power += Double(sample) * Double(sample)
                         }
+                        if channel == selectedSourceChannel { selectedPower = power }
                         if power > bestPower {
                             bestPower = power
                             bestIndex = channel
                         }
                     }
-                    // Require a measurable real signal before switching.
+                    // Move only if the selected channel is nearly silent
+                    // compared with another active one; stereo voices must
+                    // not flip channels on every small volume fluctuation.
                     if bestIndex != selectedSourceChannel &&
-                       bestPower / Double(count) > 0.000_009 {
+                       bestPower / Double(count) > 0.000_009 &&
+                       selectedPower < bestPower * 0.08 {
                         selectedSourceChannel = bestIndex
                         converter.channelMap = [NSNumber(value: bestIndex)]
                     }
