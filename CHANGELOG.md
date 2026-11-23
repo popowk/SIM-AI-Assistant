@@ -1,5 +1,13 @@
 # 变更记录
 
+## 0.4.8 — 2026-11-23
+
+- Android Companion V0.3.5：加入可选 ANSWER_PHONE_CALLS 运行时授权，原有 ADB 私有令牌桥接新增仅在系统检测到 RINGING 时允许的人工接听请求；不改变默认拨号应用，不自动接听。
+- Mac V0.4.8：增加接听按钮和状态反馈；GPT 语音链路可由用户二次确认后一次联动开启，若中途失败立即关闭已开启的虚拟路由；增加立即停止。
+- 继续沿用 BlackHole 2ch / 16ch 和 180 秒电话音频测试；不伪装 ChatGPT Plus 具有第三方自动 Voice 启动接口。说明见 docs/AI_PHONE_AGENT_PLAN.md。
+- 新增 Mac 所有者一次性签名配置脚本 Scripts/setup-android-signing.sh，通过本地 GitHub CLI 安全设置 Secrets；未实际运行前不宣称已经配置完成。支持已有证书复用，防止不慎旋转。
+
+
 ## 0.4.7 — 2026-11-23
 
 - Mac 新增通过 scrcpy/ADB 打开单台已授权 vivo 手机的实时屏幕窗口，可用 Mac 鼠标/键盘手动处理 vivo 安装确认、电话和 SMS 权限提示；安装/确认重装时自动尝试启动该窗口。
