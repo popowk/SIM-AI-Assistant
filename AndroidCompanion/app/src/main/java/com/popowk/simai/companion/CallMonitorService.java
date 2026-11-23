@@ -49,6 +49,7 @@ public final class CallMonitorService extends Service {
     private static final List<String> history = new ArrayList<>();
     private TelephonyManager telephonyManager;
     private PhoneEventBridge bridge;
+    private static volatile PhoneEventBridge activeAnswerBridge;
     private TelephonyCallback telephonyCallback;
     private PhoneStateListener legacyListener;
 
@@ -88,6 +89,7 @@ public final class CallMonitorService extends Service {
             try {
                 bridge = new PhoneEventBridge(this);
                 bridge.start();
+                activeAnswerBridge = bridge;
                 telephonyManager = (TelephonyManager) getSystemService(TELEPHONY_SERVICE);
                 if (telephonyManager == null) throw new IllegalStateException("TelephonyManager unavailable");
                 if (Build.VERSION.SDK_INT >= 31) {
@@ -110,6 +112,7 @@ public final class CallMonitorService extends Service {
             } catch (Exception error) {
                 note("监听启动失败：" + error.getClass().getSimpleName());
                 lastState = "监听初始化失败";
+                activeAnswerBridge = null;
                 if (bridge != null) { bridge.stop(); bridge = null; }
                 stopSelf();
             }
@@ -170,7 +173,14 @@ public final class CallMonitorService extends Service {
         @Override public void onCallStateChanged(int state) { handleState(state); }
     }
 
+    static void requestGuardedAnswerFromADB(String session, int sequence) {
+        PhoneEventBridge bridge = activeAnswerBridge;
+        if (bridge == null || !running) return;
+        bridge.acceptAndRecordGuardedShellRequest(session, sequence);
+    }
+
     @Override public void onDestroy() {
+        activeAnswerBridge = null;
         releaseWakeLock();
         if (bridge != null) { bridge.stop(); bridge = null; }
         if (telephonyManager != null) {
