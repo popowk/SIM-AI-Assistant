@@ -143,6 +143,9 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
               // BlackHole2 default input. Later calls use a cached exact ID.
               const audioConstraints = request.audio === true
                 ? {} : {...request.audio};
+              // ChatGPT may remember an old physical microphone deviceId.
+              // Replace that stale site choice with our verified virtual mic.
+              delete audioConstraints.deviceId;
               if (window.__simaiBlackHole2DeviceId) {
                 audioConstraints.deviceId =
                   {exact: window.__simaiBlackHole2DeviceId};
