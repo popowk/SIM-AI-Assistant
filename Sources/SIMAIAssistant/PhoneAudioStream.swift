@@ -536,6 +536,8 @@ final class PhoneAudioStream {
                 let pulled = speaker.renderedFrames()
                 speaker.stop()
                 if pulled < 4 { return "PREFLIGHT_\(name)_NOT_RENDERING" }
+            } catch LiveAudioFailure.reason(let code) {
+                return "PREFLIGHT_\(name)_\(code)"
             } catch {
                 return "PREFLIGHT_\(name)_START_FAILED"
             }
