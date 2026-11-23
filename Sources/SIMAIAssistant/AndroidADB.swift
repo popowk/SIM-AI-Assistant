@@ -503,21 +503,20 @@ enum ADBInspector {
         }
     }
 
-    /// One bounded fallback for ADB-forwarded HTTP timeouts: connect from
-    /// Android's own app UID to the Companion loopback. Never put its token
-    /// into the Mac command line, and never issue a blind call-toggle key.
+    /// Independent Android-private one-shot answer fallback; no HTTP socket.
+    /// Android validates both the current bridge session and ringing sequence.
     static func answerRingingViaPrivateLocalShell(
         at selected: String?,
         expectedSession: String,
         expectedSequence: Int,
         expectedSerial: String
     ) -> String {
-        guard !expectedSession.isEmpty, expectedSequence > 0,
-              !expectedSerial.isEmpty else {
+        guard UUID(uuidString: expectedSession) != nil,
+              expectedSequence > 0, !expectedSerial.isEmpty else {
             return "ANSWER_FALLBACK_NO_RING_GUARD"
         }
-        let result = readPrivateStateSnapshot(at: selected)
-        guard let snapshot = result.snapshot else {
+        let state = readPrivateStateSnapshot(at: selected)
+        guard let snapshot = state.snapshot else {
             return "ANSWER_FALLBACK_SNAPSHOT_UNAVAILABLE"
         }
         guard snapshot.session == expectedSession,
@@ -528,41 +527,43 @@ enum ADBInspector {
         guard let adb = executable(at: selected) else {
             return "ANSWER_FALLBACK_ADB_MISSING"
         }
-        // Bind the operation to exactly the same previously authorized
-        // Android device. Never let adb shell implicitly target a different
-        // phone if a cable reconnect occurs between the two checks.
-        let currentDevices: [(serial: String, state: String)]
-        switch run(adb, args: ["devices"], timeout: 5) {
-        case .completed(0, let output): currentDevices = parseDevices(output)
+        let devices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 4) {
+        case .completed(0, let text): devices = parseDevices(text)
         default: return "ANSWER_FALLBACK_DEVICE_CHANGED"
         }
-        let authorized = currentDevices.filter { $0.state == "device" }
-        guard authorized.count == 1,
-              authorized[0].serial == expectedSerial else {
+        let authorized = devices.filter { $0.state == "device" }
+        guard authorized.count == 1, authorized[0].serial == expectedSerial else {
             return "ANSWER_FALLBACK_DEVICE_CHANGED"
         }
-        // The 64-byte credential is expanded inside Android's run-as only.
-        let script = #"""
-        token="$(cat files/bridge-token 2>/dev/null)"
-        test "__TOKEN_LENGTH__" -eq 64 || exit 4
-        printf 'POST /call/answer HTTP/1.1\r\nHost: localhost\r\nX-SIMAI-Token: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n' "$token" | toybox nc -w 3 127.0.0.1 18764
-        """#.replacingOccurrences(of: "__TOKEN_LENGTH__", with: "$" + "{#token}")
-            .replacingOccurrences(of: "\n", with: "; ")
-        let quoted = "'" + script.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        let command = "run-as com.popowk.simai.companion sh -c " + quoted
-        switch run(adb, args: ["-s", expectedSerial, "shell", command], timeout: 8) {
-        case .completed(0, let output):
-            return output.hasPrefix("HTTP/1.1 200") &&
-                   output.contains("\"answer_requested\"")
-                ? "ANSWER_FALLBACK_REQUESTED"
-                : "ANSWER_FALLBACK_REJECTED"
-        case .completed:
-            return "ANSWER_FALLBACK_SHELL_UNAVAILABLE"
-        case .timedOut:
-            return "ANSWER_FALLBACK_ADB_TIMEOUT"
-        case .launchFailed:
-            return "ANSWER_FALLBACK_ADB_LAUNCH_FAILED"
+        let script = "printf '%s|%s\\n' '\(expectedSession)' '\(expectedSequence)' > files/bridge-answer-request.tmp && mv files/bridge-answer-request.tmp files/bridge-answer-request"
+        let escaped = "'" + script.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let command = "run-as com.popowk.simai.companion sh -c " + escaped
+        switch run(adb, args: ["-s", expectedSerial, "shell", command], timeout: 6) {
+        case .completed(0, _): break
+        case .completed: return "ANSWER_FALLBACK_FILE_WRITE_FAILED"
+        case .timedOut: return "ANSWER_FALLBACK_ADB_TIMEOUT"
+        case .launchFailed: return "ANSWER_FALLBACK_ADB_LAUNCH_FAILED"
         }
+        for _ in 0..<6 {
+            switch run(adb, args: ["-s", expectedSerial, "shell", "run-as",
+                                   "com.popowk.simai.companion", "cat",
+                                   "files/bridge-answer-result"], timeout: 3) {
+            case .completed(0, let raw):
+                let fields = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .split(separator: "|", omittingEmptySubsequences: false)
+                if fields.count == 3,
+                   fields[0] == expectedSession,
+                   fields[1] == String(expectedSequence) {
+                    return fields[2] == "ANSWER_REQUESTED"
+                        ? "ANSWER_FALLBACK_REQUESTED"
+                        : "ANSWER_FALLBACK_REJECTED"
+                }
+            default: break
+            }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        return "ANSWER_FALLBACK_NO_ACK"
     }
 
     /// Diagnoses three separate layers without exporting a serial, IP,
