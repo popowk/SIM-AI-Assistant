@@ -11,6 +11,7 @@ struct DashboardView: View {
     @State private var confirmLiveVoice = false
     @State private var confirmLiveMic = false
     @State private var confirmManualAnswer = false
+    @State private var confirmGPTTwoWay = false
     @State private var confirmChatGPTInput = false
     @State private var confirmAIReplyMonitor = false
     @State private var confirmAIReplyToPhone = false
@@ -69,6 +70,16 @@ struct DashboardView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("此操作仅在手机实际响铃且 Android 已授权接听电话时发出一次接听请求。并不会自动启动 GPT Voice、录音、自动转接或向对方播放 AI 声音。请确保后续通话中对方知情同意。")
+        }
+        .confirmationDialog("将 GPT 语音实时转发到真实电话？",
+                            isPresented: $confirmGPTTwoWay,
+                            titleVisibility: .visible) {
+            Button("双方已知情同意，开启 GPT 双向语音") {
+                model.enableGPTTwoWayPhoneBridge()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("请确保你已在官方 ChatGPT Voice 中手动开始语音会话：输入 BlackHole 2ch、输出 BlackHole 16ch，且电话双方均同意让 AI 参与。确认后会把电话对方声音传给 ChatGPT，再把 BlackHole 16ch 的全部声音送回电话，并自动静音 Mac 麦克风。若 16ch 是系统输出，其他应用或通知声音也可能被送到电话；请先关闭通知。可随时立即停止。")
         }
         .confirmationDialog("开启 Mac 麦克风向电话传输声音？", isPresented: $confirmLiveMic,
                             titleVisibility: .visible) {
@@ -326,6 +337,22 @@ struct DashboardView: View {
                 }
             }
             .buttonStyle(.bordered)
+            HStack {
+                Button("确认后：一键开启 GPT 双向电话") {
+                    confirmGPTTwoWay = true
+                }
+                .disabled(!model.liveVoiceActive || model.aiReplyToPhoneEnabled ||
+                          model.selectedVoiceMonitorOutputID.isEmpty)
+                .buttonStyle(.borderedProminent)
+                Button("立即停止 GPT 语音回传") {
+                    model.stopGPTTwoWayPhoneBridge()
+                }
+                .disabled(!model.chatGPTVoiceRouteEnabled &&
+                          !model.aiReplyMonitorEnabled && !model.aiReplyToPhoneEnabled)
+                .buttonStyle(.bordered)
+            }
+            Text(model.aiReplyReturnStatus).font(.caption).foregroundStyle(.secondary)
+
             Text("本版不会静默自动接听，也不能从 Plus 订阅自动控制官方 Voice 会话。Android 13 的系统接听 API 已废弃，vivo 可能阻止第三方接听；失败时可使用 scrcpy 在手机屏幕中人工接听。电话音频测试仍有 180 秒的会话上限。")
                 .font(.caption).foregroundStyle(.orange)
         }
