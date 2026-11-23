@@ -1,4 +1,4 @@
-# SIM AI Assistant · V0.4.7（Mac ADB 手机屏幕控制 + Android 安全升级）
+# SIM AI Assistant · V0.4.8（人工接听 + ChatGPT 双向电话 + 签名配置脚本）
 
 **设备目标**：vivo S9e / Android 13 / 中国联通实体 SIM + Apple Silicon Mac / macOS 26.6.2。
 **源代码**：https://github.com/popowk/SIM-AI-Assistant
@@ -11,6 +11,12 @@
 - Mac 本地音频设备检查、麦克风电平、扬声器试听和设备恢复。
 - 诊断 ZIP、匿名事件日志、1/7/14 天清理与「清空全部（含今天）」。
 
+## V0.4.8 · Mac 人工接听 + GPT 双向电话语音联动（2026-11-23）
+
+- Android Companion V0.3.5（versionCode 10）新增可选 `ANSWER_PHONE_CALLS` 系统权限按钮。接听仅由 Mac 用户主动点击；手机端经私有 ADB 令牌认证后**再次校验当前确实为 RINGING**，再向系统请求接听。vivo 可能拒绝，旧版默认拨号应用不变，失败可使用 scrcpy 手动接听。
+- Mac V0.4.8 Build 25 新增「人工接听当前来电」、安卓权限指引和 ChatGPT 双向电话引导；电话接通后可经二次知情确认**一键联动** BlackHole 2ch → ChatGPT Voice → BlackHole 16ch → 电话上行，失败自动撤销已开启的路由，另有一键立即停止。
+- **本版不自动接听或自动打开官方 ChatGPT Voice**。ChatGPT Plus Voice 需要你在官方界面自行启动，并选择正确输入/输出设备；仍按原先 180 秒限时测试。不将普通通话冒充自动 AI 接线员。完整设计见 [GPT 接电话路线图](docs/AI_PHONE_AGENT_PLAN.md)。
+- GitHub 固定签名 Secrets 无法由当前连接直接代写。增加一次性 Mac 本地脚本 `bash Scripts/setup-android-signing.sh`，由仓库管理员用自己的 GitHub CLI 登录将私有证书安全上传；**脚本未在你的 Mac 执行，仓库固定签名尚不能宣称已配置成功**。旧签名不同仍可能需要一次用户确认的迁移。
 ## V0.4.7 · Mac 通过 ADB 控制 vivo 手机屏幕（2026-11-23）
 
 - Mac 新增 **「手机屏幕操作」**：检测本机 scrcpy（开源 Android 镜像与控制工具）和 ADB，仅对**恰好一台已授权的 Android 手机**打开实时镜像窗口。使用 Mac 鼠标/键盘在手机界面完成安装确认、电话状态/短信权限等系统弹窗操作，无需一直去触摸手机屏幕。
