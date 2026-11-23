@@ -291,6 +291,7 @@ final class AssistantModel: ObservableObject {
         let code = voiceInputRouter.activate()
         switch code {
         case "INPUT_ACTIVE", "INPUT_ALREADY_MANAGED", "INPUT_ALREADY_SELECTED":
+            automaticGPTOutputStatus = "GPT 默认麦克风已准备为 BlackHole 2ch；网页是否实际使用需在 Voice 中确认"
             if code == "INPUT_ACTIVE" {
                 log(.info, .audio, "已将 macOS 默认麦克风切至 BlackHole 2ch",
                     details: ["routeCode": code])
