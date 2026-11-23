@@ -4,6 +4,24 @@ import XCTest
 
 final class SIMAICoreTests: XCTestCase {
 
+    func testAutomaticCallsNeedVoiceReadinessAndOnlyAnswerOnce() {
+        var machine = AutoCallStateMachine()
+        XCTAssertEqual(machine.update(state: "RINGING", armed: false), .none)
+        XCTAssertEqual(machine.update(state: "RINGING", armed: true), .answerIncoming)
+        XCTAssertEqual(machine.update(state: "RINGING", armed: true), .none)
+        XCTAssertEqual(machine.update(state: "OFFHOOK", armed: true), .openCallAudio)
+        XCTAssertEqual(machine.update(state: "OFFHOOK", armed: true), .none)
+        XCTAssertEqual(machine.update(state: "IDLE", armed: false), .stopCallAudio)
+        XCTAssertEqual(machine.update(state: "RINGING", armed: true), .answerIncoming)
+    }
+
+    func testAutomaticCallsNeverStartAudioForUnrelatedOffhook() {
+        var machine = AutoCallStateMachine()
+        XCTAssertEqual(machine.update(state: "OFFHOOK", armed: true), .none)
+        XCTAssertEqual(machine.update(state: "IDLE", armed: true), .none)
+        XCTAssertEqual(machine.update(state: "UNKNOWN", armed: true), .none)
+    }
+
     func testMicrophoneQueueSilenceUnderflowAndMute() {
         let queue = RealtimeAudioBuffer()
         XCTAssertEqual(queue.nextFrame(), [UInt8](repeating: 0, count: 640))
