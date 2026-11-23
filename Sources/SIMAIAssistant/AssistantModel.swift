@@ -1844,15 +1844,10 @@ final class AssistantModel: ObservableObject {
                     // waiting only for IDLE leaves WebKit recording forever.
                     // Fail closed on a terminated auto-answered PCM stream,
                     // without attempting to hang up an uncertain phone call.
-                    if AutoCallVoiceShutdownPolicy.closeOnAudioEnd(
+                    let closeAutoVoice = AutoCallVoiceShutdownPolicy.closeOnAudioEnd(
                         reason: reason,
                         automaticAudioSession: self.autoCallAudioRequested
-                    ) {
-                        self.endAutoAnsweredVoiceBrowser(
-                            reason: "AUTO_CALL_PCM_REMOTE_CLOSED")
-                        self.autoCallStatus =
-                            "手机通话音频已断开，已停止 GPT Voice 并关闭自动浏览器"
-                    }
+                    )
                     if reason == "SESSION_LIMIT_180S" &&
                        self.automaticAnswerAcknowledged &&
                        self.livePhoneState == "OFFHOOK" {
@@ -1911,6 +1906,15 @@ final class AssistantModel: ObservableObject {
                             "aiReturnUplinkUnderflow": "\(self.aiReplyUplinkUnderflow)",
                             "aiReturnPeakRMS": String(format: "%.5f", self.aiReplyPeakRMS),
                             "handshakeAttempts": "\(self.liveVoiceHandshakeAttempts)"])
+                    // Release media after the PCM stream/queues are torn
+                    // down, avoiding reentrant WebKit microphone callbacks
+                    // that would try to stop an already-closing audio stream.
+                    if closeAutoVoice {
+                        self.endAutoAnsweredVoiceBrowser(
+                            reason: "AUTO_CALL_PCM_REMOTE_CLOSED")
+                        self.autoCallStatus =
+                            "手机通话音频已断开，已停止 GPT Voice 并关闭自动浏览器"
+                    }
                 }
             }
         }
