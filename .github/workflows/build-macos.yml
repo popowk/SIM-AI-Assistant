@@ -11,7 +11,7 @@ on:
 # Only the newest main build should publish the easy-download test release.
 concurrency:
   group: simai-video-isolation-v0418-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
