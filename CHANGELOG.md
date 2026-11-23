@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.4.19（APK / 权限与播放修复，待实机验证）— 2026-11-23
+
+- Android Companion v0.3.7 versionCode 12：电话状态读取和接听／挂断授权合并为一个“一键开启电话助手”；移除第二个“授权 Mac 控制接听与结束电话”按钮。升级时对新增权限至多自动发起一次系统授权，不反复骚扰用户；尊重用户停止监听的选择。短信及飞书权限独立控制。
+- Mac 一键安装新版 APK：仅对恰好一台已授权手机执行保留数据的 ADB install -r。基于明确用户点击，尝试通过已授权 ADB 申请 READ_PHONE_STATE 与 ANSWER_PHONE_CALLS；如厂商拒绝则由 Android 自己弹出权限请求。不自动授予短信、不卸载旧 APK、不接管默认拨号器。
+- 修正 Mac 内置 APK 标签长期写成 V0.3.5 的错误。打包时从 Gradle 读取版本并用 Android SDK aapt 对实际 APK Manifest 交叉校验，版本元数据随 Mac 程序一起发布；主界面可查询实际安装的手机版本。
+- 解决 WebKit 可能因异步 setSinkId().then(play()) 损失真实网页播放手势的问题：恢复同步原生 play()，设备改为异步设置，所有远端音频隔离仍需通过实测检查才允许自动接听。对 NotAllowedError 记录可读日志、提示点击 ChatGPT 网页“继续播放”；不伪造用户手势。
+- Mac v0.4.19 Build 36；Android Companion v0.3.7（12）。手机真实权限情况和 Voice 网页行为仍需实机验证。
+
+
 ## 0.4.18（视频兼容隔离，需实机验收）— 2026-11-23
 
 - 通过诊断 20261123-190242 定位：RINGING 后传统系统输出路由返回 ROUTE_MONITOR_PHYSICAL_REQUIRED；之前出现 ROUTE_USER_CHANGED_OUTPUT，设备播放/耳机切换后原来保存的数字设备 ID 可能失效。
