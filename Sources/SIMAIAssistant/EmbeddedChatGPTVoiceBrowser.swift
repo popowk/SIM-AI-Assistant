@@ -15,6 +15,10 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     @Published private(set) var loaded = false
     @Published private(set) var isolatedAudioOutputEnabled = true
     @Published private(set) var isolatedOutputReady = false
+    @Published private(set) var isolatedMicrophoneReady = false
+    @Published private(set) var isolatedMicrophoneStatus = "等待确认 ChatGPT 实际录音设备为 BlackHole 2ch"
+    var onIsolatedMicrophoneChange: ((Bool) -> Void)?
+    private var lastMicrophoneRouteCheck = Date.distantPast
     @Published private(set) var playbackBlocked = false
     private var lastPlaybackCheck = Date.distantPast
     @Published private(set) var isolatedOutputStatus = "等待 Voice 网页创建独立声音通道"
@@ -26,6 +30,12 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         isolatedAudioOutputEnabled = enabled
         if !enabled { updateIsolatedOutputReady(false) }
         else if loaded { routeCurrentVoiceAudioIfNeeded(force: true) }
+    }
+
+    private func updateIsolatedMicrophoneReady(_ ready: Bool) {
+        guard isolatedMicrophoneReady != ready else { return }
+        isolatedMicrophoneReady = ready
+        onIsolatedMicrophoneChange?(ready)
     }
 
     private func updateIsolatedOutputReady(_ ready: Bool) {
@@ -112,6 +122,65 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
           window.__simaiAudioIsolationInstalled = true;
           window.__simaiAudioSinkID = '';
           window.__simaiAudioElements = new Set();
+          // The previous version only checked WKWebView capture ACTIVE.
+          // This proves *a* mic was running, not that the caller's BlackHole
+          // 2ch was selected. Constrain the actual official page getUserMedia
+          // request, and refuse to hand a wrong input stream to the website.
+          window.__simaiMicRouteCode = 'WAITING_FOR_CAPTURE';
+          window.__simaiMicTracks = new Set();
+          if (navigator.mediaDevices &&
+              typeof navigator.mediaDevices.getUserMedia === 'function') {
+            const originalCapture =
+              navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+            const originalDevices =
+              navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
+            navigator.mediaDevices.getUserMedia = async function(request) {
+              if (!request || !request.audio) return originalCapture(request);
+              window.__simaiMicRouteCode = 'BLACKHOLE2_CHECKING';
+              let available = [];
+              try { available = await originalDevices(); } catch (_) {}
+              const wanted = available.find(d => d.kind === 'audioinput'
+                && (d.label || '').toLowerCase().includes('blackhole 2ch'));
+              const audioConstraints = request.audio === true
+                ? {} : {...request.audio};
+              if (wanted && wanted.deviceId) {
+                audioConstraints.deviceId = {exact: wanted.deviceId};
+              }
+              let stream;
+              try {
+                stream = await originalCapture({...request, audio: audioConstraints});
+              } catch (err) {
+                window.__simaiMicRouteCode = 'BLACKHOLE2_CAPTURE_FAILED';
+                throw err;
+              }
+              // After the website is permitted to capture, device labels
+              // should be exposed. Validate before returning audio to GPT.
+              let updated = available;
+              try { updated = await originalDevices(); } catch (_) {}
+              const target = updated.find(d => d.kind === 'audioinput'
+                && (d.label || '').toLowerCase().includes('blackhole 2ch'));
+              const tracks = stream.getAudioTracks();
+              const matching = !!target && tracks.length > 0 &&
+                tracks.every(t => t.readyState === 'live' &&
+                  ((t.getSettings && t.getSettings().deviceId === target.deviceId)
+                    || (t.label || '').toLowerCase().includes('blackhole 2ch')));
+              if (!matching) {
+                tracks.forEach(t => t.stop());
+                window.__simaiMicRouteCode =
+                  target ? 'WRONG_CAPTURE_DEVICE' : 'BLACKHOLE2_NOT_VISIBLE';
+                throw new DOMException('Expected BlackHole 2ch input', 'NotFoundError');
+              }
+              tracks.forEach(t => {
+                window.__simaiMicTracks.add(t);
+                t.addEventListener('ended', () => window.__simaiMicTracks.delete(t));
+              });
+              window.__simaiMicRouteCode = 'BLACKHOLE2_CAPTURE_VERIFIED';
+              return stream;
+            };
+          } else {
+            window.__simaiMicRouteCode = 'VOICE_CAPTURE_UNSUPPORTED';
+          }
+
           // Preserve the site's real click user activation. The prior
           // setSinkId(...).then(() => play()) deferred play past the trusted
           // gesture and could cause NotAllowedError ("tap to play").
@@ -192,6 +261,8 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         loaded = false
         lastStartAttempt = .distantPast
         lastIsolationCheck = .distantPast
+        lastMicrophoneRouteCheck = .distantPast
+        updateIsolatedMicrophoneReady(false)
         lastPlaybackCheck = .distantPast
         playbackBlocked = false
         isolateCheckBusy = false
@@ -235,12 +306,56 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
                 ? "Voice 麦克风已静音，语音会话不等于结束"
                 : "Voice 已停止使用麦克风；正在判断是否应同步挂断电话"
         onDiagnostic?(active ? "VOICE_WEBKIT_CAPTURE_ACTIVE" : "VOICE_WEBKIT_CAPTURE_INACTIVE")
+        if active {
+            checkActualMicrophoneRouting(force: true)
+        } else {
+            updateIsolatedMicrophoneReady(false)
+        }
         if active && isolatedAudioOutputEnabled {
             routeCurrentVoiceAudioIfNeeded(force: true)
         } else if !active {
             updateIsolatedOutputReady(false)
         }
         onMicrophoneChange?(active)
+    }
+
+    /// Verify which microphone ChatGPT really received, rather than using
+    /// WKWebView's generic microphone-capture indicator as proof. No audio,
+    /// device IDs, account contents or transcripts ever leave the webpage.
+    func checkActualMicrophoneRouting(force: Bool = false) {
+        guard loaded, isOfficialPage, microphoneActive,
+              force || Date().timeIntervalSince(lastMicrophoneRouteCheck) >= 2 else { return }
+        lastMicrophoneRouteCheck = Date()
+        let script = #"""
+        (() => {
+          const code = window.__simaiMicRouteCode || 'MIC_HOOK_MISSING';
+          const tracks = [...(window.__simaiMicTracks || [])];
+          const live = tracks.some(t => t.readyState === 'live');
+          return code === 'BLACKHOLE2_CAPTURE_VERIFIED' && live
+            ? 'BLACKHOLE2_CAPTURE_VERIFIED' : live ? 'MIC_NOT_VERIFIED' : code;
+        })()
+        """#
+        webView.evaluateJavaScript(script) { [weak self] value, error in
+            Task { @MainActor [weak self] in
+                guard let self, self.loaded else { return }
+                let code = error == nil ? (value as? String ?? "MIC_CHECK_FAILED")
+                                        : "MIC_CHECK_FAILED"
+                let verified = code == "BLACKHOLE2_CAPTURE_VERIFIED"
+                self.updateIsolatedMicrophoneReady(verified)
+                let message: [String: String] = [
+                    "BLACKHOLE2_CAPTURE_VERIFIED": "ChatGPT 正在使用 BlackHole 2ch 采集电话声音",
+                    "WAITING_FOR_CAPTURE": "等待 ChatGPT 网页开始录音",
+                    "BLACKHOLE2_CHECKING": "正在确认 ChatGPT 输入设备",
+                    "BLACKHOLE2_NOT_VISIBLE": "网页未识别 BlackHole 2ch；不能确认 GPT 能听到电话",
+                    "WRONG_CAPTURE_DEVICE": "网页选中了错误麦克风，已停止该音轨以防混入环境声音",
+                    "BLACKHOLE2_CAPTURE_FAILED": "BlackHole 2ch 录音请求失败",
+                    "VOICE_CAPTURE_UNSUPPORTED": "网页不支持受控麦克风采集",
+                    "MIC_HOOK_MISSING": "网页麦克风隔离尚未安装",
+                ]
+                self.isolatedMicrophoneStatus = message[code] ?? "麦克风未通过验证（\(code)）"
+                if verified || force { self.onDiagnostic?(code) }
+            }
+        }
     }
 
     /// Best effort per-page speaker selection supported by macOS WebKit.
@@ -363,6 +478,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     func healthCheck(prepareAudio: () -> Bool) {
         guard loaded else { return }
         checkMicrophoneCapture()
+        checkActualMicrophoneRouting()
         checkPlaybackPermission()
         if isolatedAudioOutputEnabled { routeCurrentVoiceAudioIfNeeded() }
         guard automaticVoiceButtonEnabled && isOfficialPage &&
@@ -438,6 +554,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard loaded else { return }
         updateIsolatedOutputReady(false)
+        updateIsolatedMicrophoneReady(false)
         lastIsolationCheck = .distantPast
         status = isOfficialPage
             ? "ChatGPT 页面已加载；可以在这里登录或开启 Voice"
@@ -572,6 +689,13 @@ struct EmbeddedChatGPTVoiceWindow: View {
                 set: { model.setEmbeddedVoiceAutoStart($0) }
             ))
             if browser.isolatedAudioOutputEnabled {
+                Label(browser.isolatedMicrophoneReady
+                        ? "GPT 已确认使用 BlackHole 2ch 麦克风"
+                        : "GPT 输入麦克风尚未通过验证",
+                      systemImage: browser.isolatedMicrophoneReady ? "mic.fill" : "mic.slash")
+                    .font(.caption.weight(.medium))
+                Text(browser.isolatedMicrophoneStatus)
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Label(browser.isolatedOutputReady ? "独立音频路由已就绪" : "独立音频路由待验证",
                           systemImage: browser.isolatedOutputReady
