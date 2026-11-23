@@ -11,6 +11,14 @@ for bin in keytool gh base64; do
 done
 gh auth status >/dev/null 2>&1 || { echo "请先在自己的 Mac 执行 gh auth login"; exit 1; }
 gh repo view "$REPO" >/dev/null 2>&1 || { echo "无法访问仓库: $REPO"; exit 1; }
+# Refuse silent rotation if another fixed signing certificate was already
+# provisioned remotely but this Mac has no local backup.
+if [[ ! -e "$KEYSTORE" ]] && gh secret list --repo "$REPO" 2>/dev/null |
+    grep -q '^SIMAI_ANDROID_KEYSTORE_B64[[:space:]]'; then
+  echo "GitHub 已有固定签名 Secret，但本机没有原证书。拒绝生成新证书以免破坏后续 APK 升级。"
+  echo "请从安全备份恢复原 companion-stable.p12 后重试。"
+  exit 1
+fi
 echo "准备配置 APK 固定签名。证书将保存在: $KEYSTORE"
 echo "重要：旧 APK 若由不同证书签名，仍不能直接无损覆盖。"
 [[ -e "$KEYSTORE" ]] && echo "发现旧证书，将复用，不会覆盖。" || echo "未发现证书，将新建并请你离线备份。"
