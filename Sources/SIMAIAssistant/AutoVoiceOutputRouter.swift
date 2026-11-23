@@ -104,7 +104,10 @@ final class AutoVoiceOutputRouter {
 
         // If the user manually changed the output after we routed it,
         // never override their choice or resurrect an earlier route.
-        UserDefaults.standard.removeObject(forKey: Self.restoreUIDKey)
+        if UserDefaults.standard.string(forKey: Self.restoreUIDKey) != nil {
+            UserDefaults.standard.removeObject(forKey: Self.restoreUIDKey)
+            return "ROUTE_USER_CHANGED_OUTPUT"
+        }
 
         let prior = Self.isPhysicalOutput(current) ? current : selected
         guard let restoreUID = Self.uid(prior), !restoreUID.isEmpty else {
