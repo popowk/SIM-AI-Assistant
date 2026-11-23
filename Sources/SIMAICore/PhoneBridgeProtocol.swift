@@ -20,6 +20,11 @@ public struct PhoneBridgeSnapshot: Codable, Equatable {
     public let seq: Int
     public let events: [PhoneBridgeEvent]
     public let updatedAt: Int64?
+    /// Only anonymous Android-side diagnostics; old APKs may omit these keys.
+    public var answerPermissionGranted: Bool? = nil
+    public var privateAnswerPollerActive: Bool? = nil
+    public var privateAnswerSequence: Int? = nil
+    public var privateAnswerResult: String? = nil
 
     /// Private-file transport uses a periodically refreshed timestamp; this
     /// prevents a killed Android service's last snapshot appearing online.
