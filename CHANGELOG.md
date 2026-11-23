@@ -1,5 +1,15 @@
 # 变更记录
 
+## 0.4.27（对照实机成功版本恢复独立接听路径）— 2026-11-24
+
+- 调查用户 01:09 上传的 v0.4.26 Build43 诊断。北京时间 01:07:48 收到 RINGING、01:07:50 WebKit 使用 BlackHole2、01:07:54 Voice 就绪，01:07:57 ADB 文件接听 NO_ACK，01:08:01 HTTP 也失败；全程没有 OFFHOOK 或真正 PCM。手机端接听权限明明显示 ANSWER_PERMISSION_GRANTED，不是 CALL_PHONE 缺失。
+- 对照已实机接听成功的 Mac v0.4.21：该版本独立调用 ADBInspector.openBridge 建立专用 HTTP 接听转发，然后 POST /call/answer；新版本 v0.4.23 起复用状态同步转发，在 v0.4.24 起把私有文件 NO_ACK 置于 HTTP 之前，耗尽响铃时间。
+- Mac v0.4.27 Build44：回归独立的接听专用 ADB HTTP 转发，优先尝试官方 Android Companion 的 POST /call/answer，保持会话序列安全校验。仅在 HTTP 失败且同一响铃仍有效时才尝试受控 ADB 广播/私有文件兜底，不能凭无回执宣称已接听。
+- Android Companion v0.3.12 (versionCode 17)：保留经过验证的 ANSWER_PHONE_CALLS 和 READ_PHONE_STATE 权限，不新增仅供拨号的 CALL_PHONE。电话监听前台服务新增 900ms 的 TelephonyManager 实际通话状态核对，以补偿部分 vivo 锁屏下 OFFHOOK 回调延迟、手动接听后 PCM 无法及时启动的问题。
+- 继续复用以前实测有声的 AudioStreamServer.java PCM Help​​er（v0.4.21 与本版 blob SHA 完全一致）和 BlackHole2 电话下行路线。支持手动接通已追踪来电后自动启动 PCM；未知电话不启动自动音频、不进行自动挂机。
+- 新增 Android 实际通话状态诊断和兼容性测试；自动化编译/单元测试不等同于 vivo 实机。旧版历史验证仅证实电话 PCM/BlackHole2 非静音输出，不能单凭这个保证 GPT 官方网页识别或回复。
+
+
 ## 0.4.26（真实来电 PCM 与独立接听广播兜底）— 2026-11-24
 
 - 最新 00:45:38 诊断包中 Mac v0.4.25 Build42 / Android Companion 已明确 ANSWER_PERMISSION_GRANTED；00:44:01 RINGING、00:44:03 网页确认采集 BlackHole 2ch、00:44:08 发现 BLACKHOLE2_SIGNAL_SILENT。00:44:10 受控文件接听 NO_ACK、00:44:14 HTTP 失败；00:44:57 才同时收取 OFFHOOK 与 IDLE 两条历史状态，期间没有真正建立电话 PCM。
