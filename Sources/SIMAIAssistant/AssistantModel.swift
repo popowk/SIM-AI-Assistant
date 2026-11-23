@@ -539,7 +539,14 @@ final class AssistantModel: ObservableObject {
         guard incomingVoicePending else {
             if liveVoiceActive || (automaticAnswerAcknowledged &&
                                    livePhoneState == "OFFHOOK") {
+                // ChatGPT can recreate its WebRTC/audio elements AFTER the
+                // call connects. Keep validating both the microphone and
+                // remote sound sink for the entire call, not only at startup.
                 embeddedVoiceBrowser.checkMicrophoneCapture()
+                embeddedVoiceBrowser.checkActualMicrophoneRouting()
+                if isolatedChatGPTOutputEnabled {
+                    embeddedVoiceBrowser.routeCurrentVoiceAudioIfNeeded()
+                }
             }
             return
         }
