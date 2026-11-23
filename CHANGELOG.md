@@ -1,5 +1,12 @@
 # 变更记录
 
+## 0.4.13 — 2026-11-23
+
+- V0.4.12 实机日志显示 BlackHole 2ch/16ch 自动选择和自动接听已成功，但 1912 帧电话 PCM 有 1887 帧本地播放丢弃及 1708 帧虚拟麦克风丢弃，GPT 回传峰值 RMS 仍是 0.00000。
+- 用 AVAudioSourceNode 连续 PCM 渲染环形缓冲代替每 20ms 一次的 AVAudioPlayerNode scheduleBuffer，防止单个播放完成回调延迟堵塞实时电话和 BlackHole 路由。缓冲有界并在欠载时输出静音。
+- 在脱敏诊断包中新增物理监听和 BlackHole 虚拟麦克风实际渲染帧数及未渲染报警；不收集原始电话语音。Android V0.3.5、SMS 飞书及简洁 UI 均不变。改进效果需真机验证。
+
+
 ## 0.4.12 — 2026-11-23
 
 - 根据 V0.4.11 Build 28 用户诊断确认 ADB 自动接听、PCM 会话和 BlackHole 16ch 输出成功，但未验证 ChatGPT 实际选中 BlackHole 2ch 默认输入；GPT 回传峰值 RMS 为 0。
