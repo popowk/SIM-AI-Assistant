@@ -535,9 +535,9 @@ final class PhoneAudioStream {
                 usleep(80_000)
                 let pulled = speaker.renderedFrames()
                 speaker.stop()
-                if pulled < 4 { return "PREFLIGHT_\\(name)_NOT_RENDERING" }
+                if pulled < 4 { return "PREFLIGHT_\(name)_NOT_RENDERING" }
             } catch {
-                return "PREFLIGHT_\\(name)_START_FAILED"
+                return "PREFLIGHT_\(name)_START_FAILED"
             }
         }
         return "PREFLIGHT_OK"
