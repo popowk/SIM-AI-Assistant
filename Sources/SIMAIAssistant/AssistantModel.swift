@@ -30,6 +30,10 @@ final class AssistantModel: ObservableObject {
     @Published var autoCallEnabled =
         UserDefaults.standard.object(forKey: "SIMAI_AUTO_CALL") as? Bool ?? true
     @Published var voiceSessionPrepared = false
+    @Published var useEmbeddedVoiceBrowser =
+        UserDefaults.standard.object(forKey: "SIMAI_EMBEDDED_VOICE_MODE") as? Bool ?? false
+    @Published var embeddedVoiceCaptureActive = false
+    @Published var embeddedVoiceStatus = "内嵌 ChatGPT Voice 未启用；登录后将通过 WebKit 验证麦克风采集"
     @Published var autoCallStatus = "自动接听已设为默认，但需要先准备可用的语音会话，避免来电被接起后无人回答"
     @Published var liveBridgeLastSync: Date?
     @Published var adbTransportHealth = "尚未检查"
@@ -87,13 +91,14 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.13"
-    let buildNumber = "30"
+    let version = "0.4.14"
+    let buildNumber = "31"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
     private let voiceOutputRouter = AutoVoiceOutputRouter()
     private let voiceInputRouter = AutoVoiceInputRouter()
+    let embeddedVoiceBrowser = EmbeddedChatGPTVoiceBrowser()
     private let microphoneProbe = MicrophoneLevelProbe()
     private var voiceStream: PhoneAudioStream?
     private var autoCallState = AutoCallStateMachine()
@@ -147,6 +152,14 @@ final class AssistantModel: ObservableObject {
             automaticGPTOutputStatus = "已检查上次异常结束的音频输入／输出，并尝试恢复"
             log(.info, .audio, "自动虚拟音频设备启动恢复",
                 details: ["inputCode": recoveredInput, "outputCode": recoveredOutput])
+        }
+        embeddedVoiceBrowser.onMicrophoneChange = { [weak self] active in
+            self?.onEmbeddedVoiceCapture(active)
+        }
+        embeddedVoiceBrowser.onDiagnostic = { [weak self] code in
+            guard let self else { return }
+            self.log(.info, .audio, "内嵌 ChatGPT Voice 页面事件",
+                     details: ["event": code])
         }
         refresh()
         startLiveSyncTimer()
@@ -264,6 +277,80 @@ final class AssistantModel: ObservableObject {
     }
 
 
+    /// Enable only after the owner chooses to sign in to chatgpt.com in
+    /// the app. Voice launches are UI experiments, not an official API.
+    func setEmbeddedVoiceBrowserEnabled(_ enabled: Bool) {
+        useEmbeddedVoiceBrowser = enabled
+        UserDefaults.standard.set(enabled, forKey: "SIMAI_EMBEDDED_VOICE_MODE")
+        if enabled {
+            embeddedVoiceStatus = "内嵌浏览器模式已启用；请在独立窗口自行登录 ChatGPT"
+            embeddedVoiceBrowser.loadIfNeeded()
+            embeddedVoiceBrowser.checkMicrophoneCapture()
+            if embeddedVoiceBrowser.microphoneActive {
+                onEmbeddedVoiceCapture(true)
+            }
+        } else {
+            embeddedVoiceCaptureActive = false
+            voiceSessionPrepared = false
+            autoCallState.reset()
+            if aiReplyToPhoneEnabled { stopGPTTwoWayPhoneBridge() }
+            if !liveVoiceActive { restoreAutomaticGPTOutput(forceInput: true) }
+            embeddedVoiceStatus = "内嵌模式已关闭；不控制浏览器或其网站登录状态"
+        }
+    }
+
+    func setEmbeddedVoiceAutoStart(_ enabled: Bool) {
+        embeddedVoiceBrowser.setAutomaticVoiceButton(enabled)
+        embeddedVoiceStatus = enabled
+            ? "自动启动实验已开启，网页加载后可尝试识别 Voice 按钮"
+            : "自动点击已关闭，可在窗口中手动点击 Voice"
+    }
+
+    func tryStartEmbeddedVoice() {
+        guard useEmbeddedVoiceBrowser else {
+            embeddedVoiceStatus = "请先启用内嵌 ChatGPT Voice 模式"
+            return
+        }
+        refresh()
+        guard prepareAutomaticGPTOutput() else {
+            embeddedVoiceStatus = "虚拟麦克风或扬声器未就绪；没有点击网页 Voice"
+            return
+        }
+        embeddedVoiceBrowser.attemptVoiceStart()
+    }
+
+    private func onEmbeddedVoiceCapture(_ active: Bool) {
+        embeddedVoiceCaptureActive = active
+        guard useEmbeddedVoiceBrowser else { return }
+        if active {
+            embeddedVoiceStatus = "已检测到内嵌网页正在采集麦克风；不代表 GPT 已听到真人说话"
+            if !voiceSessionPrepared {
+                setVoiceSessionPrepared(true)
+            }
+            log(.info, .audio, "网页真实音频采集激活，尝试预备自动接听",
+                details: ["capture": "ACTIVE"])
+        } else {
+            embeddedVoiceStatus = "网页麦克风没有处于采集状态；已阻止新来电自动接听"
+            voiceSessionPrepared = false
+            autoCallState.reset()
+            if aiReplyToPhoneEnabled { stopGPTTwoWayPhoneBridge() }
+            if !liveVoiceActive { restoreAutomaticGPTOutput(forceInput: true) }
+            log(.warn, .audio, "ChatGPT 网页麦克风采集停止，已撤销自动接听",
+                details: ["capture": "INACTIVE"])
+        }
+    }
+
+    private func checkEmbeddedVoiceHealth() {
+        guard useEmbeddedVoiceBrowser else { return }
+        embeddedVoiceBrowser.healthCheck { [weak self] in
+            guard let self else { return false }
+            guard self.autoCallEnabled, self.automaticGPTOutputEnabled else { return false }
+            self.refresh()
+            return self.prepareAutomaticGPTOutput()
+        }
+        embeddedVoiceBrowser.checkMicrophoneCapture()
+    }
+
     /// This setting only arms an already running official Voice session.
     /// There is no official ChatGPT Plus API for unattended voice creation.
     func setAutomaticGPTOutputEnabled(_ enabled: Bool) {
@@ -337,7 +424,10 @@ final class AssistantModel: ObservableObject {
     /// to the ambient physical microphone between calls. On disarm or Quit,
     /// restore both system defaults if they are still app-managed.
     func restoreAutomaticGPTOutput(forceInput: Bool = false) {
-        let outputCode = voiceOutputRouter.restore()
+        let keepForBrowser = useEmbeddedVoiceBrowser && embeddedVoiceCaptureActive &&
+            !forceInput && voiceSessionPrepared
+        let outputCode = keepForBrowser ? "ROUTE_KEPT_FOR_EMBEDDED_VOICE"
+            : voiceOutputRouter.restore()
         let inputCode = forceInput || !voiceSessionPrepared
             ? voiceInputRouter.restore() : "INPUT_KEPT_FOR_ARMED_VOICE"
         if outputCode == "ROUTE_RESTORED" || inputCode == "INPUT_RESTORED" {
@@ -365,6 +455,7 @@ final class AssistantModel: ObservableObject {
         if aiReplyToPhoneEnabled || aiReplyMonitorEnabled || chatGPTVoiceRouteEnabled {
             stopGPTTwoWayPhoneBridge()
         }
+        voiceSessionPrepared = false
         restoreAutomaticGPTOutput(forceInput: true)
         closePhoneScreenControl()
     }
@@ -384,6 +475,11 @@ final class AssistantModel: ObservableObject {
     }
 
     func setVoiceSessionPrepared(_ prepared: Bool) {
+        if prepared && useEmbeddedVoiceBrowser && !embeddedVoiceBrowser.microphoneActive {
+            voiceSessionPrepared = false
+            autoCallStatus = "等待 WebKit 实际激活麦克风，防止 GPT 未启动就自动接听"
+            return
+        }
         if prepared { refresh() }
         voiceSessionPrepared = prepared
         if prepared {
@@ -424,7 +520,8 @@ final class AssistantModel: ObservableObject {
         }
         // Fail closed if the official Voice UI was not pre-armed this session.
         // Checking for virtual devices cannot prove that ChatGPT is listening.
-        let armed = autoCallEnabled && voiceSessionPrepared &&
+        let browserReady = !useEmbeddedVoiceBrowser || embeddedVoiceCaptureActive
+        let armed = autoCallEnabled && voiceSessionPrepared && browserReady &&
             automaticVoiceReadinessIssues().isEmpty && !adbInstalling &&
             !audioProbeBusy
         let action = autoCallState.update(state: state, armed: armed)
@@ -470,6 +567,7 @@ final class AssistantModel: ObservableObject {
                 self?.autoInspectADBIfNeeded()
                 self?.pollLiveBridge()
                 self?.refreshPendingBlackHoleInstall()
+                self?.checkEmbeddedVoiceHealth()
             }
         }
         autoInspectADBIfNeeded(force: true)
