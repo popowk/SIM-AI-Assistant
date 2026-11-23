@@ -152,7 +152,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("电话音频 + GPT Voice + 自动输出切换 · V0.5.0")
+                Text("电话音频 + GPT Voice + 自动输出切换 · V0.4.10")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -703,7 +703,7 @@ struct DashboardView: View {
             Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.5.0 (27)").font(.caption.monospaced())
+            Text("0.4.10 (27)").font(.caption.monospaced())
         }
     }
 
