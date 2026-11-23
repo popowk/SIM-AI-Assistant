@@ -224,6 +224,7 @@ final class AssistantModel: ObservableObject {
         let code = voiceOutputRouter.activate(physicalMonitorID: selectedVoiceMonitorOutputID)
         switch code {
         case "ROUTE_ACTIVE", "ROUTE_ALREADY_MANAGED":
+            refresh()
             automaticGPTOutputStatus = "已自动将 Mac 输出切换至 BlackHole 16ch，通话结束后恢复"
             log(.info, .audio, "GPT 电话自动音频输出已切换",
                 details: ["routeCode": code])
