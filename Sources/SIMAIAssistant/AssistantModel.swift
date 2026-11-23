@@ -229,12 +229,29 @@ final class AssistantModel: ObservableObject {
                 details: ["inputCode": recoveredInput, "outputCode": recoveredOutput])
         }
         embeddedVoiceBrowser.setIsolatedAudioOutputEnabled(isolatedChatGPTOutputEnabled)
+        embeddedVoiceBrowser.onIsolatedMicrophoneChange = { [weak self] ready in
+            guard let self, self.useEmbeddedVoiceBrowser else { return }
+            if ready {
+                self.log(.info, .audio, "已核验 ChatGPT 实际使用 BlackHole 2ch 输入")
+                if self.incomingVoicePending && self.embeddedVoiceBrowser.microphoneActive &&
+                   (!self.isolatedChatGPTOutputEnabled ||
+                    self.embeddedVoiceBrowser.isolatedOutputReady) {
+                    self.onEmbeddedVoiceCapture(true)
+                }
+            } else if self.isolatedChatGPTOutputEnabled &&
+                      self.aiReplyToPhoneEnabled {
+                self.setAIReplyToPhone(false)
+                self.log(.warn, .audio, "ChatGPT 麦克风路由未验证，暂停电话 AI 回传",
+                         details: ["reason": "GPT_INPUT_DEVICE_NOT_VERIFIED"])
+            }
+        }
         embeddedVoiceBrowser.onIsolatedOutputChange = { [weak self] ready in
             guard let self else { return }
             if ready {
                 self.automaticGPTOutputStatus =
                     "ChatGPT 网页已配置独立输出到 BlackHole 16ch；视频保持原路"
-                if self.incomingVoicePending && self.embeddedVoiceBrowser.microphoneActive {
+                if self.incomingVoicePending && self.embeddedVoiceBrowser.microphoneActive &&
+                   self.embeddedVoiceBrowser.isolatedMicrophoneReady {
                     self.onEmbeddedVoiceCapture(true)
                 }
                 if self.resumeAIForwardAfterIsolationRestored &&
@@ -442,6 +459,7 @@ final class AssistantModel: ObservableObject {
             }
             embeddedVoiceStatus = "WebKit 已采集麦克风；电话实测才能确认 GPT 听懂语音"
             if incomingVoicePending && incomingPreflightPassed &&
+               embeddedVoiceBrowser.isolatedMicrophoneReady &&
                (!isolatedChatGPTOutputEnabled ||
                 embeddedVoiceBrowser.isolatedOutputReady) &&
                livePhoneState == "RINGING" && !incomingVoiceBlockedUntilIdle {
@@ -727,29 +745,35 @@ final class AssistantModel: ObservableObject {
         }
     }
 
-    /// Preserve virtual microphone while Voice is armed so it doesn't listen
-    /// to the ambient physical microphone between calls. On disarm or Quit,
-    /// restore both system defaults if they are still app-managed.
-    func restoreAutomaticGPTOutput(forceInput: Bool = false) {
-        let keepForBrowser = useEmbeddedVoiceBrowser && embeddedVoiceCaptureActive &&
-            !forceInput && voiceSessionPrepared
-        let outputCode = keepForBrowser ? "ROUTE_KEPT_FOR_EMBEDDED_VOICE"
-            : voiceOutputRouter.restore()
-        let inputCode = forceInput || !voiceSessionPrepared
-            ? voiceInputRouter.restore() : "INPUT_KEPT_FOR_ARMED_VOICE"
+    /// In isolated Voice mode the Mac's system output is NEVER changed by
+    /// call start/end. Hold the virtual default mic while auto-attendant is
+    /// enabled, instead of flipping between physical and virtual microphones
+    /// on every RINGING -> IDLE. A user disable/quit explicitly restores it.
+    func restoreAutomaticGPTOutput(forceInput: Bool = false,
+                                   userRequested: Bool = false) {
+        let isolated = isolatedChatGPTOutputEnabled && useEmbeddedVoiceBrowser
+        let outputCode = isolated && !userRequested
+            ? "ROUTE_ISOLATED_UNTOUCHED" : voiceOutputRouter.restore()
+        let holdMic = isolated && autoCallEnabled && automaticGPTOutputEnabled &&
+            !userRequested
+        let inputCode = holdMic ? "INPUT_HELD_FOR_AUTO_STANDBY"
+            : (forceInput || !voiceSessionPrepared || userRequested)
+                ? voiceInputRouter.restore() : "INPUT_KEPT_FOR_ARMED_VOICE"
         if outputCode == "ROUTE_RESTORED" || inputCode == "INPUT_RESTORED" {
             automaticGPTOutputStatus = "已恢复程序管理的声音设备"
             refresh()
         } else if outputCode == "ROUTE_USER_CHANGED_OUTPUT" || inputCode == "INPUT_USER_CHANGED" {
             automaticGPTOutputStatus = "检测到你已自行修改输入或输出，已保留该选择"
             refresh()
-        } else if outputCode != "ROUTE_NOT_OWNED" ||
-                  (inputCode != "INPUT_NOT_OWNED" && inputCode != "INPUT_KEPT_FOR_ARMED_VOICE") {
+        } else if outputCode != "ROUTE_NOT_OWNED" && outputCode != "ROUTE_ISOLATED_UNTOUCHED" ||
+                  !["INPUT_NOT_OWNED", "INPUT_KEPT_FOR_ARMED_VOICE",
+                    "INPUT_HELD_FOR_AUTO_STANDBY"].contains(inputCode) {
             automaticGPTOutputStatus = "音频设备恢复状态：" + outputCode + "／" + inputCode
             refresh()
         }
-        if outputCode != "ROUTE_NOT_OWNED" ||
-           (inputCode != "INPUT_NOT_OWNED" && inputCode != "INPUT_KEPT_FOR_ARMED_VOICE") {
+        if !["ROUTE_NOT_OWNED", "ROUTE_ISOLATED_UNTOUCHED"].contains(outputCode) ||
+           !["INPUT_NOT_OWNED", "INPUT_KEPT_FOR_ARMED_VOICE",
+             "INPUT_HELD_FOR_AUTO_STANDBY"].contains(inputCode) {
             log(.info, .audio, "自动虚拟音频设备结束或回收",
                 details: ["inputCode": inputCode, "outputCode": outputCode])
         }
@@ -773,7 +797,7 @@ final class AssistantModel: ObservableObject {
         voiceSessionPrepared = false
         embeddedVoiceBrowser.releaseForIdle()
         hideEmbeddedVoiceWindow()
-        restoreAutomaticGPTOutput(forceInput: true)
+        restoreAutomaticGPTOutput(forceInput: true, userRequested: true)
         closePhoneScreenControl()
     }
 
@@ -930,8 +954,9 @@ final class AssistantModel: ObservableObject {
 
     func setVoiceSessionPrepared(_ prepared: Bool) {
         if prepared && useEmbeddedVoiceBrowser &&
-           (!embeddedVoiceBrowser.microphoneActive || !incomingPreflightPassed ||
-            livePhoneState != "RINGING") {
+           (!embeddedVoiceBrowser.microphoneActive ||
+            !embeddedVoiceBrowser.isolatedMicrophoneReady ||
+            !incomingPreflightPassed || livePhoneState != "RINGING") {
             voiceSessionPrepared = false
             autoCallStatus = "等待响铃、音频预检及 WebKit 麦克风采集全部通过"
             return
@@ -1030,6 +1055,7 @@ final class AssistantModel: ObservableObject {
         let browserReady = VoiceAudioIsolationPolicy.browserReady(
             embedded: useEmbeddedVoiceBrowser,
             microphoneCapturing: embeddedVoiceCaptureActive,
+            isolatedMicrophoneVerified: embeddedVoiceBrowser.isolatedMicrophoneReady,
             isolationEnabled: isolatedChatGPTOutputEnabled,
             isolatedMediaRouted: embeddedVoiceBrowser.isolatedOutputReady
         )
@@ -1328,6 +1354,7 @@ final class AssistantModel: ObservableObject {
         bridgeBusy = false
         bridgeUsingFileFallback = false
         nextHTTPRecoveryAttempt = .distantPast
+        nextBridgeForwardAttempt = .distantPast
         bridgeGeneration += 1
         // Preserve cursor on temporary USB disconnect to avoid replaying old call events.
     }
@@ -1555,6 +1582,8 @@ final class AssistantModel: ObservableObject {
                         self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(20)
                         self.applyBridgeSnapshot(snapshot, source: "ADB_FILE")
                     } else {
+                        self.bridgeUsingFileFallback = true
+                        self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(35)
                         self.schedulePhoneMonitorWakeIfNeeded(reason: fallback.reason)
                         self.noteBridgeFailure(code: fallback.reason, domain: "SIMAI.ADBFile")
                         self.livePhoneState = "未连接"
