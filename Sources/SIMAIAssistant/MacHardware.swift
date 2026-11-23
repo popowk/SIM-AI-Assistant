@@ -14,6 +14,69 @@ final class AudioInspector {
         self.savedOutput = Self.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice)
     }
 
+    private static let monitorUIDKey = "SIMAI_PhysicalMonitorOutputUID"
+
+    private static func deviceUID(_ id: AudioDeviceID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var value: CFString? = nil
+        var size = UInt32(MemoryLayout<CFString?>.size)
+        guard AudioObjectGetPropertyData(id, &address, 0, nil,
+                                         &size, &value) == noErr,
+              let value else { return nil }
+        return value as String
+    }
+
+    /// CoreAudio numeric IDs change after unplug, output changes and reboot.
+    /// Persist only the stable hardware UID; never export it to diagnostics.
+    static func saveMonitorSelection(_ rawID: String) {
+        guard let id = AudioDeviceID(rawID), isUsableMonitorOutput(rawID),
+              let uid = deviceUID(id) else { return }
+        UserDefaults.standard.set(uid, forKey: monitorUIDKey)
+    }
+
+    /// Only select a real output with an actual CoreAudio output stream.
+    /// Microphones and aggregate/virtual devices are not safe monitors.
+    static func isUsableMonitorOutput(_ rawID: String) -> Bool {
+        guard let id = AudioDeviceID(rawID), id != 0 else { return false }
+        let name = deviceName(id)
+        guard !name.localizedCaseInsensitiveContains("BlackHole"),
+              !name.localizedCaseInsensitiveContains("aggregate"),
+              !name.localizedCaseInsensitiveContains("multi-output") else {
+            return false
+        }
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreams,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        return AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size) == noErr &&
+            size >= UInt32(MemoryLayout<AudioStreamID>.size)
+    }
+
+    static func recommendedMonitorOutput(from snapshot: AudioSnapshot,
+                                         previousID: String) -> String? {
+        let candidates = snapshot.devices.filter {
+            isUsableMonitorOutput($0.id)
+        }
+        if candidates.contains(where: { $0.id == previousID }) {
+            return previousID
+        }
+        if let wanted = UserDefaults.standard.string(forKey: monitorUIDKey),
+           let matching = candidates.first(where: {
+               guard let id = AudioDeviceID($0.id) else { return false }
+               return deviceUID(id) == wanted
+           }) {
+            return matching.id
+        }
+        if let current = candidates.first(where: { $0.isDefaultOutput }) {
+            return current.id
+        }
+        return candidates.first?.id
+    }
+
     static func microphonePermission() -> String {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: return "已授权"
