@@ -5,6 +5,7 @@ import SIMAICore
 
 struct DashboardView: View {
     @EnvironmentObject private var model: AssistantModel
+    @Environment(\.openWindow) private var openWindow
     @State private var previewExport = false
     @State private var confirmDownlink = false
     @State private var confirmUplink = false
@@ -172,7 +173,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("自动接听 · GPT 音频路由 · V0.4.13")
+                Text("自动接听 · 内嵌 GPT Voice · V0.4.14")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -346,11 +347,40 @@ struct DashboardView: View {
                 get: { model.automaticGPTOutputEnabled },
                 set: { model.setAutomaticGPTOutputEnabled($0) }
             ))
+            Toggle("内嵌 ChatGPT Voice（网页登录后可实验性自动启动）", isOn: Binding(
+                get: { model.useEmbeddedVoiceBrowser },
+                set: { model.setEmbeddedVoiceBrowserEnabled($0) }
+            ))
             HStack {
-                Button(model.voiceSessionPrepared ? "Voice 会话已预备" : "确认 ChatGPT Voice 已启动") {
-                    model.setVoiceSessionPrepared(true)
+                Button("打开内嵌 ChatGPT 登录与 Voice") {
+                    model.setEmbeddedVoiceBrowserEnabled(true)
+                    openWindow(id: "embedded-voice")
+                    NSApp.activate(ignoringOtherApps: true)
                 }
-                .disabled(model.voiceSessionPrepared || !model.autoCallEnabled)
+                .buttonStyle(.borderedProminent)
+                if model.useEmbeddedVoiceBrowser {
+                    Button("尝试启动 Voice") { model.tryStartEmbeddedVoice() }
+                        .buttonStyle(.bordered)
+                    Label(model.embeddedVoiceCaptureActive ? "网页麦克风正在采集" : "网页麦克风未激活",
+                          systemImage: model.embeddedVoiceCaptureActive
+                              ? "mic.fill" : "mic.slash")
+                        .font(.caption)
+                }
+            }
+            if model.useEmbeddedVoiceBrowser {
+                Text(model.embeddedVoiceStatus)
+                    .font(.caption.weight(.medium))
+                Text("登录只在你自己的 WebKit 网页内完成。软件可实验性点击 Voice 按钮，但不操作账号密码、验证码或登录令牌。只有检测到 WebKit 实际采集麦克风时，才允许自动接听来电；不保证 GPT 已收到有效音频。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                if !model.useEmbeddedVoiceBrowser {
+                    Button(model.voiceSessionPrepared ? "Voice 会话已预备" : "确认外部 ChatGPT Voice 已启动") {
+                        model.setVoiceSessionPrepared(true)
+                    }
+                    .disabled(model.voiceSessionPrepared || !model.autoCallEnabled)
+                    .buttonStyle(.borderedProminent)
+                }
                 .buttonStyle(.borderedProminent)
                 Button("停止自动值守") {
                     model.setVoiceSessionPrepared(false)
@@ -374,7 +404,7 @@ struct DashboardView: View {
                 Button("立即停止 GPT 声音回传") { model.stopGPTTwoWayPhoneBridge() }
                     .buttonStyle(.borderedProminent)
             }
-            Text("电话对方说话 → BlackHole 2ch → GPT；GPT 回复 → BlackHole 16ch → 电话。Mac 自身实体麦克风默认不参与这条路由。如果网页曾单独选定实体麦克风，需要在 ChatGPT Voice 中改选 BlackHole 2ch 一次。")
+            Text("电话对方 → BlackHole 2ch → GPT；GPT 回复 → BlackHole 16ch → 电话。首次登录、系统麦克风授权及网页选择独立音频设备可能需要人工。内嵌浏览器不读取登录凭证或对话内容。")
                 .font(.caption).foregroundStyle(.secondary)
             Text("当前自动值守只复用已启动的官方 Voice。通话和音频测试结果自动写入诊断日志，不再显示逐帧数据。")
                 .font(.caption).foregroundStyle(.secondary)
@@ -776,7 +806,7 @@ struct DashboardView: View {
             Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.4.13 (30)").font(.caption.monospaced())
+            Text("0.4.14 (31)").font(.caption.monospaced())
         }
     }
 
