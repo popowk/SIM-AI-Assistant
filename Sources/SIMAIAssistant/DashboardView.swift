@@ -334,7 +334,7 @@ struct DashboardView: View {
             Text(model.adbBridgeHealthDetail).font(.caption).foregroundStyle(.secondary)
             Text("ADB 状态、Shell 响应与 Companion 电话事件服务分别诊断。锁屏时服务受限不等于撤销 ADB 授权；如果无线调试被系统关闭，仍需在手机上重新启用。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("手机 Companion V0.3.5 安装后启动一次系统授权向导，获准后自动监听电话状态；锁屏增强和新短信转发默认开启。短信权限由系统决定。")
+            Text("手机 Companion V0.3.6 可接收具备会话校验的自动挂断请求；V0.3.5 保留受保护的 ADB 兼容挂断。安装后启动一次系统授权向导，获准后自动监听电话状态；锁屏增强和新短信转发默认开启。短信权限由系统决定。")
                 .font(.caption).foregroundStyle(.secondary)
             Text("实时电话状态：\(model.livePhoneState)")
                 .font(.headline)
@@ -361,6 +361,13 @@ struct DashboardView: View {
                 get: { model.useEmbeddedVoiceBrowser },
                 set: { model.setEmbeddedVoiceBrowserEnabled($0) }
             ))
+            Toggle("ChatGPT 网页麦克风：始终允许（仅官方站点）", isOn: Binding(
+                get: { model.embeddedVoiceBrowser.alwaysAllowOfficialMicrophone },
+                set: { model.embeddedVoiceBrowser.setAlwaysAllowOfficialMicrophone($0) }
+            ))
+            .font(.headline)
+            Text("这是内嵌浏览器的网站权限设置：开启后网页不再反复询问麦克风，关闭后每次询问。macOS 系统隐私权限仍需单独授权。")
+                .font(.caption).foregroundStyle(.secondary)
             Toggle("Mac 同时监听来电者与 GPT（关闭可减少回音）", isOn: Binding(
                 get: { model.allowCallerMonitorDuringAI },
                 set: { model.setAllowCallerMonitorDuringAI($0) }
@@ -386,7 +393,7 @@ struct DashboardView: View {
             if model.useEmbeddedVoiceBrowser {
                 Text(model.embeddedVoiceStatus)
                     .font(.caption.weight(.medium))
-                Text("点击「打开内嵌 ChatGPT」可保存固定网址，使用已配置提示词的官方页面；麦克风授权成功后可在内嵌窗口启用许可记忆。来电才尝试启动 Voice。")
+                Text("点击「打开内嵌 ChatGPT」可设置固定网址。上方直接选择是否始终允许网站麦克风；Voice 结束后，本程序自动接听的电话将尝试同步挂断。")
                     .font(.caption).foregroundStyle(.secondary)
                     .font(.caption).foregroundStyle(.secondary)
             }
