@@ -28,9 +28,15 @@ private struct MenuBarCommands: View {
         }
         Divider()
         Button("刷新 Mac 音频设备") { model.refresh() }
+        Button("打开手机屏幕（ADB）") {
+            model.openPhoneScreenControl()
+        }
         Divider()
-        Text("v0.4.6 · 安全升级 / 飞书短信")
-        Button("退出 SIM AI Assistant") { NSApp.terminate(nil) }
+        Text("v0.4.7 · ADB 手机屏幕操作")
+        Button("退出 SIM AI Assistant") {
+            model.closePhoneScreenControl()
+            NSApp.terminate(nil)
+        }
     }
 }
 #endif
