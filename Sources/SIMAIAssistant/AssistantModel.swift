@@ -603,7 +603,8 @@ final class AssistantModel: ObservableObject {
     }
 
     private func reactToAutomaticCallState(_ state: String) {
-        let newIdle = state == "IDLE" && previousObservedPhoneState != "IDLE"
+        let newIdle = state == "IDLE" && previousObservedPhoneState != "IDLE" &&
+                      !previousObservedPhoneState.isEmpty
         previousObservedPhoneState = state
         if state == "RINGING" && !voiceSessionPrepared {
             beginOnDemandVoiceForRinging()
@@ -615,7 +616,11 @@ final class AssistantModel: ObservableObject {
             incomingVoiceBlockedUntilIdle = false
             incomingVoiceDeadline = nil
             voiceSessionPrepared = false
-            if useEmbeddedVoiceBrowser { embeddedVoiceBrowser.releaseForIdle() }
+            if useEmbeddedVoiceBrowser && embeddedVoiceBrowser.loaded {
+                embeddedVoiceBrowser.releaseForIdle()
+                NotificationCenter.default.post(
+                    name: Notification.Name("SIMAI_CLOSE_VOICE_AFTER_CALL"), object: nil)
+            }
             if !liveVoiceActive && !liveVoiceStarting {
                 restoreAutomaticGPTOutput(forceInput: true)
             }
