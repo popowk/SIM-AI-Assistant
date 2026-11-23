@@ -291,6 +291,9 @@ final class AssistantModel: ObservableObject {
         if enabled {
             embeddedVoiceStatus = "轻量待命：只在手动打开或来电时加载 ChatGPT 网页"
         } else {
+            incomingVoicePending = false
+            incomingVoiceDeadline = nil
+            embeddedVoiceBrowser.releaseForIdle()
             embeddedVoiceCaptureActive = false
             voiceSessionPrepared = false
             autoCallState.reset()
@@ -358,7 +361,19 @@ final class AssistantModel: ObservableObject {
             if liveVoiceActive { embeddedVoiceBrowser.checkMicrophoneCapture() }
             return
         }
-        guard livePhoneState == "RINGING" else { return }
+        if livePhoneState != "RINGING" {
+            // ADB may disconnect during a ringing session. Do not leave
+            // a live browser or virtual audio route running indefinitely.
+            incomingVoicePending = false
+            incomingVoiceBlockedUntilIdle = true
+            incomingPreflightPassed = false
+            incomingVoiceDeadline = nil
+            embeddedVoiceBrowser.releaseForIdle()
+            restoreAutomaticGPTOutput(forceInput: true)
+            log(.warn, .audio, "来电监听中断，放弃按需 Voice 启动",
+                details: ["reason": "VOICE_RINGING_STATE_LOST"])
+            return
+        }
         if let deadline = incomingVoiceDeadline, Date() >= deadline {
             incomingVoicePending = false
             incomingVoiceBlockedUntilIdle = true
