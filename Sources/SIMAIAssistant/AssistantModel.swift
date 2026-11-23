@@ -199,6 +199,8 @@ final class AssistantModel: ObservableObject {
     private var observedRingingSession = ""
     private var observedRingingSequence = 0
     private var manualPickupFromTrackedRing = false
+    private var manualPickupPCMStarts = 0
+    private var manualPickupPCMRetryAfter = Date.distantPast
     private var incomingVoiceBlockedUntilIdle = false
     private var incomingPreflightRunning = false
     private var incomingPreflightPassed = false
@@ -1111,7 +1113,11 @@ final class AssistantModel: ObservableObject {
               (!isolatedChatGPTOutputEnabled ||
                embeddedVoiceBrowser.isolatedOutputReady) &&
               !liveVoiceStarting && !liveVoiceActive && !adbInstalling &&
-              !audioProbeBusy && !autoCallAudioRequested else { return }
+              !audioProbeBusy && !autoCallAudioRequested &&
+              manualPickupPCMStarts < 2 &&
+              Date() >= manualPickupPCMRetryAfter else { return }
+        manualPickupPCMStarts += 1
+        manualPickupPCMRetryAfter = Date().addingTimeInterval(12)
         autoCallAudioRequested = true
         autoCallStatus = "手机已手动接通同一来电；正在自动建立电话 PCM 和 GPT 音频"
         log(.info, .audio, "手机手动接听后自动启动 GPT 电话音频",
@@ -1153,6 +1159,8 @@ final class AssistantModel: ObservableObject {
             observedRingingSession = ""
             observedRingingSequence = 0
             manualPickupFromTrackedRing = false
+            manualPickupPCMStarts = 0
+            manualPickupPCMRetryAfter = .distantPast
             incomingPreflightRunning = false
             incomingPreflightPassed = false
             incomingVoiceBlockedUntilIdle = false
@@ -1627,6 +1635,8 @@ final class AssistantModel: ObservableObject {
             observedRingingSession = snapshot.session
             observedRingingSequence = snapshot.seq
             manualPickupFromTrackedRing = false
+            manualPickupPCMStarts = 0
+            manualPickupPCMRetryAfter = .distantPast
         }
         if snapshot.state == "IDLE" &&
            received.contains(where: { $0.state == "OFFHOOK" }) {
