@@ -152,7 +152,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("电话音频 + GPT Voice + 自动值守路由 · V0.4.9")
+                Text("电话音频 + GPT Voice + 自动输出切换 · V0.5.0")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -317,6 +317,21 @@ struct DashboardView: View {
                 get: { model.autoCallEnabled },
                 set: { model.setAutoCallEnabled($0) }
             ))
+            Toggle("GPT 通话时自动切换 BlackHole 16ch，结束后恢复原输出（默认开启）",
+                   isOn: Binding(
+                       get: { model.automaticGPTOutputEnabled },
+                       set: { model.setAutomaticGPTOutputEnabled($0) }
+                   ))
+            Text(model.automaticGPTOutputStatus)
+                .font(.caption.weight(.medium))
+            HStack {
+                Button("立即恢复原声音输出") { model.restoreAutomaticGPTOutput() }
+                    .buttonStyle(.bordered)
+                Button("刷新音频设备") { model.refresh() }
+                    .buttonStyle(.bordered)
+            }
+            Text("自动切换只改变 macOS 默认播放输出，不改变麦克风。通话期间系统输出到 BlackHole 16ch 的其它声音也可能被发送给电话对方，请关闭通知和无关程序音频。")
+                .font(.caption).foregroundStyle(.orange)
             Text("安装并首次授权后，无需每次来电手动点击：监听到 RINGING 就自动请求接听，确认 OFFHOOK 才启动 PCM，结束后自动释放。为避免接起后无人回答，必须先准备好语音助手会话；仅有 BlackHole 不等于 GPT 已在线。")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
@@ -350,7 +365,7 @@ struct DashboardView: View {
             Divider()
             Text("接听后如何让 GPT 与对方对话")
                 .font(.headline)
-            Text("① 在官方 ChatGPT 网页手动启动 Voice：麦克风选 BlackHole 2ch，声音输出选 BlackHole 16ch。② 在双方知情同意后开始实时电话音频，再打开「电话声音送入 GPT」及「GPT 回复监听」。③ 先确认耳机能听清，再人工授权「GPT 回复发给电话」。")
+            Text("① 首次在官方 ChatGPT Voice 中选择 BlackHole 2ch 作为麦克风，并开启 Voice 会话。② Mac 会在已准备的通话开始时自动将默认声音输出切换至 BlackHole 16ch，无需到系统设置手动选。③ 手机通话结束、退出程序或音频异常中断后，会尝试恢复原来的耳机／扬声器。")
                 .font(.caption).foregroundStyle(.secondary)
             Button("打开 ChatGPT Voice 网页") {
                 if let url = URL(string: "https://chatgpt.com/") {
@@ -374,7 +389,7 @@ struct DashboardView: View {
             }
             Text(model.aiReplyReturnStatus).font(.caption).foregroundStyle(.secondary)
 
-            Text("本版不会静默自动接听，也不能从 Plus 订阅自动控制官方 Voice 会话。Android 13 的系统接听 API 已废弃，vivo 可能阻止第三方接听；失败时可使用 scrcpy 在手机屏幕中人工接听。电话音频测试仍有 180 秒的会话上限。")
+            Text("接听自动化只在本次程序已预备 Voice 会话后生效。Plus Voice 不能由第三方静默启动或验证；部分 vivo 固件也可能禁止接听 API。电话音频仍有 180 秒上限。")
                 .font(.caption).foregroundStyle(.orange)
         }
     }
@@ -577,7 +592,7 @@ struct DashboardView: View {
                 }
             }
             .disabled(model.aiReplyMonitorEnabled)
-            Text("建议先选择上述物理输出，再开始实时电话音频；之后可将系统输出切到 BlackHole 16ch，并用本应用监听 GPT。此选择不会更改系统默认设备。")
+            Text("只需选择真实耳机作为监听目标。启用上方「自动切换 BlackHole 16ch」后，SIM AI 会在 GPT 电话会话中自动切换 macOS 输出，结束后尝试恢复；不必在这个下拉框中选择 BlackHole。")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Button("开始在耳机监听 GPT") { confirmAIReplyMonitor = true }
@@ -599,7 +614,7 @@ struct DashboardView: View {
                 .font(.caption.monospaced()).foregroundStyle(.secondary)
             Text("测试顺序：先正常播放一段 GPT 回复并确认 Mac 耳机听得见，再在双方同意的测试电话里开启人工回传，并让对方确认能否听清；不要同时打开 Mac 麦克风与 AI 回传。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("重要：如果将系统输出设为 BlackHole 16ch，其他应用的声音也可能进入电话。请关闭通知和无关音频，避免隐私泄露。此功能不自动接听、不替你操作官方 ChatGPT Voice，通话结束自动断开。")
+            Text("重要：Mac 默认输出指向 BlackHole 16ch 时，其它应用与通知声音也可能被回传到电话。请关闭通知和无关声音；程序不会自动启动官方 ChatGPT Voice。")
                 .font(.caption).foregroundStyle(.orange)
         }
     }
@@ -688,7 +703,7 @@ struct DashboardView: View {
             Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.4.9 (26)").font(.caption.monospaced())
+            Text("0.5.0 (27)").font(.caption.monospaced())
         }
     }
 
