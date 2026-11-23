@@ -286,6 +286,7 @@ final class AssistantModel: ObservableObject {
     }
 
     func setVoiceSessionPrepared(_ prepared: Bool) {
+        if prepared { refresh() }
         voiceSessionPrepared = prepared
         if prepared {
             let problems = automaticVoiceReadinessIssues()
@@ -942,7 +943,12 @@ final class AssistantModel: ObservableObject {
     func setAIReplyMonitor(_ enabled: Bool) {
         guard liveVoiceActive, let voiceStream else { return }
         if enabled {
+            guard prepareAutomaticGPTOutput() else {
+                aiReplyReturnStatus = "无法自动切换 BlackHole 16ch，未开启监听"
+                return
+            }
             guard let physicalID = UInt32(selectedVoiceMonitorOutputID) else {
+                restoreAutomaticGPTOutput()
                 aiReplyReturnStatus = "请先选择真实耳机/扬声器作为监听设备"
                 return
             }
@@ -956,6 +962,7 @@ final class AssistantModel: ObservableObject {
             } catch {
                 aiReplyMonitorEnabled = false
                 aiReplyToPhoneEnabled = false
+                restoreAutomaticGPTOutput()
                 aiReplyReturnStatus = "监听启动失败，请核对 BlackHole 16ch 和输出设备；失败细节请导出诊断"
                 let ns = error as NSError
                 // LiveAudioFailure only contains predefined internal reason codes,
@@ -970,6 +977,7 @@ final class AssistantModel: ObservableObject {
             do { try voiceStream.setAIReplyMonitoring(false) } catch {}
             aiReplyMonitorEnabled = false
             aiReplyToPhoneEnabled = false
+            restoreAutomaticGPTOutput()
             aiReplyReturnStatus = "已关闭 GPT 回复监听及电话回传"
             log(.info, .audio, "用户关闭 GPT 回复监听与电话回传",
                 details: ["route": "AI_RETURN_OFF"])
