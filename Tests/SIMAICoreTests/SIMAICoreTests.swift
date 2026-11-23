@@ -344,13 +344,15 @@ final class SIMAICoreTests: XCTestCase {
         {"schema":1,"session":"session-one","running":true,"state":"RINGING","seq":7,
          "updatedAt":1000000,"events":[{"seq":7,"state":"RINGING","at":999990}],
          "answerPermissionGranted":false,"privateAnswerPollerActive":true,
-         "privateAnswerSequence":7,"privateAnswerResult":"PERMISSION_REQUIRED"}
+         "privateAnswerSequence":7,"privateAnswerResult":"PERMISSION_REQUIRED",
+         "realPhoneState":"OFFHOOK"}
         """
         let snapshot = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: Data(recent.utf8))
         XCTAssertEqual(snapshot.answerPermissionGranted, false)
         XCTAssertEqual(snapshot.privateAnswerPollerActive, true)
         XCTAssertEqual(snapshot.privateAnswerSequence, 7)
         XCTAssertEqual(snapshot.privateAnswerResult, "PERMISSION_REQUIRED")
+        XCTAssertEqual(snapshot.realPhoneState, "OFFHOOK")
         XCTAssertNil(snapshot.adbBroadcastAnswerAvailable)
 
         let older = """
