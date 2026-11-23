@@ -111,6 +111,15 @@ final class AssistantModel: ObservableObject {
     private var incomingPreflightPassed = false
     private var incomingVoiceDeadline: Date?
     private var previousObservedPhoneState = ""
+    // A hang-up is permitted only for this app's acknowledged auto-answer.
+    // The Android service independently checks its current session/sequence.
+    private var automaticAnswerRequested = false
+    private var automaticAnswerAcknowledged = false
+    private var automaticAnswerSession = ""
+    private var automaticOffhookSequence = 0
+    private var autoVoiceCaptureObserved = false
+    private var voiceStopCheckGeneration = 0
+    private var autoHangupBusy = false
     private var screenControlProcess: Process?
     private var voiceSessionID = ""
     private var pendingBlackHoleInstallChannels: Int?
@@ -332,6 +341,8 @@ final class AssistantModel: ObservableObject {
         embeddedVoiceCaptureActive = active
         guard useEmbeddedVoiceBrowser else { return }
         if active {
+            voiceStopCheckGeneration += 1
+            if automaticAnswerAcknowledged { autoVoiceCaptureObserved = true }
             embeddedVoiceStatus = "WebKit 已采集麦克风；电话实测才能确认 GPT 听懂语音"
             if incomingVoicePending && incomingPreflightPassed &&
                livePhoneState == "RINGING" && !incomingVoiceBlockedUntilIdle {
@@ -345,6 +356,10 @@ final class AssistantModel: ObservableObject {
                 }
             }
         } else {
+            if automaticAnswerAcknowledged && autoVoiceCaptureObserved &&
+               livePhoneState == "OFFHOOK" {
+                scheduleAutomaticHangupAfterVoiceEnds()
+            }
             if voiceSessionPrepared || aiReplyToPhoneEnabled {
                 log(.warn, .audio, "Voice 采集停止，撤销自动接听及 GPT 回传",
                     details: ["reason": "VOICE_CAPTURE_LOST"])
@@ -630,6 +645,15 @@ final class AssistantModel: ObservableObject {
             beginOnDemandVoiceForRinging()
         }
         if newIdle {
+            // Reset the auto-answer guard as soon as the Android service
+            // reports IDLE. Never carry termination authority into a later call.
+            voiceStopCheckGeneration += 1
+            automaticAnswerRequested = false
+            automaticAnswerAcknowledged = false
+            automaticAnswerSession = ""
+            automaticOffhookSequence = 0
+            autoVoiceCaptureObserved = false
+            autoHangupBusy = false
             incomingVoicePending = false
             incomingPreflightRunning = false
             incomingPreflightPassed = false
@@ -645,7 +669,11 @@ final class AssistantModel: ObservableObject {
                 restoreAutomaticGPTOutput(forceInput: true)
             }
             autoCallStatus = "空闲轻量待命 · 下次来电再启动 Voice"
-        } else if state == "OFFHOOK" && incomingVoicePending && !voiceSessionPrepared {
+        } else if state == "OFFHOOK" && automaticAnswerAcknowledged &&
+                  bridgeCursor.session == automaticAnswerSession {
+            automaticOffhookSequence = bridgeCursor.lastSequence
+        }
+        if state == "OFFHOOK" && incomingVoicePending && !voiceSessionPrepared {
             // Someone answered manually while Voice was being prepared.
             incomingVoicePending = false
             incomingVoiceBlockedUntilIdle = true
@@ -671,7 +699,7 @@ final class AssistantModel: ObservableObject {
             }
             autoCallStatus = "检测到响铃，音频输出已准备，正在自动请求 Android 接听……"
             log(.info, .call, "自动来电检测启动接听", details: ["state": "RINGING"])
-            answerIncomingPhoneCall()
+            answerIncomingPhoneCall(automatic: true)
         case .openCallAudio:
             guard !liveVoiceStarting && !liveVoiceActive else { return }
             autoCallAudioRequested = true
@@ -1578,8 +1606,15 @@ final class AssistantModel: ObservableObject {
     /// Explicit user-initiated real-call answer request only. The Android
     /// Companion re-checks its own call state, refuses all non-ringing calls,
     /// and requires separate ANSWER_PHONE_CALLS permission.
-    func answerIncomingPhoneCall() {
+    func answerIncomingPhoneCall(automatic: Bool = false) {
         guard !answerCallBusy && !adbInstalling else { return }
+        if automatic {
+            automaticAnswerRequested = true
+            automaticAnswerAcknowledged = false
+            automaticAnswerSession = ""
+            automaticOffhookSequence = 0
+            autoVoiceCaptureObserved = false
+        }
         answerCallBusy = true
         answerCallStatus = "正在安全检查 ADB 和手机响铃状态……"
         let path = selectedADBPath
@@ -1589,6 +1624,7 @@ final class AssistantModel: ObservableObject {
                 ADBInspector.openBridge(at: path)
             }.value
             guard let link = attempt.link else {
+                if automatic { self.automaticAnswerRequested = false }
                 self.answerCallBusy = false
                 self.answerCallStatus = "无法连接手机电话监听服务；请确认 Companion 已启动且只有一台已授权手机"
                 self.log(.warn, .system, "手动接听未建立手机桥接",
@@ -1624,10 +1660,19 @@ final class AssistantModel: ObservableObject {
                 let parsed = (try? JSONSerialization.jsonObject(with: body))
                     as? [String: Any]
                 if http == 200 && parsed?["result"] as? String == "answer_requested" {
+                    if automatic {
+                        self.automaticAnswerAcknowledged = true
+                        self.automaticAnswerSession = self.bridgeCursor.session
+                        self.autoVoiceCaptureObserved = self.embeddedVoiceCaptureActive
+                        if self.livePhoneState == "OFFHOOK" {
+                            self.automaticOffhookSequence = self.bridgeCursor.lastSequence
+                        }
+                    }
                     self.answerCallStatus = "已向 Android 发出接听请求；请确认手机状态转为 OFFHOOK，再启动 GPT 音频"
                     self.log(.info, .system, "用户主动请求接听当前响铃电话",
                              details: ["result": "ANSWER_REQUESTED"])
                 } else {
+                    if automatic { self.automaticAnswerRequested = false }
                     switch http {
                     case 403:
                         self.answerCallStatus = "手机拒绝接听：请在 Companion 授权「接听电话」"
@@ -1645,6 +1690,7 @@ final class AssistantModel: ObservableObject {
                                        "http": "\(http)"])
                 }
             } catch {
+                if automatic { self.automaticAnswerRequested = false }
                 self.answerCallStatus = "手机接听接口超时或连接中断；请检查手机界面，避免重复接听"
                 self.log(.warn, .system, "人工接听请求网络失败",
                          details: ["reason": "MANUAL_ANSWER_TIMEOUT"])
