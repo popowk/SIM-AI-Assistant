@@ -366,6 +366,7 @@ final class AssistantModel: ObservableObject {
                     scheduleAutomaticHangupAfterVoiceEnds()
                     embeddedVoiceStatus = "Voice 已结束，确认 4 秒后请求手机挂断"
                 } else {
+                    voiceStopCheckGeneration += 1
                     embeddedVoiceStatus = "Voice 麦克风暂时静音；不会误挂电话"
                 }
                 return
