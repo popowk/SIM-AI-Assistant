@@ -1,4 +1,11 @@
-# SIM AI Companion — Android 0.3.4 测试版
+# SIM AI Companion — Android 0.3.5 测试版
+
+## V0.3.5 · Mac 人工接听当前来电
+
+- 手机 Companion 新增可选接听权限按钮，用户明确知情后才向 Android 系统请求 ANSWER_PHONE_CALLS。
+- 原有私有令牌认证回环端点增加 `POST /call/answer`，只接受空请求体；即使 Mac 状态为 RINGING，也会重新查询 Android 电话系统当前是否仍响铃。调用系统 `TelecomManager.acceptRingingCall()` 只代表向系统请求，不等于接听必然成功。
+- 接口已 deprecated，Android 13 的 vivo 固件能否接受第三方接听需实机验证。失败可以使用 Mac 的 scrcpy 手机镜像窗口人工接听。没有新增自动接听、自动挂断、默认拨号角色、原始电话音频录制或号码读取。
+- Mac V0.4.8 提供双向 Voice 的人工确认一键联动和立即停止；Voice 仍需用户在官方界面手动打开。
 
 ## V0.3.4 · 固定签名可选（先完成仓库私钥配置）
 
