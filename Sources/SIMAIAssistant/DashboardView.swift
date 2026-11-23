@@ -10,6 +10,7 @@ struct DashboardView: View {
     @State private var confirmUplink = false
     @State private var confirmLiveVoice = false
     @State private var confirmLiveMic = false
+    @State private var confirmManualAnswer = false
     @State private var confirmChatGPTInput = false
     @State private var confirmAIReplyMonitor = false
     @State private var confirmAIReplyToPhone = false
@@ -25,6 +26,7 @@ struct DashboardView: View {
                 header
                 statusBar
                 adbPanel
+                phoneAnswerPanel
                 feishuPanel
                 phoneAudioPanel
                 liveVoicePanel
@@ -59,6 +61,14 @@ struct DashboardView: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("先接通已同意参与测试的运营商电话，并告知对方语音将通过 Mac 参与。接通后点击开始。Mac 将实时播放对方声音；麦克风默认静音，需要再次手动开启。通话 PCM 仅在内存中转发，不保存录音。建议佩戴耳机，避免回声。")
+        }
+        .confirmationDialog("确认人工接听当前真实来电？",
+                            isPresented: $confirmManualAnswer,
+                            titleVisibility: .visible) {
+            Button("确认，接听当前响铃电话") { model.answerIncomingPhoneCall() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("此操作仅在手机实际响铃且 Android 已授权接听电话时发出一次接听请求。并不会自动启动 GPT Voice、录音、自动转接或向对方播放 AI 声音。请确保后续通话中对方知情同意。")
         }
         .confirmationDialog("开启 Mac 麦克风向电话传输声音？", isPresented: $confirmLiveMic,
                             titleVisibility: .visible) {
@@ -131,7 +141,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("电话音频 + GPT Voice + ADB 手机远程屏幕 · V0.4.7")
+                Text("电话音频 + GPT Voice + 人工接听 · V0.4.8")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -231,7 +241,7 @@ struct DashboardView: View {
             Text("首次 USB 调试授权仍需先在手机确认一次。之后可在弹出的 scrcpy 窗口用 Mac 鼠标点击 vivo 安装确认、电话与短信权限弹窗。不会自动授权、关闭安全限制、录屏或修改手机设置；部分系统安全页面可能禁止远程点击。")
                 .font(.caption).foregroundStyle(.orange)
             Divider()
-            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.3.4" : "当前构建未包含")")
+            Text("内置 APK：\(model.embeddedAPKAvailable ? "SIM AI Companion V0.3.5" : "当前构建未包含")")
                 .font(.caption)
             Text(model.embeddedAPKSigningStatus)
                 .font(.caption)
@@ -277,7 +287,7 @@ struct DashboardView: View {
             Text(model.adbBridgeHealthDetail).font(.caption).foregroundStyle(.secondary)
             Text("ADB 状态、Shell 响应与 Companion 电话事件服务分别诊断。锁屏时服务受限不等于撤销 ADB 授权；如果无线调试被系统关闭，仍需在手机上重新启用。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("手机 Companion V0.3.3 安装后启动一次系统授权向导，获准后自动监听电话状态；锁屏增强和新短信转发默认开启。短信权限由系统决定。")
+            Text("手机 Companion V0.3.5 安装后启动一次系统授权向导，获准后自动监听电话状态；锁屏增强和新短信转发默认开启。短信权限由系统决定。")
                 .font(.caption).foregroundStyle(.secondary)
             Text("实时电话状态：\(model.livePhoneState)")
                 .font(.headline)
@@ -287,6 +297,37 @@ struct DashboardView: View {
             }
             Text("通过已授权的 USB 或无线 ADB 读取匿名来电事件；不使用 HFP。请确保手机 APK 已启动电话监听。")
                 .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var phoneAnswerPanel: some View {
+        panel("AI 接电话 · 当前阶段的人工接听与双向语音", symbol: "phone.arrow.up.right") {
+            Text("现阶段保留 vivo 原有拨号 App。点击下方按钮可通过已授权 ADB 请求 Android 接听正在响铃的来电；不会改变默认拨号应用，也不自动启动 ChatGPT Plus Voice。")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Text("手机状态：\(model.livePhoneState)")
+                    .font(.subheadline.weight(.medium))
+                Button("人工接听当前来电") { confirmManualAnswer = true }
+                    .disabled(model.answerCallBusy || model.adbInstalling)
+                    .buttonStyle(.borderedProminent)
+                Button("打开手机屏幕") { model.openPhoneScreenControl() }
+                    .disabled(model.screenControlStarting)
+            }
+            if model.answerCallBusy { ProgressView("正在请求 Android 接听……").controlSize(.small) }
+            Text(model.answerCallStatus).font(.caption).foregroundStyle(.secondary)
+            Divider()
+            Text("接听后如何让 GPT 与对方对话")
+                .font(.headline)
+            Text("① 在官方 ChatGPT 网页手动启动 Voice：麦克风选 BlackHole 2ch，声音输出选 BlackHole 16ch。② 在双方知情同意后开始实时电话音频，再打开「电话声音送入 GPT」及「GPT 回复监听」。③ 先确认耳机能听清，再人工授权「GPT 回复发给电话」。")
+                .font(.caption).foregroundStyle(.secondary)
+            Button("打开 ChatGPT Voice 网页") {
+                if let url = URL(string: "https://chatgpt.com/") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+            .buttonStyle(.bordered)
+            Text("本版不会静默自动接听，也不能从 Plus 订阅自动控制官方 Voice 会话。Android 13 的系统接听 API 已废弃，vivo 可能阻止第三方接听；失败时可使用 scrcpy 在手机屏幕中人工接听。电话音频测试仍有 180 秒的会话上限。")
+                .font(.caption).foregroundStyle(.orange)
         }
     }
 
@@ -327,7 +368,7 @@ struct DashboardView: View {
             }
             Text(model.feishuSyncStatus)
                 .font(.caption.weight(.medium))
-            Text("重要：保存到 Mac 不等于手机配置成功。手机需安装 Companion V0.3.3、授权 RECEIVE_SMS。ADB 写入成功后，手机会在打开 Companion 或下次收到新短信时导入配置；无需电话监听服务。")
+            Text("重要：保存到 Mac 不等于手机配置成功。手机需安装 Companion V0.3.5、授权 RECEIVE_SMS。ADB 写入成功后，手机会在打开 Companion 或下次收到新短信时导入配置；无需电话监听服务。")
                 .font(.caption).foregroundStyle(.secondary)
             Text("完整验证码会进入所选飞书群，请只使用自己管理、成员受限的群。Webhook 与密钥不会写入诊断日志、GitHub 或 ADB 命令参数。")
                 .font(.caption).foregroundStyle(.orange)
@@ -599,7 +640,7 @@ struct DashboardView: View {
             Text("已验证上行提示音；实时双向通话与 Mac 下行听辨待实机验证。")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("0.4.7 (24)").font(.caption.monospaced())
+            Text("0.4.8 (25)").font(.caption.monospaced())
         }
     }
 
