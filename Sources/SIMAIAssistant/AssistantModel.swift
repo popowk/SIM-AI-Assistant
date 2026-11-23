@@ -1663,8 +1663,10 @@ final class AssistantModel: ObservableObject {
 
     private func pollPrivateSnapshot(generation: Int) {
         let adb = selectedADBPath
+        let authorizedSerial = bridgeLink?.serial
         Task.detached(priority: .utility) { [weak self] in
-            let result = ADBInspector.readPrivateStateSnapshot(at: adb)
+            let result = ADBInspector.readPrivateStateSnapshot(
+                at: adb, authorizedSerial: authorizedSerial)
             await MainActor.run {
                 guard let self else { return }
                 guard self.liveSyncEnabled, generation == self.bridgeGeneration else { return }
@@ -1751,7 +1753,8 @@ final class AssistantModel: ObservableObject {
                     // Try the private state file before tearing down a valid
                     // port forward. This bypasses the HTTP socket only.
                     let fallback = await Task.detached(priority: .utility) {
-                        ADBInspector.readPrivateStateSnapshot(at: adb)
+                        ADBInspector.readPrivateStateSnapshot(
+                            at: adb, authorizedSerial: link.serial)
                     }.value
                     guard self.liveSyncEnabled, generation == self.bridgeGeneration else {
                         return
