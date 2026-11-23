@@ -97,7 +97,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         checkMicrophoneCapture()
         guard automaticVoiceButtonEnabled && isOfficialPage &&
               !microphoneActive &&
-              Date().timeIntervalSince(lastStartAttempt) > 75 else { return }
+              Date().timeIntervalSince(lastStartAttempt) > 10 else { return }
         guard prepareAudio() else {
             status = "BlackHole 2ch／16ch 未准备好；未点击 Voice"
             return
