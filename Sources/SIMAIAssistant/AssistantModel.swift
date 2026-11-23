@@ -27,6 +27,10 @@ final class AssistantModel: ObservableObject {
     @Published var livePhoneState = "未连接"
     @Published var answerCallBusy = false
     @Published var answerCallStatus = "尚未请求接听；需手机授予「接听电话」权限"
+    @Published var autoCallEnabled =
+        UserDefaults.standard.object(forKey: "SIMAI_AUTO_CALL") as? Bool ?? true
+    @Published var voiceSessionPrepared = false
+    @Published var autoCallStatus = "自动接听已设为默认，但需要先准备可用的语音会话，避免来电被接起后无人回答"
     @Published var liveBridgeLastSync: Date?
     @Published var adbTransportHealth = "尚未检查"
     @Published var adbShellHealth = "尚未检查"
@@ -75,13 +79,15 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.8"
-    let buildNumber = "25"
+    let version = "0.4.9"
+    let buildNumber = "26"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private let audioInspector = AudioInspector()
     private let microphoneProbe = MicrophoneLevelProbe()
     private var voiceStream: PhoneAudioStream?
+    private var autoCallState = AutoCallStateMachine()
+    private var autoCallAudioRequested = false
     private var screenControlProcess: Process?
     private var voiceSessionID = ""
     private var bridgeTimer: Timer?
@@ -159,11 +165,92 @@ final class AssistantModel: ObservableObject {
 
     func refresh() {
         audio = audioInspector.inspect()
+        // Choose an already active real output device by default, if one
+        // exists. Never change the macOS system output or select BlackHole.
+        if selectedVoiceMonitorOutputID.isEmpty,
+           let output = audio.devices.first(where: {
+               $0.isDefaultOutput &&
+               !$0.displayName.localizedCaseInsensitiveContains("BlackHole") &&
+               !$0.displayName.localizedCaseInsensitiveContains("aggregate") &&
+               !$0.displayName.localizedCaseInsensitiveContains("multi-output")
+           }) {
+            selectedVoiceMonitorOutputID = output.id
+        }
         if audio.microphonePermission == "已拒绝" {
             log(.warn, .audio, "麦克风权限被拒绝", code: .microphoneDenied)
         }
     }
 
+
+    /// This setting only arms an already running official Voice session.
+    /// There is no official ChatGPT Plus API for unattended voice creation.
+    func setAutoCallEnabled(_ enabled: Bool) {
+        autoCallEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "SIMAI_AUTO_CALL")
+        if !enabled {
+            autoCallState.reset()
+            voiceSessionPrepared = false
+            autoCallStatus = "自动接听已关闭；不会接听后续来电"
+        } else {
+            autoCallStatus = "自动接听已启用；请确认官方 Voice 正在运行，才能开始无人点击的来电处理"
+        }
+    }
+
+    func setVoiceSessionPrepared(_ prepared: Bool) {
+        voiceSessionPrepared = prepared
+        if prepared {
+            let problems = automaticVoiceReadinessIssues()
+            if problems.isEmpty {
+                autoCallStatus = "已预备自动来电：下一通响铃将自动接听并建立音频（官方 Voice 会话仍需保持运行）"
+            } else {
+                voiceSessionPrepared = false
+                autoCallStatus = "暂不能自动接听：" + problems.joined(separator: "；")
+            }
+        } else {
+            autoCallState.reset()
+            autoCallStatus = "已撤销自动接听预备状态；未结束当前通话，但不接听新来电"
+        }
+    }
+
+    private func automaticVoiceReadinessIssues() -> [String] {
+        var problems: [String] = []
+        if !liveSyncEnabled { problems.append("请打开电话状态同步") }
+        if !embeddedAudioProbeAvailable { problems.append("缺少电话 PCM Helper") }
+        if !audio.devices.contains(where: { $0.displayName.caseInsensitiveCompare("BlackHole 2ch") == .orderedSame }) {
+            problems.append("缺少 BlackHole 2ch")
+        }
+        if !audio.devices.contains(where: { $0.displayName.caseInsensitiveCompare("BlackHole 16ch") == .orderedSame }) {
+            problems.append("缺少 BlackHole 16ch")
+        }
+        if selectedVoiceMonitorOutputID.isEmpty { problems.append("未选择实际监听耳机") }
+        return problems
+    }
+
+    private func reactToAutomaticCallState(_ state: String) {
+        // Fail closed if the official Voice UI was not pre-armed this session.
+        // Checking for virtual devices cannot prove that ChatGPT is listening.
+        let armed = autoCallEnabled && voiceSessionPrepared &&
+            automaticVoiceReadinessIssues().isEmpty && !adbInstalling &&
+            !audioProbeBusy
+        let action = autoCallState.update(state: state, armed: armed)
+        switch action {
+        case .answerIncoming:
+            autoCallStatus = "检测到响铃，正在自动请求 Android 接听……"
+            log(.info, .call, "自动来电检测启动接听", details: ["state": "RINGING"])
+            answerIncomingPhoneCall()
+        case .openCallAudio:
+            guard !liveVoiceStarting && !liveVoiceActive else { return }
+            autoCallAudioRequested = true
+            autoCallStatus = "电话已接通，自动建立双向 PCM 和 GPT 路由……"
+            startLiveVoice()
+        case .stopCallAudio:
+            autoCallAudioRequested = false
+            autoCallStatus = "电话结束，自动释放音频并准备下一通"
+            stopLiveVoice()
+        case .none:
+            break
+        }
+    }
 
     // Phone events are received from the user-authorized Android APK over ADB,
     // never from Mac Bluetooth and never from a cellular audio channel.
@@ -445,6 +532,7 @@ final class AssistantModel: ObservableObject {
         }
         livePhoneState = snapshot.state
         liveBridgeLastSync = Date()
+        reactToAutomaticCallState(snapshot.state)
         adbTransportHealth = "ADB 已授权"
         adbShellHealth = "命令正常"
         adbForwardHealth = source == "ADB_FILE" ? "HTTP 备用路径" : "工作正常"
@@ -653,6 +741,16 @@ final class AssistantModel: ObservableObject {
                     self.liveVoiceActive = true
                     self.liveVoiceStarting = false
                     self.liveVoiceStatus = "实时播放电话下行中 · 麦克风默认静音"
+                    if self.autoCallAudioRequested {
+                        self.enableGPTTwoWayPhoneBridge()
+                        self.autoCallStatus = self.aiReplyToPhoneEnabled
+                            ? "自动电话路由已开启；当前仍依赖事先启动的 ChatGPT Voice 会话"
+                            : "PCM 已启动，但 GPT 回传未就绪；已保持电话上行静音，需检查音频配置"
+                        if !self.aiReplyToPhoneEnabled {
+                            self.log(.warn, .audio, "自动通话路由失败并保持上行静音",
+                                     details: ["reason": "GPT_RETURN_NOT_READY"])
+                        }
+                    }
                     self.log(.info, .audio, "ADB 双向 PCM 通道已建立",
                         details: ["sampleRate": "16000", "channels": "1", "frameMs": "20"])
                 case .metrics(let received, let sent, let dropped,
@@ -672,6 +770,10 @@ final class AssistantModel: ObservableObject {
                     self.aiReplyUplinkUnderflow = uplinkUnderflow
                     self.aiReplyPeakRMS = peakRMS
                 case .finished(let reason):
+                    if self.autoCallAudioRequested {
+                        self.autoCallStatus = "自动电话音频已停止：" + reason
+                        self.autoCallAudioRequested = false
+                    }
                     self.liveVoiceStarting = false
                     self.liveVoiceActive = false
                     self.liveVoiceMicrophoneEnabled = false
