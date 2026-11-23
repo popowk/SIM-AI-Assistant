@@ -2,8 +2,17 @@
 import SwiftUI
 import AppKit
 
+/// Last-resort synchronous restoration for Quit events not coming from
+/// our menu-bar button (e.g. macOS application termination).
+private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        _ = AutoVoiceOutputRouter().restore()
+    }
+}
+
 @main
 struct SIMAIApp: App {
+    @NSApplicationDelegateAdaptor(AppLifecycleDelegate.self) private var appDelegate
     @StateObject private var model = AssistantModel()
 
     var body: some Scene {
