@@ -108,8 +108,8 @@ jobs:
         with:
           name: SIM-AI-Assistant-macOS-arm64
           path: |
-            dist/SIM-AI-Assistant-v0.4.8-macos-arm64.zip
-            dist/SIM-AI-Assistant-v0.4.8-macos-arm64.zip.sha256
+            dist/SIM-AI-Assistant-v0.4.9-macos-arm64.zip
+            dist/SIM-AI-Assistant-v0.4.9-macos-arm64.zip.sha256
             dist/SIMAI-Audio-Probe.jar
             dist/SIMAI-Android-Signing.txt
             dist/SIMAI-Companion-v0.3.5-debug.apk
@@ -133,11 +133,11 @@ jobs:
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest --target "$(git rev-parse HEAD)" \
               --title "SIM AI Assistant · 最新测试版" --prerelease \
-              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.8 新增通过原有 ADB 私有桥接人工接听当前来电，许可和响铃状态由 Android 二次验证；Mac 追加 GPT 双向语音一键授权路由与立即停止。证书可在可信 Mac 上通过脚本配置 GitHub Secrets。"
+              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.9 自动来电路由：Mac 检测响铃、自动请求接听，OFFHOOK 后启动 PCM 与预先准备的 Voice 路由；需先验证音频与 Voice 已就绪，官方 ChatGPT Plus Voice 不能由第三方自动启动。"
           fi
           gh release upload dev-latest \
-            dist/SIM-AI-Assistant-v0.4.8-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.8-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.9-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.9-macos-arm64.zip.sha256 \
             dist/SIMAI-Audio-Probe.jar \
             dist/SIMAI-Android-Signing.txt \
             dist/SIMAI-Companion-v0.3.5-debug.apk \
@@ -150,8 +150,8 @@ jobs:
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/SIM-AI-Assistant-v0.4.8-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.8-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.9-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.9-macos-arm64.zip.sha256 \
             dist/SIMAI-Companion-v0.3.5-debug.apk \
             dist/SIMAI-Companion-v0.3.5-debug.apk.sha256 \
             dist/SIMAI-Android-Signing.txt \
