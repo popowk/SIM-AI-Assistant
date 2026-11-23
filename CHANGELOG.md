@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.4.26（真实来电 PCM 与独立接听广播兜底）— 2026-11-24
+
+- 最新 00:45:38 诊断包中 Mac v0.4.25 Build42 / Android Companion 已明确 ANSWER_PERMISSION_GRANTED；00:44:01 RINGING、00:44:03 网页确认采集 BlackHole 2ch、00:44:08 发现 BLACKHOLE2_SIGNAL_SILENT。00:44:10 受控文件接听 NO_ACK、00:44:14 HTTP 失败；00:44:57 才同时收取 OFFHOOK 与 IDLE 两条历史状态，期间没有真正建立电话 PCM。
+- 关键修复：此前手动接听后因 automaticAnswerAcknowledged=false 导致 AutoCallStateMachine 永远不会启动 PCM。现在只对程序已实际观察 RINGING 的同一 Android 会话和下一 OFFHOOK 序列，且官方 Voice 麦克风和独立音轨都验证成功的情况下，自动启动电话 PCM 和 BlackHole2 → Voice / BlackHole16 → 电话音频。手动接听绝不会获得自动挂机权限，任何未知 OFFHOOK 仍然拒绝。
+- RINGING / OFFHOOK 期间优先读取 ADB 私有快照，不再等 HTTP 3 秒超时才恢复；绑定已有已授权手机的 ADB serial，避免每次多启动一个 adb devices；若 OFFHOOK 与 IDLE 被合并成一轮历史状态，记录 OFFHOOK_IDLED_BEFORE_POLL 诊断，不会在挂机后才打开 PCM。
+- Android Companion v0.3.11（versionCode 16）增加 android.permission.DUMP 限制的 Android ADB Shell 广播受控接听入口。服务重新验证当前 session、响铃序列、电话状态和 ANSWER_PHONE_CALLS 权限，且仅记录匿名结果。Mac v0.4.26 在手机声称支持时优先尝试广播并核对私有快照实际回执；失败仍保留旧的私有文件路径，不用盲目的电话按键。
+- Mac v0.4.26 Build43。自动化测试及构建仅验证软件逻辑，不代表 vivo 运营商电话和 ChatGPT Voice 实机已通过。
+
+
 ## 0.4.25（接听权限与独立回执诊断）— 2026-11-24
 
 - 根据 00:28 诊断包，Mac v0.4.24 Build41 已运行；在 RINGING 后等 6 秒及 14 秒才请求接听，Mac 独立通道两次均返回 ANSWER_FALLBACK_NO_ACK，HTTP 返回 409 或超时，均无 OFFHOOK，故不能把故障认定为 APK 接听权限问题。
