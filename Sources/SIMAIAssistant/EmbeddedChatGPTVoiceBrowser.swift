@@ -115,7 +115,11 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
             if (!label) continue;
             if (/end|stop|leave|mute|close|hang up|结束|停止|关闭|静音|挂断/i.test(label))
               continue;
-            if (!/(^|\\s)(start voice|voice mode|voice chat|语音模式|开始语音|语音对话)(\\s|$)/i.test(label))
+            const likelyStart = /(^|\\s)(start voice|use voice|voice mode|voice chat|语音模式|开始语音|语音对话)(\\s|$)/i.test(label);
+            const exactVoice = /^(voice|语音)$/i.test(label);
+            const testId = el.getAttribute('data-testid') || '';
+            const knownButton = /voice[-_](mode|start|button)/i.test(testId);
+            if (!likelyStart && !exactVoice && !knownButton)
               continue;
             if (el.disabled || el.getAttribute('aria-disabled') === 'true')
               continue;
@@ -172,12 +176,27 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
             decisionHandler(.cancel)
             return
         }
-        // Retain normal HTTPS redirects for OpenAI authentication. Unsafe
-        // URL schemes are never navigated by this embedded browser.
-        if url.scheme?.lowercased() == "https" || url.scheme?.lowercased() == "about" {
+        // This application deliberately has no editable URL bar. Never let
+        // an unrelated website mimic ChatGPT's sign-in page within the app.
+        // Preserve OpenAI-controlled authentication redirects; third-party
+        // login providers and external links use the user's real browser.
+        if url.scheme?.lowercased() == "about" {
+            decisionHandler(.allow)
+            return
+        }
+        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased() else {
+            decisionHandler(.cancel)
+            return
+        }
+        let approved = host == "chatgpt.com" || host.hasSuffix(".chatgpt.com") ||
+                       host == "openai.com" || host.hasSuffix(".openai.com")
+        if approved {
             decisionHandler(.allow)
         } else {
             decisionHandler(.cancel)
+            NSWorkspace.shared.open(url)
+            status = "第三方网站已在系统浏览器打开；外部登录会话无法自动回写到 WebKit"
+            onDiagnostic?("VOICE_EXTERNAL_ORIGIN_OPENED")
         }
     }
 
