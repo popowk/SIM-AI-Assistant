@@ -2266,7 +2266,8 @@ final class AssistantModel: ObservableObject {
                         ADBInspector.answerRingingViaPrivateLocalShell(
                             at: path,
                             expectedSession: expectedRingSession,
-                            expectedSequence: expectedRingSequence
+                            expectedSequence: expectedRingSequence,
+                            expectedSerial: link.serial
                         )
                     }.value
                     if result == "ANSWER_FALLBACK_REQUESTED" &&
