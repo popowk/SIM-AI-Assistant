@@ -446,7 +446,7 @@ struct DashboardView: View {
             }
             Text("电话对方 → BlackHole 2ch → GPT；GPT 回复 → BlackHole 16ch → 电话。首次登录、系统麦克风授权及网页选择独立音频设备可能需要人工。内嵌浏览器不读取登录凭证或对话内容。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("轻量待命：平时不启动 Voice。来电时最多等待 25 秒建立可用会话；若超时或音频预检失败，保持不接听。通话结束卸载网页、保留 WebKit 登录数据。")
+            Text("来电最多等待 25 秒建立 Voice；未准备好时不接听，也不会清空 ChatGPT 网页。通话结束保留登录页面，手动打开的窗口不自动隐藏。仅显式关闭内嵌模式或退出时才释放网页。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
