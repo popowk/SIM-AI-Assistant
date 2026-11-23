@@ -188,6 +188,10 @@ final class AssistantModel: ObservableObject {
     private var nextHTTPRecoveryAttempt = Date.distantPast
     private var bridgeRetryAfter = Date.distantPast
     private var bridgeConsecutiveFailures = 0
+    private var adbTransientMissingScans = 0
+    private var nextBridgeForwardAttempt = Date.distantPast
+    private var lastDefaultOutputID = ""
+    private var lastObservedAudioRouteAt = Date.distantPast
     private var nextPhoneMonitorWakeAt = Date.distantPast
     private var initialPhoneMonitorWarmup = false
     private var startupBridgeGraceUntil = Date().addingTimeInterval(30)
@@ -363,6 +367,13 @@ final class AssistantModel: ObservableObject {
         // HDMI, AirPlay). CoreAudio numeric IDs are not stable. Prefer the
         // saved physical hardware UID, otherwise use a real output device
         // with an actual stream. Never select a microphone as the monitor.
+        if let newOutput = audio.devices.first(where: { $0.isDefaultOutput })?.id {
+            if !lastDefaultOutputID.isEmpty && newOutput != lastDefaultOutputID {
+                log(.info, .audio, "检测到 macOS 外部默认输出设备变化（本应用未修改）",
+                    details: ["reason": "SYSTEM_DEFAULT_OUTPUT_CHANGED_EXTERNALLY"])
+            }
+            lastDefaultOutputID = newOutput
+        }
         if let recommended = AudioInspector.recommendedMonitorOutput(
             from: audio, previousID: selectedVoiceMonitorOutputID
         ), recommended != selectedVoiceMonitorOutputID {
@@ -1145,13 +1156,20 @@ final class AssistantModel: ObservableObject {
                                        "offline": "\(found.offline)",
                                        "source": description])
                 }
-                let reconnected = !self.adbWasAuthorized && connected
-                self.adbWasAuthorized = connected
+                // One failed adb devices scan commonly happens while the
+                // shell/PCM helper is busy. Do NOT treat a single empty scan
+                // as a disconnect or tear down an existing forward.
+                if connected { self.adbTransientMissingScans = 0 }
+                else { self.adbTransientMissingScans += 1 }
+                let stableConnected = connected ||
+                    (self.adbWasAuthorized && self.adbTransientMissingScans < 3)
+                let reconnected = !self.adbWasAuthorized && stableConnected
+                self.adbWasAuthorized = stableConnected
                 if reconnected && self.liveSyncEnabled && self.bridgeLink == nil {
                     self.resetBridgeRetry()
                     self.beginInitialPhoneMonitorWarmup()
-                } else if !connected && self.liveSyncEnabled {
-                    self.liveBridgeStatus = "正在等待手机 ADB 授权或恢复在线"
+                } else if !stableConnected && self.liveSyncEnabled {
+                    self.liveBridgeStatus = "ADB 暂时不可用，保留已有连接并自动重试"
                 }
             }
         }
@@ -1169,7 +1187,8 @@ final class AssistantModel: ObservableObject {
         let generation = bridgeGeneration
         Task.detached(priority: .utility) { [weak self] in
             let code = ADBInspector.wakePhoneMonitorIfDesired(at: adb)
-            if code == "PHONE_MONITOR_WAKE_REQUESTED" {
+            if ["PHONE_MONITOR_WAKE_REQUESTED",
+                "PHONE_MONITOR_ACTIVITY_WAKE_REQUESTED"].contains(code) {
                 // Android needs a brief moment to initialize its persistent
                 // snapshot and loopback listener before the first Mac poll.
                 Thread.sleep(forTimeInterval: 0.5)
@@ -1179,8 +1198,10 @@ final class AssistantModel: ObservableObject {
                 self.initialPhoneMonitorWarmup = false
                 guard generation == self.bridgeGeneration,
                       self.liveSyncEnabled else { return }
-                self.nextPhoneMonitorWakeAt = Date().addingTimeInterval(20)
-                self.log(code == "PHONE_MONITOR_WAKE_REQUESTED" ? .info : .warn,
+                self.nextPhoneMonitorWakeAt = Date().addingTimeInterval(90)
+                let requested = ["PHONE_MONITOR_WAKE_REQUESTED",
+                                 "PHONE_MONITOR_ACTIVITY_WAKE_REQUESTED"].contains(code)
+                self.log(requested ? .info : .warn,
                          .call, "手机电话监听启动预热",
                          details: ["recovery": code])
                 self.liveBridgeStatus = code == "PHONE_MONITOR_USER_DISABLED"
@@ -1351,16 +1372,20 @@ final class AssistantModel: ObservableObject {
         guard ["SNAPSHOT_INVALID_OR_STALE", "SNAPSHOT_UNAVAILABLE"].contains(reason),
               liveSyncEnabled, !adbInstalling,
               Date() >= nextPhoneMonitorWakeAt else { return }
-        nextPhoneMonitorWakeAt = Date().addingTimeInterval(45)
+        // Repeated background FGS wake requests can be rejected by vivo.
+        // Avoid hammering ADB and triggering more competing adb commands.
+        nextPhoneMonitorWakeAt = Date().addingTimeInterval(90)
         let adb = selectedADBPath
         Task.detached(priority: .utility) { [weak self] in
             let code = ADBInspector.wakePhoneMonitorIfDesired(at: adb)
             await MainActor.run {
                 guard let self, self.liveSyncEnabled else { return }
-                self.log(code == "PHONE_MONITOR_WAKE_REQUESTED" ? .info : .warn,
+                let requested = ["PHONE_MONITOR_WAKE_REQUESTED",
+                                 "PHONE_MONITOR_ACTIVITY_WAKE_REQUESTED"].contains(code)
+                self.log(requested ? .info : .warn,
                          .call, "已检查 Android 电话监听服务自动恢复",
                          details: ["recovery": code])
-                if code == "PHONE_MONITOR_WAKE_REQUESTED" {
+                if requested {
                     // ADB remains authorized. Prefer fresh file snapshots
                     // while the phone's HTTP listener is starting.
                     self.resetBridgeRetry()
@@ -1447,7 +1472,12 @@ final class AssistantModel: ObservableObject {
                     // Alternating to HTTP after every stale snapshot added
                     // another timeout and made the UI look disconnected.
                     self.bridgeUsingFileFallback = true
-                    self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(12)
+                    // An HTTP retry should happen occasionally, not after
+                    // every stale file attempt. Preserve the established ADB
+                    // forward and debounce failed file reads.
+                    if self.nextHTTPRecoveryAttempt <= Date() {
+                        self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(35)
+                    }
                     self.schedulePhoneMonitorWakeIfNeeded(reason: result.reason)
                     self.noteBridgeFailure(code: result.reason, domain: "SIMAI.ADBFile")
                     self.livePhoneState = "未连接"
@@ -1528,11 +1558,14 @@ final class AssistantModel: ObservableObject {
                         self.schedulePhoneMonitorWakeIfNeeded(reason: fallback.reason)
                         self.noteBridgeFailure(code: fallback.reason, domain: "SIMAI.ADBFile")
                         self.livePhoneState = "未连接"
-                        if self.bridgeConsecutiveFailures == 1 { self.inspectBridgeHealth() }
+                        if self.bridgeConsecutiveFailures == 4 {
+                            self.inspectBridgeHealth()
+                        }
                         // Preserve a valid ADB forward if only the Android
                         // listener or its snapshot is stale. Reopening the
                         // tunnel repeatedly delayed recovery in real logs.
-                        if self.bridgeConsecutiveFailures >= 3 &&
+                        if self.bridgeConsecutiveFailures >= 5 &&
+                           self.adbTransientMissingScans >= 3 &&
                            ["ADB_NOT_READY", "ADB_ENUMERATION_FAILED",
                             "ADB_ENUMERATION_TIMEOUT"].contains(fallback.reason) {
                             self.closeLiveBridge()
@@ -1542,6 +1575,13 @@ final class AssistantModel: ObservableObject {
                 self.bridgeBusy = false
             }
         } else {
+            // Preserve scarce ADB slots. The original app could repeatedly
+            // run port forwarding while Android was restoring its service.
+            guard Date() >= nextBridgeForwardAttempt else {
+                bridgeBusy = false
+                return
+            }
+            nextBridgeForwardAttempt = Date().addingTimeInterval(12)
             let path = selectedADBPath
             let generation = bridgeGeneration
             Task { [weak self] in
