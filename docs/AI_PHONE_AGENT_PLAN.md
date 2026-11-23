@@ -2,6 +2,12 @@
 
 更新时间：2026-11-23。现有目标设备：vivo S9e / Android 13 / 联通 SIM、Apple Silicon Mac、BlackHole 2ch 与 16ch、ChatGPT Plus 官方 Voice。不默认使用付费 API。
 
+## V0.4.9 新增自动通话编排（仍需真机验收）
+
+Mac 自动状态机只在用户声明 Voice 已预先启动、相关音频设备就绪后，自动从 RINGING 请求接听、OFFHOOK 建立 PCM、再接通已存在的 Voice 路由。一个来电周期最多请求一次接听、一次音频；IDLE 重置。**官方 ChatGPT Plus Voice 不能由第三方程序自动启动、维持或判断其真正在线**，因此此版不能宣称做到安装后完全无人工的 GPT 电话接待。180 秒通话音频上限仍保留；超时后不假装仍可听到 AI 语音。
+
+真正完全无人值守的路线必须选择单独受控的语音后端：按量计费的可编排语音 API（须另行同意费用、保存 API 密钥），或独立本地 ASR/LLM/TTS 引擎（须装模型并验证 Mac 负载）。两者都不等同于 Plus 订阅 Voice。
+
 ## 已实现部分（V0.4.8 代码，仍需真机验收）
 
 - Android Companion V0.3.5 新增可选的系统 `ANSWER_PHONE_CALLS` 授权入口，**不修改默认拨号应用**；只在用户从 Mac 明确点击「人工接听当前来电」时，通过原有已认证 ADB loopback 的 `POST /call/answer` 请求接听。手机再次读取系统通话状态，只有 `CALL_STATE_RINGING` 才调用 `TelecomManager.acceptRingingCall()`。
