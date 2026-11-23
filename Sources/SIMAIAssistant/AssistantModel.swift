@@ -107,8 +107,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.24"
-    let buildNumber = "41"
+    let version = "0.4.25"
+    let buildNumber = "42"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -226,6 +226,7 @@ final class AssistantModel: ObservableObject {
     private var bridgeCursor = PhoneBridgeCursor()
     private var bridgeGeneration = 0
     private var bridgeUsingFileFallback = false
+    private var lastAndroidAnswerPermission: Bool?
     private var nextHTTPRecoveryAttempt = Date.distantPast
     private var bridgeRetryAfter = Date.distantPast
     private var bridgeConsecutiveFailures = 0
@@ -1554,6 +1555,13 @@ final class AssistantModel: ObservableObject {
         }
         livePhoneState = snapshot.state
         liveBridgeLastSync = Date()
+        if let granted = snapshot.answerPermissionGranted,
+           lastAndroidAnswerPermission != granted {
+            lastAndroidAnswerPermission = granted
+            log(granted ? .info : .warn, .call,
+                granted ? "Android 已确认授予接听电话权限" : "Android 未授予接听电话权限",
+                details: ["diagnosis": granted ? "ANSWER_PERMISSION_GRANTED" : "ANSWER_PERMISSION_MISSING"])
+        }
         reactToAutomaticCallState(snapshot.state)
         adbTransportHealth = "ADB 已授权"
         adbShellHealth = "命令正常"
@@ -2319,8 +2327,13 @@ final class AssistantModel: ObservableObject {
                         return
                     }
                     self.automaticAnswerRequested = false
-                    self.answerCallStatus =
-                        "接听转发失败，Android 本机路径也未确认；本次未自动接听"
+                    self.answerCallStatus = result == "ANSWER_FALLBACK_PERMISSION_REQUIRED"
+                        ? "Android 未授予接听电话权限；请在手机 Companion 中允许电话权限"
+                        : result == "ANSWER_FALLBACK_WORKER_INACTIVE"
+                            ? "Android 私有接听服务未运行；需要恢复手机端监听服务"
+                            : result == "ANSWER_FALLBACK_RING_CHANGED"
+                                ? "这通来电已结束或改变，安全取消迟到的接听命令"
+                                : "接听转发失败，Android 本机路径也未确认；本次未自动接听"
                     self.log(.warn, .call, "电话接听双路径失败",
                              details: ["reason": "MANUAL_ANSWER_TIMEOUT",
                                        "fallback": result,
