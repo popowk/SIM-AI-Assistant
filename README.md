@@ -1,4 +1,4 @@
-# SIM AI Assistant · V0.4.12（自动虚拟麦克风 + 精简主界面）
+# SIM AI Assistant · V0.4.13（电话 PCM 丢帧修复）
 
 **设备目标**：vivo S9e / Android 13 / 中国联通实体 SIM + Apple Silicon Mac / macOS 26.6.2。
 **源代码**：https://github.com/popowk/SIM-AI-Assistant
@@ -10,6 +10,21 @@
 - Android → Mac：私有通信令牌、本机端口转发、匿名电话状态同步和去重、断线重连。此前 vivo S9e 的真实来电日志已验证此项。
 - Mac 本地音频设备检查、麦克风电平、扬声器试听和设备恢复。
 - 诊断 ZIP、匿名事件日志、1/7/14 天清理与「清空全部（含今天）」。
+
+## V0.4.13 · 修复电话音频大量丢帧（2026-11-23）
+
+用户新提交的 `SIM-AI-Diagnostics-20261123-141842.zip`（V0.4.12 Build 29）确认：
+- 06:17:06 已将 macOS 默认麦克风切到 BlackHole 2ch（`INPUT_ACTIVE`）；06:17:33 切到 BlackHole 16ch（`ROUTE_ACTIVE`），自动接听成功，06:17:35 OFFHOOK，06:17:39 ADB PCM 双向会话正常建立。
+- 电话下行 `phoneDownlinkPeakRMS=0.27850` 表示 Mac 从 Android 收到非静音的电话音频，`rxFrames=1912`，但本地物理监听丢弃 **1887 帧**，BlackHole 2ch 虚拟麦克风丢弃 **1708 帧**，均不符合实时通话要求。
+- GPT 回复 `aiReturnCaptured=1723`、`aiReturnPeakRMS=0.00000`，即检测到输入回调但没有非零 GPT 回传音频；**仍不能单凭日志证明网页实际麦克风选择，或 ChatGPT Voice 是否运行**。
+
+本版技术调整：
+- 用 `AVAudioSourceNode` + 有界 16kHz PCM Float 环形缓冲替换每 20ms 调用一次 `AVAudioPlayerNode.scheduleBuffer` 的模式；实时音频引擎主动拉取样本并做设备采样率转换，避免待播放回调没有及时释放导致几乎所有 PCM 帧被拒绝。
+- 缓冲上限约 1 秒；短暂设备卡顿时只舍弃最旧的 20ms 帧，不把滞后数据无限累积到后续通话。输出缓冲欠载填静音，不存储原始电话音频。对物理耳机及 BlackHole 2ch 虚拟麦克风均应用这项修复。
+- 诊断 ZIP 增加 `physicalRenderedFrames` 和 `virtualMicRenderedFrames`，明确区分**收到电话数据**与**CoreAudio 音频渲染实际运行**；如连接正常但虚拟麦克风渲染 0 帧，记录独立警告 `BLACKHOLE_RENDER_STALLED`。仍保留旧 droppedFrames、音频电平，不在首页显示技术指标。
+- Mac V0.4.13 Build 30，Android Companion V0.3.5 不变；自动接听及精简主界面不变。**本版只完成源码与 CI 构建后才视为构建验证；播放改善需要用户 Mac/Android 实机复测**。
+
+验证方法：在官方 ChatGPT Voice 中先确认使用 BlackHole 2ch 输入（某些浏览器按站点锁定麦克风）；准备自动值守后，使用自己的另一部电话进行一通有真人说话的测试，导出诊断 ZIP，比较 `rxFrames`、`physicalRenderedFrames`、`virtualMicRenderedFrames`、`dropped`、`voiceRouteDropped` 和 `aiReturnPeakRMS`。未经同意不得把真实来电内容送到第三方语音服务。当前 180 秒测试限时仍保留。
 
 ## V0.4.12 · 修复 GPT 虚拟麦克风与精简主界面（2026-11-23）
 
