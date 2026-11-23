@@ -36,7 +36,7 @@ private struct MenuBarCommands: View {
             model.restoreAutomaticGPTOutput()
         }
         Divider()
-        Text("v0.5.0 · 自动 BlackHole 输出切换")
+        Text("v0.4.10 · 自动 BlackHole 输出切换")
         Button("退出 SIM AI Assistant") {
             model.shutdownForAppExit()
             NSApp.terminate(nil)
