@@ -581,6 +581,23 @@ struct DashboardView: View {
                     "独立回复输入：缺少 BlackHole 16ch（可通过 brew install blackhole-16ch 安装）")
                 .font(.caption)
                 .foregroundStyle(blackHoleReturnReady ? .green : .orange)
+            if !blackHoleReturnReady {
+                HStack {
+                    Button("复制 BlackHole 16ch 安装命令") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString("brew install blackhole-16ch", forType: .string)
+                    }
+                    .buttonStyle(.bordered)
+                    Button("安装说明") {
+                        if let url = URL(string: "https://github.com/ExistentialAudio/BlackHole") {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                    .buttonStyle(.link)
+                }
+                Text("缺少虚拟声卡时不会擅自安装内核／音频驱动，也不会自动接听无人回答的电话；请先完成一次安装。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Picker("Mac 真实耳机/扬声器", selection: $model.selectedVoiceMonitorOutputID) {
                 Text("请先选择输出设备").tag("")
                 ForEach(model.audio.devices.filter { device in
