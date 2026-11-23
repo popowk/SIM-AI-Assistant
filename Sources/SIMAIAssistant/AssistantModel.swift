@@ -217,6 +217,15 @@ final class AssistantModel: ObservableObject {
             feishuSyncStatus = "已从 Mac 钥匙串读取配置；如手机尚未同步，请点击同步"
         }
         log(.info, .system, "程序启动，诊断日志已初始化")
+        // v0.4.20 migrates once from the old global-output mode to video-
+        // safe isolated output. Respect subsequent explicit user changes.
+        if !UserDefaults.standard.bool(forKey: "SIMAI_OUTPUT_SAFETY_MIGRATED_0420") {
+            UserDefaults.standard.set(true, forKey: "SIMAI_ISOLATED_WEB_OUTPUT")
+            UserDefaults.standard.set(true, forKey: "SIMAI_OUTPUT_SAFETY_MIGRATED_0420")
+            isolatedChatGPTOutputEnabled = true
+            log(.info, .audio, "已升级到视频安全隔离模式：不再自动切换系统默认扬声器")
+        }
+
         let recoveredOutput = voiceOutputRouter.recoverPreviousSession()
         let recoveredInput = voiceInputRouter.recoverPreviousSession()
         if recoveredOutput == "ROUTE_RESTORED" || recoveredInput == "INPUT_RESTORED" {
