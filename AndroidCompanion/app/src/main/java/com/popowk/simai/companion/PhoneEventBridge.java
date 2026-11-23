@@ -59,6 +59,8 @@ final class PhoneEventBridge {
     private volatile long lastPrivateAnswerPollAt = 0;
     private volatile int lastPrivateAnswerSequence = 0;
     private volatile String lastPrivateAnswerResult = "NO_REQUEST";
+    private volatile long lastTelephonyReconcileAt = 0;
+    private volatile String lastRealPhoneState = "UNKNOWN";
 
     private static final class CallEvent {
         final int seq;
@@ -136,8 +138,14 @@ final class PhoneEventBridge {
             thread.setDaemon(true);
             return thread;
         });
-        privateAnswerPoller.scheduleWithFixedDelay(this::processPrivateAnswerRequest,
-                0, 250, TimeUnit.MILLISECONDS);
+        privateAnswerPoller.scheduleWithFixedDelay(() -> {
+            try { processPrivateAnswerRequest(); }
+            catch (Exception failure) {
+                Log.w("SIMAICompanion", "Answer request poll: " +
+                      failure.getClass().getSimpleName());
+            }
+            reconcileRealCallState();
+        }, 0, 250, TimeUnit.MILLISECONDS);
         worker = new Thread(this::serve, "SIMAI-CallEventBridge");
         worker.setDaemon(true);
         worker.start();
@@ -177,6 +185,43 @@ final class PhoneEventBridge {
                 if (active) Log.w("SIMAICompanion", "Bridge accept failed: "
                         + error.getClass().getSimpleName());
             }
+        }
+    }
+
+    /**
+     * OEM telephony callbacks can be delayed while the screen is locked.
+     * Poll the actual TelephonyManager state periodically from this already
+     * foreground-running service, rather than leaving the Mac at RINGING
+     * until a delayed OFFHOOK+IDLE batch arrives. No caller ID is accessed.
+     */
+    private void reconcileRealCallState() {
+        if (!active) return;
+        long now = System.currentTimeMillis();
+        if (now - lastTelephonyReconcileAt < 900) return;
+        lastTelephonyReconcileAt = now;
+        try {
+            if (context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
+                    != PackageManager.PERMISSION_GRANTED) return;
+            TelephonyManager phone = (TelephonyManager)
+                    context.getSystemService(Context.TELEPHONY_SERVICE);
+            if (phone == null) return;
+            int observed = phone.getCallState();
+            String current = observed == TelephonyManager.CALL_STATE_RINGING
+                    ? "RINGING" : observed == TelephonyManager.CALL_STATE_OFFHOOK
+                    ? "OFFHOOK" : observed == TelephonyManager.CALL_STATE_IDLE
+                    ? "IDLE" : "UNKNOWN";
+            if ("UNKNOWN".equals(current)) return;
+            lastRealPhoneState = current;
+            synchronized (this) {
+                if (!current.equals(lastState)) {
+                    recordState(current);
+                    Log.i("SIMAICompanion", "Telephony reconcile state=" + current);
+                }
+            }
+        } catch (SecurityException ignored) {
+            // Permission may have been revoked by Android system settings.
+        } catch (Exception ignored) {
+            // Do not stop the foreground monitor if OEM API is unavailable.
         }
     }
 
@@ -502,6 +547,7 @@ final class PhoneEventBridge {
                 context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
                     == PackageManager.PERMISSION_GRANTED);
         body.put("adbBroadcastAnswerAvailable", true);
+        body.put("realPhoneState", lastRealPhoneState);
         body.put("privateAnswerPollerActive",
                 active && lastPrivateAnswerPollAt > 0 &&
                 System.currentTimeMillis() - lastPrivateAnswerPollAt < 5000);
