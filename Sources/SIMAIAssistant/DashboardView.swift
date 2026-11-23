@@ -6,6 +6,7 @@ import SIMAICore
 struct DashboardView: View {
     @EnvironmentObject private var model: AssistantModel
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
     @State private var previewExport = false
     @State private var confirmDownlink = false
     @State private var confirmUplink = false
@@ -25,7 +26,6 @@ struct DashboardView: View {
     @State private var confirmBlackHoleDownload = false
     @State private var showAdvancedTools = false
     @State private var showFeishuSettings = false
-    @State private var didRestoreEmbeddedVoiceWindow = false
 
     var body: some View {
         ScrollView {
@@ -52,12 +52,13 @@ struct DashboardView: View {
             .padding(22)
         }
         .frame(minWidth: 740, minHeight: 540)
-        .onAppear {
-            // Only reopen on app/window startup after the user previously
-            // opted into the embedded browser. Login stays in WebKit storage.
-            guard model.useEmbeddedVoiceBrowser && !didRestoreEmbeddedVoiceWindow else { return }
-            didRestoreEmbeddedVoiceWindow = true
+        .onReceive(NotificationCenter.default.publisher(
+            for: Notification.Name("SIMAI_OPEN_VOICE_ON_RINGING"))) { _ in
             openWindow(id: "embedded-voice")
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: Notification.Name("SIMAI_CLOSE_VOICE_AFTER_CALL"))) { _ in
+            dismissWindow(id: "embedded-voice")
         }
         .confirmationDialog("测试通话下行音频？", isPresented: $confirmDownlink, titleVisibility: .visible) {
             Button("已取得同意，开始 2 秒下行电平测试") {
@@ -378,7 +379,7 @@ struct DashboardView: View {
             if model.useEmbeddedVoiceBrowser {
                 Text(model.embeddedVoiceStatus)
                     .font(.caption.weight(.medium))
-                Text("登录只在你自己的 WebKit 网页内完成。软件可实验性点击 Voice 按钮，但不操作账号密码、验证码或登录令牌。只有检测到 WebKit 实际采集麦克风时，才允许自动接听来电；不保证 GPT 已收到有效音频。")
+                Text("首次手动打开网页登录一次。平时不加载网页；响铃时先进行双声道 PCM 渲染预检，再按需启动 Voice，采集激活后才尝试自动接听。不能保证网页手势自动成功。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
@@ -413,7 +414,7 @@ struct DashboardView: View {
             }
             Text("电话对方 → BlackHole 2ch → GPT；GPT 回复 → BlackHole 16ch → 电话。首次登录、系统麦克风授权及网页选择独立音频设备可能需要人工。内嵌浏览器不读取登录凭证或对话内容。")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("当前自动值守只复用已启动的官方 Voice。通话和音频测试结果自动写入诊断日志，不再显示逐帧数据。")
+            Text("轻量待命：平时不启动 Voice。来电时最多等待 25 秒建立可用会话；若超时或音频预检失败，保持不接听。通话结束卸载网页、保留 WebKit 登录数据。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
