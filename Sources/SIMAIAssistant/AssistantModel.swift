@@ -2037,7 +2037,7 @@ final class AssistantModel: ObservableObject {
                     case 403:
                         self.answerCallStatus = "手机拒绝接听：请在 Companion 授权「接听电话」"
                     case 404:
-                        self.answerCallStatus = "手机 Companion 版本过旧，请更新至 V0.3.6"
+                        self.answerCallStatus = "手机 Companion 不支持电话接听接口，请通过一键更新安装内置最新版"
                     case 409:
                         self.answerCallStatus = "手机当前并未响铃；不会接听其它通话"
                     case 503:
