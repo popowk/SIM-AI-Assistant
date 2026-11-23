@@ -8,6 +8,7 @@ private final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         _ = AutoVoiceOutputRouter().restore()
         _ = AutoVoiceInputRouter().restore()
+        _ = AutoVoiceInputRouter().restore()
     }
 }
 
@@ -46,7 +47,7 @@ private struct MenuBarCommands: View {
             model.restoreAutomaticGPTOutput()
         }
         Divider()
-        Text("v0.4.11 · 官方 BlackHole 一键安装")
+        Text("v0.4.12 · 自动虚拟麦克风与精简界面")
         Button("退出 SIM AI Assistant") {
             model.shutdownForAppExit()
             NSApp.terminate(nil)
