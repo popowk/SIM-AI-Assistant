@@ -299,6 +299,27 @@ final class SIMAICoreTests: XCTestCase {
         XCTAssertEqual(try store.readRecent().count, 0)
     }
 
+    func testTrackedManualPickupOnlyBridgesTheSameRingWithoutAnswerAuthority() {
+        let base: (String, String, Int, String, Int, Bool, Bool, Bool) -> Bool = {
+            state, session, sequence, ringSession, ringSequence,
+            automationEnabled, startedForRing, automaticAnswerAcknowledged in
+            ManualPickupPolicy.isSameTrackedCall(
+                state: state, session: session, sequence: sequence,
+                ringSession: ringSession, ringSequence: ringSequence,
+                automationEnabled: automationEnabled,
+                voiceStartedForRing: startedForRing,
+                automaticAnswerAcknowledged: automaticAnswerAcknowledged)
+        }
+        XCTAssertTrue(base("OFFHOOK", "abc", 3, "abc", 2, true, true, false))
+        XCTAssertFalse(base("RINGING", "abc", 2, "abc", 2, true, true, false))
+        XCTAssertFalse(base("IDLE", "abc", 4, "abc", 2, true, true, false))
+        XCTAssertFalse(base("OFFHOOK", "other", 3, "abc", 2, true, true, false))
+        XCTAssertFalse(base("OFFHOOK", "abc", 5, "abc", 2, true, true, false))
+        XCTAssertFalse(base("OFFHOOK", "abc", 3, "abc", 2, false, true, false))
+        XCTAssertFalse(base("OFFHOOK", "abc", 3, "abc", 2, true, false, false))
+        XCTAssertFalse(base("OFFHOOK", "abc", 3, "abc", 2, true, true, true))
+    }
+
     func testADBFileSnapshotFreshnessAndStaleRejection() throws {
         let body = """
         {"schema":1,"session":"service-1","running":true,"state":"OFFHOOK","seq":1,
@@ -330,6 +351,7 @@ final class SIMAICoreTests: XCTestCase {
         XCTAssertEqual(snapshot.privateAnswerPollerActive, true)
         XCTAssertEqual(snapshot.privateAnswerSequence, 7)
         XCTAssertEqual(snapshot.privateAnswerResult, "PERMISSION_REQUIRED")
+        XCTAssertNil(snapshot.adbBroadcastAnswerAvailable)
 
         let older = """
         {"schema":1,"session":"old-service","running":true,"state":"IDLE","seq":0,
