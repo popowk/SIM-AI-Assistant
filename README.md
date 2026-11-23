@@ -1,4 +1,6 @@
-# SIM AI Assistant · V0.4.26（修复同一通来电的手动接听 PCM 与广播兜底）
+# SIM AI Assistant · V0.4.27（回归成功接听路径 + vivo 通话状态复核）
+
+> 依据 v0.4.26 Build43 01:09 的真实日志，权限已授权，自动接听卡在先尝试私有文件 NO_ACK 后 HTTP 超时，电话未接通所以 GPT 虚拟麦克风保持静音。v0.4.27 恢复 v0.4.21 实际接通成功的“新建独立 ADB 转发 → POST /call/answer → OFFHOOK → PCM”路径，备用 Shell 广播与文件仅在失败后尝试；不增加只用于拨号的 CALL_PHONE。Android Companion v0.3.12 的前台服务主动核对 TelephonyManager 通话状态，处理 vivo 锁屏迟到的 OFFHOOK 事件，手动接通同一通已跟踪来电后可继续音频 PCM。必须在目标 vivo 真实电话中再次验证自动接听与声音，Mac 编译成功不代表电话自动接通，也不能保证 ChatGPT 官方 Voice 实际识别讲话。
 
 > Mac v0.4.26 Build43 / Android Companion v0.3.11：前一版真实日志显示 APK 已授予 ANSWER_PHONE_CALLS，卡在 ADB 私有接听 NO_ACK、HTTP 超时，以及手动接通后 PCM 根本没有启动；此次让已识别的同一通手动接通电话自动连接 GPT Voice PCM，并增加仅系统/ADB shell 可发送、需会话/响铃序列匹配的 Android 广播接听兜底。安装后仍需真实来电测试验证；不能仅凭 WebKit 已选中 BlackHole 2ch 就判断 GPT 收到语音。
 
