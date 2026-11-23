@@ -2270,7 +2270,9 @@ final class AssistantModel: ObservableObject {
                         )
                     }.value
                     if result == "ANSWER_FALLBACK_REQUESTED" &&
-                       self.bridgeCursor.session == expectedRingSession {
+                       self.bridgeCursor.session == expectedRingSession &&
+                       self.autoStartedWebVoiceForRing &&
+                       ["RINGING", "OFFHOOK"].contains(self.livePhoneState) {
                         self.automaticAnswerRequested = true
                         self.automaticAnswerAcknowledged = true
                         self.automaticAnswerSession = expectedRingSession
