@@ -220,34 +220,35 @@ struct EmbeddedChatGPTWebView: NSViewRepresentable {
 
 struct EmbeddedChatGPTVoiceWindow: View {
     @EnvironmentObject private var model: AssistantModel
+    @ObservedObject var browser: EmbeddedChatGPTVoiceBrowser
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("ChatGPT Voice · 内嵌浏览器")
                     .font(.headline)
                 Spacer()
-                Button("重新加载") { model.embeddedVoiceBrowser.reload() }
+                Button("重新加载") { browser.reload() }
                 Button("实验性启动 Voice") { model.tryStartEmbeddedVoice() }
-                    .disabled(!model.embeddedVoiceBrowser.loaded)
+                    .disabled(!browser.loaded)
                 Button("外部浏览器打开") {
                     NSWorkspace.shared.open(URL(string: "https://chatgpt.com/")!)
                 }
             }
             Toggle("登录后自动尝试启动 Voice（实验）", isOn: Binding(
-                get: { model.embeddedVoiceBrowser.automaticVoiceButtonEnabled },
+                get: { browser.automaticVoiceButtonEnabled },
                 set: { model.setEmbeddedVoiceAutoStart($0) }
             ))
-            Text(model.embeddedVoiceBrowser.status)
+            Text(browser.status)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text("只保存在本机 WebKit 网站数据中登录。不会获取密码、Cookie、Token 或对话内容。首次麦克风授权须由你确认；Google 登录可能拒绝内嵌浏览器。网页改版或无用户手势时，自动点击可能失败。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            EmbeddedChatGPTWebView(controller: model.embeddedVoiceBrowser)
+            EmbeddedChatGPTWebView(controller: browser)
                 .frame(minHeight: 500)
         }
         .padding(12)
-        .onAppear { model.embeddedVoiceBrowser.loadIfNeeded() }
+        .onAppear { browser.loadIfNeeded() }
     }
 }
 #endif
