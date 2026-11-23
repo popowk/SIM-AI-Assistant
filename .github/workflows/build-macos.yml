@@ -8,7 +8,7 @@ on:
 
 # Only the newest main build should publish the easy-download test release.
 concurrency:
-  group: simai-stable-signing-build-${{ github.ref }}
+  group: simai-scrcpy-v047-${{ github.ref }}
   cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 permissions:
