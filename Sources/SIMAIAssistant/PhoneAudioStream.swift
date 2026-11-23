@@ -94,9 +94,11 @@ private final class LiveMacMicrophone {
 /// could stop draining under CoreAudio device routing and drop almost every
 /// 20ms phone frame even while the ADB stream remained healthy.
 private final class LiveMacSpeaker {
-    private let engine = AVAudioEngine()
+    // Use the macOS HAL output unit directly. On some virtual/physical devices
+    // AVAudioEngine.start() succeeded but AVAudioSourceNode was never pulled,
+    // silently dropping thousands of telephone frames.
     private let gate = NSLock()
-    private let capacity = 320 * 50  // 1 second of 16kHz mono PCM
+    private let capacity = 320 * 50
     private var samples = [Float](repeating: 0, count: 320 * 50)
     private var readIndex = 0
     private var writeIndex = 0
@@ -104,68 +106,164 @@ private final class LiveMacSpeaker {
     private var dropped = 0
     private var rendered = 0
     private var stopped = false
-    private var source: AVAudioSourceNode?
+    private var resamplePhase = 0.0
+    private var currentSample: Float = 0
+    private var nextSample: Float = 0
+    private var primed = false
+    private var unit: AudioUnit?
+    private let outputRate: Double
 
     init(deviceID: AudioDeviceID? = nil) throws {
-        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                         sampleRate: 16000, channels: 1,
-                                         interleaved: false) else {
-            throw LiveAudioFailure.reason("SPEAKER_FORMAT")
-        }
-        // AVAudioEngine pulls the amount of data needed by the actual device
-        // and performs any sample-rate conversion, without one playback
-        // completion handler per 20ms packet.
-        let node = AVAudioSourceNode(format: format) { [weak self] _, _, frameCount, audioData in
-            guard let self else { return noErr }
-            return self.render(frames: Int(frameCount), to: audioData)
-        }
-        source = node
-        engine.attach(node)
-        engine.connect(node, to: engine.mainMixerNode, format: format)
-
-        if var target = deviceID {
-            guard let unit = engine.outputNode.audioUnit else {
-                throw LiveAudioFailure.reason("VOICE_ROUTE_NO_OUTPUT_UNIT")
+        let device: AudioDeviceID
+        if let deviceID {
+            device = deviceID
+        } else {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            var selected: AudioDeviceID = 0
+            var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+            guard AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil,
+                &size, &selected) == noErr, selected != 0 else {
+                throw LiveAudioFailure.reason("SPEAKER_NO_DEFAULT_DEVICE")
             }
-            let size = UInt32(MemoryLayout<AudioDeviceID>.size)
-            let setStatus = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
-                kAudioUnitScope_Global, 0, &target, size)
-            guard setStatus == noErr else {
-                throw LiveAudioFailure.reason("VOICE_ROUTE_SELECT_DEVICE_FAILED")
+            device = selected
+        }
+        var rateAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var nominal: Float64 = 48000
+        var rateSize = UInt32(MemoryLayout<Float64>.size)
+        guard AudioObjectGetPropertyData(device, &rateAddr, 0, nil,
+                                          &rateSize, &nominal) == noErr,
+              nominal >= 8000 else {
+            throw LiveAudioFailure.reason("SPEAKER_RATE_UNAVAILABLE")
+        }
+        outputRate = nominal
+
+        var desc = AudioComponentDescription(
+            componentType: kAudioUnitType_Output,
+            componentSubType: kAudioUnitSubType_HALOutput,
+            componentManufacturer: kAudioUnitManufacturer_Apple,
+            componentFlags: 0, componentFlagsMask: 0)
+        guard let component = AudioComponentFindNext(nil, &desc) else {
+            throw LiveAudioFailure.reason("SPEAKER_HAL_UNAVAILABLE")
+        }
+        var instance: AudioUnit?
+        guard AudioComponentInstanceNew(component, &instance) == noErr,
+              let instance else {
+            throw LiveAudioFailure.reason("SPEAKER_HAL_CREATE")
+        }
+        do {
+            var enableOutput: UInt32 = 1
+            guard AudioUnitSetProperty(instance, kAudioOutputUnitProperty_EnableIO,
+                                       kAudioUnitScope_Output, 0, &enableOutput,
+                                       UInt32(MemoryLayout<UInt32>.size)) == noErr else {
+                throw LiveAudioFailure.reason("SPEAKER_HAL_ENABLE")
+            }
+            var disableInput: UInt32 = 0
+            _ = AudioUnitSetProperty(instance, kAudioOutputUnitProperty_EnableIO,
+                                     kAudioUnitScope_Input, 1, &disableInput,
+                                     UInt32(MemoryLayout<UInt32>.size))
+            var selected = device
+            guard AudioUnitSetProperty(instance, kAudioOutputUnitProperty_CurrentDevice,
+                                       kAudioUnitScope_Global, 0, &selected,
+                                       UInt32(MemoryLayout<AudioDeviceID>.size)) == noErr else {
+                throw LiveAudioFailure.reason("SPEAKER_HAL_SELECT_DEVICE")
             }
             var actual: AudioDeviceID = 0
-            var actualSize = size
-            let getStatus = AudioUnitGetProperty(unit, kAudioOutputUnitProperty_CurrentDevice,
-                kAudioUnitScope_Global, 0, &actual, &actualSize)
-            guard getStatus == noErr && actual == target else {
-                throw LiveAudioFailure.reason("VOICE_ROUTE_DEVICE_MISMATCH")
+            var actualSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+            guard AudioUnitGetProperty(instance, kAudioOutputUnitProperty_CurrentDevice,
+                                       kAudioUnitScope_Global, 0,
+                                       &actual, &actualSize) == noErr, actual == device else {
+                throw LiveAudioFailure.reason("SPEAKER_HAL_DEVICE_MISMATCH")
             }
+            let channels: UInt32 = 2
+            var format = AudioStreamBasicDescription(
+                mSampleRate: nominal,
+                mFormatID: kAudioFormatLinearPCM,
+                mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+                mBytesPerPacket: channels * 4,
+                mFramesPerPacket: 1,
+                mBytesPerFrame: channels * 4,
+                mChannelsPerFrame: channels,
+                mBitsPerChannel: 32,
+                mReserved: 0)
+            guard AudioUnitSetProperty(instance, kAudioUnitProperty_StreamFormat,
+                                       kAudioUnitScope_Input, 0, &format,
+                                       UInt32(MemoryLayout<AudioStreamBasicDescription>.size)) == noErr else {
+                throw LiveAudioFailure.reason("SPEAKER_HAL_FORMAT")
+            }
+            var callback = AURenderCallbackStruct(
+                inputProc: { refCon, _, _, _, frameCount, ioData in
+                    guard let refCon, let ioData else { return noErr }
+                    return Unmanaged<LiveMacSpeaker>.fromOpaque(refCon)
+                        .takeUnretainedValue().render(frames: Int(frameCount), to: ioData)
+                },
+                inputProcRefCon: Unmanaged.passUnretained(self).toOpaque())
+            guard AudioUnitSetProperty(instance, kAudioUnitProperty_SetRenderCallback,
+                                       kAudioUnitScope_Input, 0, &callback,
+                                       UInt32(MemoryLayout<AURenderCallbackStruct>.size)) == noErr,
+                  AudioUnitInitialize(instance) == noErr else {
+                throw LiveAudioFailure.reason("SPEAKER_HAL_CALLBACK")
+            }
+            self.unit = instance
+            guard AudioOutputUnitStart(instance) == noErr else {
+                throw LiveAudioFailure.reason("SPEAKER_HAL_START")
+            }
+        } catch {
+            _ = AudioOutputUnitStop(instance)
+            _ = AudioUnitUninitialize(instance)
+            _ = AudioComponentInstanceDispose(instance)
+            unit = nil
+            throw error
         }
-        try engine.start()
     }
 
-    private func render(frames: Int, to audioData: UnsafeMutablePointer<AudioBufferList>) -> OSStatus {
-        let buffers = UnsafeMutableAudioBufferListPointer(audioData)
-        // Fill every output buffer so an underflow is guaranteed silence;
-        // never expose previously held or uninitialized sample data.
-        for buffer in buffers {
-            guard let ptr = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
-            ptr.update(repeating: 0, count: Int(buffer.mDataByteSize) / MemoryLayout<Float>.size)
-        }
-        guard let first = buffers.first,
-              let output = first.mData?.assumingMemoryBound(to: Float.self) else { return noErr }
-        let availableCapacity = Int(first.mDataByteSize) / MemoryLayout<Float>.size
-        let count = min(frames, availableCapacity)
+    private func nextQueuedSample() -> Float {
+        guard queued > 0 else { return 0 }
+        let sample = samples[readIndex]
+        readIndex = (readIndex + 1) % capacity
+        queued -= 1
+        return sample
+    }
+
+    private func render(frames: Int, to data: UnsafeMutablePointer<AudioBufferList>) -> OSStatus {
+        let buffers = UnsafeMutableAudioBufferListPointer(data)
         gate.lock()
-        if !stopped {
-            for i in 0..<count {
-                if queued > 0 {
-                    output[i] = samples[readIndex]
-                    readIndex = (readIndex + 1) % capacity
-                    queued -= 1
-                }
+        if stopped {
+            for buffer in buffers {
+                buffer.mData?.initializeMemory(as: UInt8.self,
+                                               repeating: 0, count: Int(buffer.mDataByteSize))
             }
-            rendered += count
+            gate.unlock()
+            return noErr
+        }
+        let step = 16000.0 / outputRate
+        for frame in 0..<frames {
+            if !primed {
+                currentSample = nextQueuedSample()
+                nextSample = nextQueuedSample()
+                primed = true
+            }
+            let signalAvailable = queued > 0 || currentSample != 0 || nextSample != 0
+            let value = currentSample + Float(resamplePhase) * (nextSample - currentSample)
+            for buffer in buffers {
+                guard let ptr = buffer.mData?.assumingMemoryBound(to: Float.self) else { continue }
+                let channels = Int(buffer.mNumberChannels)
+                guard channels > 0 && (frame + 1) * channels * 4 <= Int(buffer.mDataByteSize) else { continue }
+                for channel in 0..<channels { ptr[frame * channels + channel] = value }
+            }
+            if signalAvailable { rendered += 1 }
+            resamplePhase += step
+            while resamplePhase >= 1 {
+                currentSample = nextSample
+                nextSample = nextQueuedSample()
+                resamplePhase -= 1
+            }
         }
         gate.unlock()
         return noErr
@@ -176,8 +274,6 @@ private final class LiveMacSpeaker {
         gate.lock()
         defer { gate.unlock() }
         guard !stopped else { return }
-        // Device restarts and brief Bluetooth interruptions cannot grow
-        // latency forever. Once full, drop only the oldest 20ms packet.
         if queued + 320 > capacity {
             readIndex = (readIndex + 320) % capacity
             queued -= 320
@@ -198,19 +294,23 @@ private final class LiveMacSpeaker {
 
     func renderedFrames() -> Int {
         gate.lock(); defer { gate.unlock() }
-        return rendered / 320
+        return Int(Double(rendered) / (outputRate * 0.02))
     }
 
     func stop() {
         gate.lock()
         stopped = true
         queued = 0
+        let currentUnit = unit
+        unit = nil
         gate.unlock()
-        engine.stop()
-        source = nil
+        if let currentUnit {
+            _ = AudioOutputUnitStop(currentUnit)
+            _ = AudioUnitUninitialize(currentUnit)
+            _ = AudioComponentInstanceDispose(currentUnit)
+        }
     }
 }
-
 
 /// Separate, opt-in return path for ChatGPT output. BlackHole 16ch must be
 /// selected as the ChatGPT playback device. The monitor goes only to an
@@ -404,6 +504,43 @@ final class PhoneAudioStream {
         } else {
             microphone.stop()
         }
+    }
+
+    /// A silent low-amplitude synthetic signal proves that each selected HAL
+    /// output actually pulls PCM before the app answers an inbound telephone call.
+    /// It does not prove that ChatGPT itself heard or understood any speech.
+    static func preflightOutputs(physicalOutputID: AudioDeviceID?) -> String {
+        guard let physicalOutputID else { return "PREFLIGHT_PHYSICAL_MISSING" }
+        guard let virtual = AudioInspector().inspect().devices.first(where: {
+            $0.displayName.caseInsensitiveCompare("BlackHole 2ch") == .orderedSame
+        }), let virtualID = UInt32(virtual.id) else {
+            return "PREFLIGHT_VIRTUAL_MISSING"
+        }
+        let values = (0..<320).map { i -> Int16 in
+            Int16(300 * sin(Double(i) * 2.0 * .pi * 440.0 / 16000.0))
+        }
+        let frame: [UInt8] = values.flatMap { v in
+            let bits = UInt16(bitPattern: v)
+            return [UInt8(truncatingIfNeeded: bits),
+                    UInt8(truncatingIfNeeded: bits >> 8)]
+        }
+        for (name, device) in [("PHYSICAL", physicalOutputID),
+                               ("BLACKHOLE2", AudioDeviceID(virtualID))] {
+            do {
+                let speaker = try LiveMacSpeaker(deviceID: device)
+                for _ in 0..<12 {
+                    speaker.feed(frame)
+                    usleep(20_000)
+                }
+                usleep(80_000)
+                let pulled = speaker.renderedFrames()
+                speaker.stop()
+                if pulled < 4 { return "PREFLIGHT_\\(name)_NOT_RENDERING" }
+            } catch {
+                return "PREFLIGHT_\\(name)_START_FAILED"
+            }
+        }
+        return "PREFLIGHT_OK"
     }
 
     /// Opt-in receive-only ChatGPT Voice input; never routes AI audio to caller.
