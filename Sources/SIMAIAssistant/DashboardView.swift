@@ -381,7 +381,6 @@ struct DashboardView: View {
                     .disabled(model.voiceSessionPrepared || !model.autoCallEnabled)
                     .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
                 Button("停止自动值守") {
                     model.setVoiceSessionPrepared(false)
                     model.stopGPTTwoWayPhoneBridge()
