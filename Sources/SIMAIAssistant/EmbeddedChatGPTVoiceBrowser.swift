@@ -15,22 +15,21 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     @Published var automaticVoiceButtonEnabled =
         UserDefaults.standard.object(forKey: "SIMAI_EMBEDDED_VOICE_AUTOCLICK") as? Bool ?? true
 
-    let webView: WKWebView
+    // Merely constructing WKWebView can allocate WebKit processes. Keep
+    // the whole web view lazy until an incoming call or manual sign-in.
+    lazy var webView: WKWebView = {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        // Media autoplay is not equivalent to microphone permission.
+        configuration.mediaTypesRequiringUserActionForPlayback = []
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.navigationDelegate = self
+        view.uiDelegate = self
+        return view
+    }()
     var onMicrophoneChange: ((Bool) -> Void)?
     var onDiagnostic: ((String) -> Void)?
     private var lastStartAttempt = Date.distantPast
-
-    override init() {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
-        // WebRTC can still require an OS prompt and a real browser gesture.
-        // This property only configures media autoplay, not mic authorization.
-        configuration.mediaTypesRequiringUserActionForPlayback = []
-        webView = WKWebView(frame: .zero, configuration: configuration)
-        super.init()
-        webView.navigationDelegate = self
-        webView.uiDelegate = self
-    }
 
     private var isOfficialPage: Bool {
         let url = webView.url
