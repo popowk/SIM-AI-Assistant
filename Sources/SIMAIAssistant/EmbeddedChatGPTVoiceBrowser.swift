@@ -89,6 +89,13 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     var onMicrophoneChange: ((Bool) -> Void)?
     var onDiagnostic: ((String) -> Void)?
     private var lastStartAttempt = Date.distantPast
+    private var previousCaptureState: WKMediaCaptureState = .none
+
+    /// Muting the mic is not the same as ending Voice. In particular,
+    /// WKWebView can report .muted while the Voice session is still alive.
+    var voiceSessionActuallyEnded: Bool {
+        loaded && webView.microphoneCaptureState == .none
+    }
 
     private var isOfficialPage: Bool {
         let url = webView.url
@@ -118,6 +125,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         loaded = false
         lastStartAttempt = .distantPast
         webView.stopLoading()
+        previousCaptureState = .none
         webView.loadHTMLString("", baseURL: nil)
         if microphoneActive {
             microphoneActive = false
@@ -138,8 +146,11 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     }
 
     func checkMicrophoneCapture() {
-        let active = webView.microphoneCaptureState == .active
-        guard active != microphoneActive else { return }
+        let captureState = webView.microphoneCaptureState
+        let active = captureState == .active
+        guard captureState != previousCaptureState ||
+              active != microphoneActive else { return }
+        previousCaptureState = captureState
         microphoneActive = active
         if active && isOfficialPage && rememberMicrophoneApproval {
             // Save only after WebKit confirms a real active capture resulting
@@ -147,8 +158,10 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
             UserDefaults.standard.set(true, forKey: micApprovalKey)
         }
         status = active
-            ? "WebKit 已确认 chatgpt.com 正在采集麦克风；不代表 GPT 已收到有效声音"
-            : "网页麦克风采集已停止；新的来电不会自动接听"
+            ? "WebKit 已确认 ChatGPT 正在采集麦克风"
+            : captureState == .muted
+                ? "Voice 麦克风已静音，语音会话不等于结束"
+                : "Voice 已停止使用麦克风；正在判断是否应同步挂断电话"
         onDiagnostic?(active ? "VOICE_WEBKIT_CAPTURE_ACTIVE" : "VOICE_WEBKIT_CAPTURE_INACTIVE")
         onMicrophoneChange?(active)
     }
