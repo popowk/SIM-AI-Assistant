@@ -111,6 +111,44 @@ final class AssistantModel: ObservableObject {
     private let voiceOutputRouter = AutoVoiceOutputRouter()
     private let voiceInputRouter = AutoVoiceInputRouter()
     let embeddedVoiceBrowser = EmbeddedChatGPTVoiceBrowser()
+    private var embeddedVoiceWindow: NSWindow?
+
+    /// Application-owned browser window. Unlike the old Dashboard.onReceive,
+    /// this stays available while the diagnostics window is closed or a
+    /// video is playing full-screen. Only manual opens activate the Mac app.
+    func showEmbeddedVoiceWindow(activate: Bool = true) {
+        let window: NSWindow
+        if let existing = embeddedVoiceWindow {
+            window = existing
+        } else {
+            let created = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1040, height: 760),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered, defer: false)
+            created.title = "ChatGPT Voice · 内嵌浏览器"
+            created.isReleasedWhenClosed = false
+            created.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            created.contentView = NSHostingView(rootView:
+                EmbeddedChatGPTVoiceWindow(browser: embeddedVoiceBrowser)
+                    .environmentObject(self))
+            created.center()
+            embeddedVoiceWindow = created
+            window = created
+        }
+        if activate {
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            // Do not steal focus from the video player; WebKit still has a
+            // live, on-screen NSView for the Voice start button and WebRTC.
+            window.orderFront(nil)
+        }
+        embeddedVoiceBrowser.loadIfNeeded()
+    }
+
+    func hideEmbeddedVoiceWindow() {
+        embeddedVoiceWindow?.orderOut(nil)
+    }
     private let microphoneProbe = MicrophoneLevelProbe()
     private var voiceStream: PhoneAudioStream?
     private var autoCallState = AutoCallStateMachine()
@@ -544,9 +582,7 @@ final class AssistantModel: ObservableObject {
                 }
                 self.incomingPreflightPassed = true
                 self.autoCallStatus = "音频预检成功：正在加载网页并启动 Voice"
-                self.embeddedVoiceBrowser.loadIfNeeded()
-                NotificationCenter.default.post(
-                    name: Notification.Name("SIMAI_OPEN_VOICE_ON_RINGING"), object: nil)
+                self.showEmbeddedVoiceWindow(activate: false)
                 self.checkEmbeddedVoiceHealth()
             }
         }
@@ -724,6 +760,8 @@ final class AssistantModel: ObservableObject {
             stopGPTTwoWayPhoneBridge()
         }
         voiceSessionPrepared = false
+        embeddedVoiceBrowser.releaseForIdle()
+        hideEmbeddedVoiceWindow()
         restoreAutomaticGPTOutput(forceInput: true)
         closePhoneScreenControl()
     }
@@ -953,8 +991,7 @@ final class AssistantModel: ObservableObject {
             voiceSessionPrepared = false
             if useEmbeddedVoiceBrowser && embeddedVoiceBrowser.loaded {
                 embeddedVoiceBrowser.releaseForIdle()
-                NotificationCenter.default.post(
-                    name: Notification.Name("SIMAI_CLOSE_VOICE_AFTER_CALL"), object: nil)
+                hideEmbeddedVoiceWindow()
             }
             if liveVoiceActive || liveVoiceStarting {
                 stopLiveVoice()
