@@ -24,10 +24,6 @@ struct SIMAIApp: App {
             DashboardView().environmentObject(model)
         }
         .defaultSize(width: 900, height: 720)
-        Window("ChatGPT Voice · 内嵌浏览器", id: "embedded-voice") {
-            EmbeddedChatGPTVoiceWindow(browser: model.embeddedVoiceBrowser).environmentObject(model)
-        }
-        .defaultSize(width: 1100, height: 820)
     }
 }
 
@@ -44,8 +40,7 @@ private struct MenuBarCommands: View {
         Button("刷新 Mac 音频设备") { model.refresh() }
         Button("内嵌 ChatGPT Voice（实验）") {
             model.setEmbeddedVoiceBrowserEnabled(true)
-            NSApp.activate(ignoringOtherApps: true)
-            openWindow(id: "embedded-voice")
+            model.showEmbeddedVoiceWindow(activate: true)
         }
         Button("打开手机屏幕（ADB）") {
             model.openPhoneScreenControl()
