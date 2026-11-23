@@ -793,6 +793,48 @@ final class AssistantModel: ObservableObject {
         }
     }
 
+    /// Explicit confirmation in UI is required every session. This does not
+    /// create/start a ChatGPT Voice conversation, bypass its microphone prompt
+    /// or automatically answer calls. User first verifies the official Voice
+    /// session is open with BlackHole 2ch input / 16ch output.
+    func enableGPTTwoWayPhoneBridge() {
+        guard liveVoiceActive, voiceStream != nil else {
+            aiReplyReturnStatus = "请先接听真实电话，并建立实时通话音频"
+            return
+        }
+        guard !aiReplyToPhoneEnabled else { return }
+        setChatGPTVoiceRoute(true)
+        guard chatGPTVoiceRouteEnabled else {
+            aiReplyReturnStatus = "GPT 双向桥接未启动：电话→BlackHole 2ch 路由失败"
+            return
+        }
+        setAIReplyMonitor(true)
+        guard aiReplyMonitorEnabled else {
+            setChatGPTVoiceRoute(false)
+            aiReplyReturnStatus = "GPT 双向桥接未启动：BlackHole 16ch 或物理耳机监听不可用"
+            return
+        }
+        setAIReplyToPhone(true)
+        guard aiReplyToPhoneEnabled else {
+            setAIReplyMonitor(false)
+            setChatGPTVoiceRoute(false)
+            aiReplyReturnStatus = "GPT 双向桥接未启动：已恢复全部关闭状态"
+            return
+        }
+        aiReplyReturnStatus = "GPT 双向电话桥接已人工开启；正在转发 Voice 输出，可随时一键停止"
+        log(.info, .audio, "用户确认开启双向 GPT 电话语音路由",
+            details: ["mode": "MANUAL_CONSENT_GATED_BRIDGE"])
+    }
+
+    func stopGPTTwoWayPhoneBridge() {
+        if aiReplyToPhoneEnabled { setAIReplyToPhone(false) }
+        if aiReplyMonitorEnabled { setAIReplyMonitor(false) }
+        if chatGPTVoiceRouteEnabled { setChatGPTVoiceRoute(false) }
+        aiReplyReturnStatus = "GPT 双向电话桥接已全部停止，电话上行恢复静音"
+        log(.info, .audio, "用户立即停止双向 GPT 电话音频",
+            details: ["mode": "ALL_GPT_ROUTES_OFF"])
+    }
+
     func stopLiveVoice() {
         guard liveVoiceStarting || liveVoiceActive else { return }
         liveVoiceMicrophoneEnabled = false
