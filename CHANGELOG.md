@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.4.21（修复 Voice iframe 验证阻塞与网页白屏）— 2026-11-23
+
+- 20:46 诊断显示：Android 在 20:46:00 成功发送 RINGING，20:46:02 WebKit microphoneCaptureState.active，20:46:10 HTMLMediaElement 的 BlackHole 16ch 输出已验证，但主页面 getUserMedia 钩子仍 WAITING_FOR_CAPTURE，导致 20:46:26 自动接听因 25 秒超时失败。随后程序调用 releaseForIdle，将用户看到的页面导航到空白 HTML（不是网页自动刷新）。
+- Mac 内嵌 ChatGPT 现在对官方站点的同源子 iframe 注入 getUserMedia/RTCPeerConnection.addTrack/RTCRtpSender.replaceTrack 的只读音轨识别，验证 BlackHole2 的 live audio track 后发送仅包含固定代码的 WebKit 本地消息给应用；不传 URL、音频、文字、凭据或设备 ID。主页面保持 WAITING 不再覆盖来自子页面的近期有效确认。音轨证据在 8 秒未更新后过期，不把未验证的物理麦克风默认作为安全输入。
+- 启动超时、临时失去 RINGING、电话 IDLE 和手动停止自动接听时只更新状态并保留 ChatGPT 页面，避免自动加载空白 HTML。用户手动打开的浏览器窗口不会因手机挂机被强制隐藏。仅退出 App 或显式禁用嵌入浏览器时释放网站进程。
+- 补充真实导航与 WebKit content process termination 诊断，以识别后续网页独立问题；新增 iframe 麦克风证据过期回归单元测试。
+- Mac v0.4.21 Build38；Android v0.3.8 不变，内置 APK 无功能改动。实机自动接听与网页兼容性仍需真实电话测试。
+
+
 ## 0.4.20（ADB／GPT 麦克风／系统声音稳定性）— 2026-11-23
 
 - 20:09 诊断显示：Android 状态服务不稳定、监听唤醒被拒绝、私有快照过期、反复端口转发；Mac 有效下行 RMS 0.22177，BlackHole 2ch 输出 686 帧，但 GPT 回复 RMS 0。此前仅确认 WebKit 的任意麦克风正在采集。
