@@ -5,16 +5,15 @@ import XCTest
 final class SIMAICoreTests: XCTestCase {
 
     func testVideoSafeRoutingNeverAnswersWithoutIsolatedVoiceOutput() {
-        let ready = VoiceAudioIsolationPolicy.browserReady
-        XCTAssertFalse(ready(embedded: true, microphoneCapturing: false,
+        XCTAssertFalse(VoiceAudioIsolationPolicy.browserReady(embedded: true, microphoneCapturing: false,
                              isolationEnabled: true, isolatedMediaRouted: false))
-        XCTAssertFalse(ready(embedded: true, microphoneCapturing: true,
+        XCTAssertFalse(VoiceAudioIsolationPolicy.browserReady(embedded: true, microphoneCapturing: true,
                              isolationEnabled: true, isolatedMediaRouted: false))
-        XCTAssertTrue(ready(embedded: true, microphoneCapturing: true,
+        XCTAssertTrue(VoiceAudioIsolationPolicy.browserReady(embedded: true, microphoneCapturing: true,
                             isolationEnabled: true, isolatedMediaRouted: true))
-        XCTAssertTrue(ready(embedded: true, microphoneCapturing: true,
+        XCTAssertTrue(VoiceAudioIsolationPolicy.browserReady(embedded: true, microphoneCapturing: true,
                             isolationEnabled: false, isolatedMediaRouted: false))
-        XCTAssertTrue(ready(embedded: false, microphoneCapturing: false,
+        XCTAssertTrue(VoiceAudioIsolationPolicy.browserReady(embedded: false, microphoneCapturing: false,
                             isolationEnabled: false, isolatedMediaRouted: false))
     }
 
