@@ -369,7 +369,7 @@ struct DashboardView: View {
                 Button("立即停止 GPT 声音回传") { model.stopGPTTwoWayPhoneBridge() }
                     .buttonStyle(.borderedProminent)
             }
-            Text("新版会自动设置 macOS 默认麦克风为 BlackHole 2ch、播放输出为 BlackHole 16ch。ChatGPT 网页若曾单独固定其它麦克风，可能仍需在网页中改选一次；程序不能验证官方 Voice 是否真正在线。")
+            Text("电话对方说话 → BlackHole 2ch → GPT；GPT 回复 → BlackHole 16ch → 电话。Mac 自身实体麦克风默认不参与这条路由。如果网页曾单独选定实体麦克风，需要在 ChatGPT Voice 中改选 BlackHole 2ch 一次。")
                 .font(.caption).foregroundStyle(.secondary)
             Text("当前自动值守只复用已启动的官方 Voice。通话和音频测试结果自动写入诊断日志，不再显示逐帧数据。")
                 .font(.caption).foregroundStyle(.secondary)
@@ -413,6 +413,17 @@ struct DashboardView: View {
                 Text(model.blackHoleInstallerStatus)
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Picker("通话监听耳机／扬声器", selection: $model.selectedVoiceMonitorOutputID) {
+                Text("请选择真实输出设备").tag("")
+                ForEach(model.audio.devices.filter {
+                    !$0.displayName.localizedCaseInsensitiveContains("BlackHole") &&
+                    !$0.displayName.localizedCaseInsensitiveContains("aggregate") &&
+                    !$0.displayName.localizedCaseInsensitiveContains("multi-output")
+                }, id: \.id) { device in
+                    Text(device.displayName).tag(device.id)
+                }
+            }
+            .disabled(model.aiReplyMonitorEnabled)
             HStack {
                 Button("检查设备") { model.refresh(); model.inspectADB() }
                     .disabled(model.adbChecking)
@@ -420,6 +431,10 @@ struct DashboardView: View {
                     .disabled(model.adbInstalling || !model.embeddedAPKAvailable)
                 Button("打开手机控制") { model.openPhoneScreenControl() }
                     .disabled(model.screenControlStarting)
+                Button("恢复 Mac 原声音设备") {
+                    model.setVoiceSessionPrepared(false)
+                    model.restoreAutomaticGPTOutput(forceInput: true)
+                }
             }
             .buttonStyle(.bordered)
             Text("手机：\(model.liveBridgeStatus) · 飞书：\(model.feishuSavedOnMac ? "Mac 已保存配置" : "未保存配置")")
