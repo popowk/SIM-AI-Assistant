@@ -10,7 +10,7 @@ on:
 
 # Only the newest main build should publish the easy-download test release.
 concurrency:
-  group: simai-historical-answer-route-restoration-v0427-${{ github.ref }}
+  group: simai-webkit-mic-silent-graph-v0428-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -110,8 +110,8 @@ jobs:
         with:
           name: SIM-AI-Assistant-macOS-arm64
           path: |
-            dist/SIM-AI-Assistant-v0.4.27-macos-arm64.zip
-            dist/SIM-AI-Assistant-v0.4.27-macos-arm64.zip.sha256
+            dist/SIM-AI-Assistant-v0.4.28-macos-arm64.zip
+            dist/SIM-AI-Assistant-v0.4.28-macos-arm64.zip.sha256
             dist/SIMAI-Audio-Probe.jar
             dist/SIMAI-Android-Signing.txt
             dist/SIMAI-Companion-v0.3.12-debug.apk
@@ -135,11 +135,11 @@ jobs:
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest --target "$(git rev-parse HEAD)" \
               --title "SIM AI Assistant · 最新测试版" --prerelease \
-              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.27 内嵌 WebKit ChatGPT 登录与 Voice 实验窗口，尝试官方网页 Voice 按钮并监测 WebKit 实际麦克风采集以保护自动接听；不读取凭证，不能保证第三方网页版自动启动。"
+              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.28 内嵌 WebKit ChatGPT 登录与 Voice 实验窗口，尝试官方网页 Voice 按钮并监测 WebKit 实际麦克风采集以保护自动接听；不读取凭证，不能保证第三方网页版自动启动。"
           fi
           gh release upload dev-latest \
-            dist/SIM-AI-Assistant-v0.4.27-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.27-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.28-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.28-macos-arm64.zip.sha256 \
             dist/SIMAI-Audio-Probe.jar \
             dist/SIMAI-Android-Signing.txt \
             dist/SIMAI-Companion-v0.3.12-debug.apk \
@@ -159,8 +159,8 @@ jobs:
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/SIM-AI-Assistant-v0.4.27-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.27-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.28-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.28-macos-arm64.zip.sha256 \
             dist/SIMAI-Companion-v0.3.12-debug.apk \
             dist/SIMAI-Companion-v0.3.12-debug.apk.sha256 \
             dist/SIMAI-Android-Signing.txt \
