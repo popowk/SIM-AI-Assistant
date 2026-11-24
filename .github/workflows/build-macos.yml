@@ -10,7 +10,7 @@ on:
 
 # Only the newest main build should publish the easy-download test release.
 concurrency:
-  group: simai-build-v0436-${{ github.ref }}
+  group: simai-build-v0440-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
