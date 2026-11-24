@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.4.29（独立电话状态线程与手机接听明确回执）— 2026-11-24
+
+- v0.4.27 回退实机日志 09:38:03 RINGING seq9，09:38:05 Voice 就绪并发送 HTTP，09:38:14 HTTP 超时/备用 NO_ACK，09:38:41 IDLE seq10，未收到 OFFHOOK。旧查询值 IDLE 与 RINGING 回调持续不一致。
+- Companion v0.3.13 (versionCode 18)：实时电话回调在独立线程执行，查询状态仅诊断且记录查询时间，不再覆盖回调。状态快照独立写入，心跳 2 秒，避免文件写入阻塞状态回调。
+- HTTP、授权 ADB 显式广播、私有文件共享接听实现：严格核对本次响铃的 session/sequence、35 秒有效期及 ANSWER_PHONE_CALLS。移除可能与回调不一致的二次 getCallState 硬门槛，调用平台 acceptRingingCall，接听请求不等于 OFFHOOK。接听 API 不持状态锁；同一响铃避免重复执行。带回执的前台广播返回固定执行结果，旧版 APK 保留兼容路径。
+- Mac v0.4.29 Build46：新 APK 且状态桥接使用 ADB_FILE 时优先使用明确回执广播；HTTP 保留独立转发与短超时，记录具体错误码及 Android 执行阶段。人工接听也使用当前响铃守卫。GPT Voice、BlackHole、PCM 音频实现不变。
+- 编译检查不能证明 vivo 实机成功；必须复测 OFFHOOK 与真实双向音频。
+
+
 ## 0.4.28（ChatGPT 麦克风真实音量修复与三级音频诊断）— 2026-11-24
 
 - 09:12:45 真实 Mac v0.4.27 Build44 日志：09:11:38 已请求 Android 接听，09:11:40 OFFHOOK，09:11:41 Android PCM 成功建立；接收电话下行 1,425 帧，峰值 RMS 0.11746，BlackHole2 真实 HAL 输出回调渲染 1,423 帧，丢帧 0。GPT 网页验证选中了 BlackHole2，却只在 PCM 尚未启动前发过 BLACKHOLE2_SIGNAL_SILENT；后来未报告有声。GPT 回复捕获 1,416 帧，RMS 0。

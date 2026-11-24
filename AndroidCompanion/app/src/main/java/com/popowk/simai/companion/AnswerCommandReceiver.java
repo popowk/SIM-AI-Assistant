@@ -21,7 +21,23 @@ public final class AnswerCommandReceiver extends BroadcastReceiver {
         int expectedSequence = intent.getIntExtra("sequence", -1);
         if (expectedSession == null || expectedSequence <= 0 ||
                 !expectedSession.matches("[a-fA-F0-9-]{36}")) return;
-        CallMonitorService.requestGuardedAnswerFromADB(
-                expectedSession, expectedSequence);
+        // Return the explicit app result directly to the ordered ADB
+        // broadcast rather than relying on a potentially stale state file.
+        final PendingResult pending = goAsync();
+        Thread worker = new Thread(() -> {
+            try {
+                String result = CallMonitorService.requestGuardedAnswerFromADB(
+                        expectedSession, expectedSequence);
+                pending.setResultCode("ANSWER_REQUESTED".equals(result) ? 1 : 0);
+                pending.setResultData("SIMAI_" + result);
+            } catch (Exception failed) {
+                pending.setResultCode(0);
+                pending.setResultData("SIMAI_ANSWER_UNAVAILABLE");
+            } finally {
+                pending.finish();
+            }
+        }, "SIMAI-GuardedAnswer");
+        worker.setDaemon(true);
+        worker.start();
     }
 }

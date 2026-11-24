@@ -513,13 +513,29 @@ enum ADBInspector {
         expectedSession: String,
         expectedSequence: Int
     ) -> String {
-        let command = ["-s", serial, "shell", "am", "broadcast",
+        let command = ["-s", serial, "shell", "am", "broadcast", "--receiver-foreground",
                        "-a", "com.popowk.simai.companion.REQUEST_GUARDED_ANSWER",
                        "-n", "com.popowk.simai.companion/.AnswerCommandReceiver",
                        "--es", "session", expectedSession,
                        "--ei", "sequence", String(expectedSequence)]
         switch run(adb, args: command, timeout: 5) {
-        case .completed(0, _): break
+        case .completed(0, let output):
+            // Only interpret fixed result strings from the permission-gated
+            // explicit receiver; the command exit status alone is not ACK.
+            if output.contains("data=\"SIMAI_ANSWER_REQUESTED\"") &&
+               output.contains("result=1") { return "ANSWER_FALLBACK_REQUESTED" }
+            let statuses: [(String, String)] = [
+                ("PERMISSION_REQUIRED", "ANSWER_FALLBACK_PERMISSION_REQUIRED"),
+                ("RING_CHANGED", "ANSWER_FALLBACK_RING_CHANGED"),
+                ("RING_EXPIRED", "ANSWER_FALLBACK_RING_CHANGED"),
+                ("MONITOR_INACTIVE", "ANSWER_FALLBACK_WORKER_INACTIVE"),
+                ("ANSWER_IN_PROGRESS", "ANSWER_FALLBACK_IN_PROGRESS"),
+                ("ANSWER_UNAVAILABLE", "ANSWER_FALLBACK_REJECTED")
+            ]
+            for (code, result) in statuses where output.contains("data=\"SIMAI_\(code)\"") {
+                return result
+            }
+            // v0.3.12 and older do not return ordered result data.
         case .completed: return "ANSWER_FALLBACK_BROADCAST_REJECTED"
         case .timedOut: return "ANSWER_FALLBACK_BROADCAST_TIMEOUT"
         case .launchFailed: return "ANSWER_FALLBACK_ADB_LAUNCH_FAILED"
@@ -572,9 +588,6 @@ enum ADBInspector {
         if snapshot.answerPermissionGranted == false {
             return "ANSWER_FALLBACK_PERMISSION_REQUIRED"
         }
-        if snapshot.privateAnswerPollerActive == false {
-            return "ANSWER_FALLBACK_WORKER_INACTIVE"
-        }
         guard let adb = executable(at: selected) else {
             return "ANSWER_FALLBACK_ADB_MISSING"
         }
@@ -595,11 +608,15 @@ enum ADBInspector {
                 at: selected, adb: adb, serial: expectedSerial,
                 expectedSession: expectedSession,
                 expectedSequence: expectedSequence)
-            if ["ANSWER_FALLBACK_REQUESTED",
+            if snapshot.orderedAnswerReplyAvailable == true ||
+               ["ANSWER_FALLBACK_REQUESTED",
                 "ANSWER_FALLBACK_PERMISSION_REQUIRED",
                 "ANSWER_FALLBACK_RING_CHANGED"].contains(result) {
                 return result
             }
+        }
+        if snapshot.privateAnswerPollerActive == false {
+            return "ANSWER_FALLBACK_WORKER_INACTIVE"
         }
         let script = "printf '%s|%s\\n' '\(expectedSession)' '\(expectedSequence)' > files/bridge-answer-request.tmp && mv files/bridge-answer-request.tmp files/bridge-answer-request"
         let escaped = "'" + script.replacingOccurrences(of: "'", with: "'\\''") + "'"

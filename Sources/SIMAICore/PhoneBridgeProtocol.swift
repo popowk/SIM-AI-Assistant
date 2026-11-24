@@ -26,6 +26,9 @@ public struct PhoneBridgeSnapshot: Codable, Equatable {
     public var adbBroadcastAnswerAvailable: Bool? = nil
     /// Current Android TelephonyManager state, as opposed to callback cache.
     public var realPhoneState: String? = nil
+    public var realPhoneStateAt: Int64? = nil
+    public var lastAnswerTransport: String? = nil
+    public var orderedAnswerReplyAvailable: Bool? = nil
     public var privateAnswerSequence: Int? = nil
     public var privateAnswerResult: String? = nil
 

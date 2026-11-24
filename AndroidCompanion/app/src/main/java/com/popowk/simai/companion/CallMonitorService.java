@@ -51,6 +51,7 @@ public final class CallMonitorService extends Service {
     private PhoneEventBridge bridge;
     private static volatile PhoneEventBridge activeAnswerBridge;
     private TelephonyCallback telephonyCallback;
+    private java.util.concurrent.ExecutorService callStateExecutor;
     private PhoneStateListener legacyListener;
 
     public static synchronized List<String> eventSnapshot() {
@@ -92,10 +93,12 @@ public final class CallMonitorService extends Service {
                 activeAnswerBridge = bridge;
                 telephonyManager = (TelephonyManager) getSystemService(TELEPHONY_SERVICE);
                 if (telephonyManager == null) throw new IllegalStateException("TelephonyManager unavailable");
+                handleState(telephonyManager.getCallState());
                 if (Build.VERSION.SDK_INT >= 31) {
                     StateCallback callback = new StateCallback();
                     telephonyCallback = callback;
-                    telephonyManager.registerTelephonyCallback(getMainExecutor(), callback);
+                    callStateExecutor = java.util.concurrent.Executors.newSingleThreadExecutor();
+                    telephonyManager.registerTelephonyCallback(callStateExecutor, callback);
                 } else {
                     legacyListener = new PhoneStateListener() {
                         @Override public void onCallStateChanged(int state, String ignoredIncomingNumber) {
@@ -107,7 +110,6 @@ public final class CallMonitorService extends Service {
                 }
                 running = true;
                 applyKeepAwakeSetting();
-                handleState(telephonyManager.getCallState());
                 note("监听已启动，等待实际来电");
             } catch (Exception error) {
                 note("监听启动失败：" + error.getClass().getSimpleName());
@@ -173,10 +175,10 @@ public final class CallMonitorService extends Service {
         @Override public void onCallStateChanged(int state) { handleState(state); }
     }
 
-    static void requestGuardedAnswerFromADB(String session, int sequence) {
+    static String requestGuardedAnswerFromADB(String session, int sequence) {
         PhoneEventBridge bridge = activeAnswerBridge;
-        if (bridge == null || !running) return;
-        bridge.acceptAndRecordGuardedShellRequest(session, sequence);
+        if (bridge == null || !running) return "MONITOR_INACTIVE";
+        return bridge.acceptAndRecordGuardedShellRequest(session, sequence);
     }
 
     @Override public void onDestroy() {
@@ -191,6 +193,7 @@ public final class CallMonitorService extends Service {
                     telephonyManager.listen(legacyListener, PhoneStateListener.LISTEN_NONE);
             } catch (Exception ignored) { }
         }
+        if (callStateExecutor != null) callStateExecutor.shutdownNow();
         running = false;
         lastState = "已停止";
         note("监听停止");

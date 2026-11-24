@@ -55,6 +55,11 @@ final class PhoneEventBridge {
     private final File privateAnswerRequest;
     private final File privateAnswerResult;
     private ScheduledExecutorService privateAnswerPoller;
+    private ScheduledExecutorService stateQueryWorker;
+    private final Object snapshotWriteLock = new Object();
+    private final java.util.concurrent.atomic.AtomicBoolean snapshotQueued = new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile long lastRealPhoneStateAt = 0;
+    private volatile String lastAnswerTransport = "NONE";
     // Anonymous health/status markers, never phone numbers or request tokens.
     private volatile long lastPrivateAnswerPollAt = 0;
     private volatile int lastPrivateAnswerSequence = 0;
@@ -122,17 +127,15 @@ final class PhoneEventBridge {
                     return thread;
                 });
         active = true;
-        persistSnapshot();
         heartbeat = Executors.newSingleThreadScheduledExecutor(job -> {
             Thread thread = new Thread(job, "SIMAI-Snapshot-Heartbeat");
             thread.setDaemon(true);
             return thread;
         });
+        persistSnapshot();
         heartbeat.scheduleWithFixedDelay(() -> {
-            if (active) {
-                synchronized (PhoneEventBridge.this) { persistSnapshot(); }
-            }
-        }, 10, 10, TimeUnit.SECONDS);
+            if (active) writeSnapshot();
+        }, 2, 2, TimeUnit.SECONDS);
         privateAnswerPoller = Executors.newSingleThreadScheduledExecutor(job -> {
             Thread thread = new Thread(job, "SIMAI-PrivateAnswer");
             thread.setDaemon(true);
@@ -144,8 +147,14 @@ final class PhoneEventBridge {
                 Log.w("SIMAICompanion", "Answer request poll: " +
                       failure.getClass().getSimpleName());
             }
-            reconcileRealCallState();
         }, 0, 250, TimeUnit.MILLISECONDS);
+        stateQueryWorker = Executors.newSingleThreadScheduledExecutor(job -> {
+            Thread thread = new Thread(job, "SIMAI-Telephony-Query");
+            thread.setDaemon(true);
+            return thread;
+        });
+        stateQueryWorker.scheduleWithFixedDelay(this::reconcileRealCallState,
+                0, 1, TimeUnit.SECONDS);
         worker = new Thread(this::serve, "SIMAI-CallEventBridge");
         worker.setDaemon(true);
         worker.start();
@@ -154,9 +163,10 @@ final class PhoneEventBridge {
 
     void stop() {
         active = false;
-        if (heartbeat != null) heartbeat.shutdownNow();
+        if (stateQueryWorker != null) stateQueryWorker.shutdownNow();
         if (privateAnswerPoller != null) privateAnswerPoller.shutdownNow();
-        synchronized (this) { persistSnapshot(); }
+        if (heartbeat != null) heartbeat.shutdownNow();
+        writeSnapshot();
         try { if (listener != null) listener.close(); } catch (Exception ignored) {}
         if (worker != null) worker.interrupt();
         if (requests != null) requests.shutdownNow();
@@ -211,13 +221,11 @@ final class PhoneEventBridge {
                     ? "OFFHOOK" : observed == TelephonyManager.CALL_STATE_IDLE
                     ? "IDLE" : "UNKNOWN";
             if ("UNKNOWN".equals(current)) return;
+            // The Android documentation explicitly allows this query to
+            // differ from the subscription callback. Never overwrite live
+            // cellular events with this potentially stale aggregate value.
             lastRealPhoneState = current;
-            synchronized (this) {
-                if (!current.equals(lastState)) {
-                    recordState(current);
-                    Log.i("SIMAICompanion", "Telephony reconcile state=" + current);
-                }
-            }
+            lastRealPhoneStateAt = System.currentTimeMillis();
         } catch (SecurityException ignored) {
             // Permission may have been revoked by Android system settings.
         } catch (Exception ignored) {
@@ -264,9 +272,7 @@ final class PhoneEventBridge {
             persistSnapshot();
             return;
         }
-        String result = acceptGuardedPrivateAnswer(parts[0], ringSequence);
-        lastPrivateAnswerSequence = ringSequence;
-        lastPrivateAnswerResult = result;
+        String result = acceptGuardedAnswer(parts[0], ringSequence, "FILE");
         // Persist an independent acknowledgement in the established ADB_FILE
         // snapshot even if the separate result file cannot be read on vivo.
         persistSnapshot();
@@ -280,43 +286,67 @@ final class PhoneEventBridge {
             Log.w("SIMAICompanion", "Private answer acknowledgement unavailable");
     }
 
-    /** Called only via the signature-level DUMP-permission guarded receiver. */
-    synchronized void acceptAndRecordGuardedShellRequest(
-            String expectedSession, int expectedSequence) {
-        if (expectedSequence <= 0 || expectedSession == null ||
-                !expectedSession.matches("[a-fA-F0-9-]{36}")) return;
-        // If the file path already succeeded, do not issue a second answer.
-        if (lastPrivateAnswerSequence == expectedSequence &&
-                "ANSWER_REQUESTED".equals(lastPrivateAnswerResult)) return;
-        String result = acceptGuardedPrivateAnswer(expectedSession, expectedSequence);
-        lastPrivateAnswerSequence = expectedSequence;
-        lastPrivateAnswerResult = result;
-        persistSnapshot();
-        Log.i("SIMAICompanion", "Guarded shell answer: " + result);
+    /** Shared guarded entry point for HTTP, shell broadcast and private file. */
+    String acceptAndRecordGuardedShellRequest(String expectedSession, int expectedSequence) {
+        return acceptGuardedAnswer(expectedSession, expectedSequence, "BROADCAST");
     }
 
-    private synchronized String acceptGuardedPrivateAnswer(
-            String expectedSession, int ringSequence) {
-        if (!active || !session.equals(expectedSession) || ringSequence <= 0 ||
-                sequence != ringSequence || !"RINGING".equals(lastState))
-            return "RING_CHANGED";
-        if (context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
-                != PackageManager.PERMISSION_GRANTED) return "PERMISSION_REQUIRED";
+    private String acceptGuardedAnswer(String expectedSession, int ringSequence, String transport) {
+        // Do not hold the state lock across Telecom Binder calls, file fsync,
+        // or sockets. A stalled vendor API must not block state publication.
+        synchronized (this) {
+            if (!active || expectedSession == null || !session.equals(expectedSession)
+                    || ringSequence <= 0 || sequence != ringSequence
+                    || !"RINGING".equals(lastState) || events.isEmpty())
+                return "RING_CHANGED";
+            long age = System.currentTimeMillis() - events.get(events.size() - 1).at;
+            if (age < 0 || age > 35000) return "RING_EXPIRED";
+            if (context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
+                    != PackageManager.PERMISSION_GRANTED) return "PERMISSION_REQUIRED";
+            if (lastPrivateAnswerSequence == ringSequence &&
+                    ("ANSWER_REQUESTED".equals(lastPrivateAnswerResult)
+                    || "ANSWER_IN_PROGRESS".equals(lastPrivateAnswerResult)))
+                return lastPrivateAnswerResult;
+            lastPrivateAnswerSequence = ringSequence;
+            lastPrivateAnswerResult = "ANSWER_IN_PROGRESS";
+            lastAnswerTransport = transport;
+            persistSnapshot();
+        }
+        String result;
         try {
-            TelephonyManager phone = (TelephonyManager)
-                    context.getSystemService(Context.TELEPHONY_SERVICE);
             TelecomManager telecom = (TelecomManager)
                     context.getSystemService(Context.TELECOM_SERVICE);
-            if (phone == null || telecom == null ||
-                    phone.getCallState() != TelephonyManager.CALL_STATE_RINGING)
-                return "NOT_RINGING";
-            telecom.acceptRingingCall();
-            return "ANSWER_REQUESTED";
+            if (telecom == null) {
+                result = "ANSWER_UNAVAILABLE";
+            } else {
+                // The current, permission-checked cellular RINGING callback
+                // is the guard. acceptRingingCall itself only accepts an
+                // actually ringing incoming call. Do not gate it on a second
+                // deprecated aggregate getCallState() result.
+                synchronized (this) {
+                    if (!active || sequence != ringSequence || !"RINGING".equals(lastState)) {
+                        lastPrivateAnswerResult = "RING_CHANGED";
+                        persistSnapshot();
+                        return "RING_CHANGED";
+                    }
+                }
+                Log.i("SIMAICompanion", "Answer invoked via " + transport);
+                telecom.acceptRingingCall();
+                result = "ANSWER_REQUESTED";
+            }
         } catch (SecurityException permission) {
-            return "PERMISSION_REQUIRED";
+            result = "PERMISSION_REQUIRED";
         } catch (Exception unavailable) {
-            return "ANSWER_UNAVAILABLE";
+            result = "ANSWER_UNAVAILABLE";
         }
+        synchronized (this) {
+            if (lastPrivateAnswerSequence == ringSequence) {
+                lastPrivateAnswerResult = result;
+                persistSnapshot();
+            }
+        }
+        Log.i("SIMAICompanion", "Answer result via " + transport + ": " + result);
+        return result;
     }
 
     private void handle(Socket client) throws Exception {
@@ -362,42 +392,18 @@ final class PhoneEventBridge {
         }
 
         if (first.startsWith("POST /call/answer HTTP/1.")) {
-            // Authorized call action; no phone numbers or audio are processed.
-            // Check the actual device call state just before the action; a
-            // stale RINGING event must not answer a different call later.
-            if (contentLength > 0) {
-                reply(client, 400, "{\"error\":\"body_not_allowed\"}");
+            if (contentLength > 0 || expectedSession.isEmpty() || expectedSequence <= 0) {
+                reply(client, 400, "{\"error\":\"missing_call_guard\"}");
                 return;
             }
-            if (context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
-                    != PackageManager.PERMISSION_GRANTED) {
-                reply(client, 403, "{\"error\":\"answer_permission_required\"}");
-                return;
-            }
-            try {
-                TelephonyManager phone = (TelephonyManager)
-                        context.getSystemService(Context.TELEPHONY_SERVICE);
-                TelecomManager telecom = (TelecomManager)
-                        context.getSystemService(Context.TELECOM_SERVICE);
-                if ((!expectedSession.isEmpty() || expectedSequence > 0) &&
-                        (!session.equals(expectedSession) ||
-                         sequence != expectedSequence || !"RINGING".equals(lastState))) {
-                    reply(client, 409, "{\"error\":\"ring_changed\"}");
-                    return;
-                }
-                if (phone == null || telecom == null ||
-                        phone.getCallState() != TelephonyManager.CALL_STATE_RINGING) {
-                    reply(client, 409, "{\"error\":\"not_ringing\"}");
-                    return;
-                }
-                // Android 13 still exposes this deprecated API to ordinary
-                // apps with ANSWER_PHONE_CALLS. OEM may reject the request.
-                telecom.acceptRingingCall();
+            String result = acceptGuardedAnswer(expectedSession, expectedSequence, "HTTP");
+            if ("ANSWER_REQUESTED".equals(result)) {
                 reply(client, 200, "{\"ok\":true,\"result\":\"answer_requested\"}");
-            } catch (SecurityException permission) {
-                reply(client, 403, "{\"error\":\"answer_permission_denied\"}");
-            } catch (Exception unavailable) {
-                reply(client, 503, "{\"error\":\"answer_unavailable\"}");
+            } else {
+                int status = "PERMISSION_REQUIRED".equals(result) ? 403
+                    : "RING_CHANGED".equals(result) || "RING_EXPIRED".equals(result) ? 409
+                    : "ANSWER_IN_PROGRESS".equals(result) ? 202 : 503;
+                reply(client, status, "{\"error\":\"" + result + "\"}");
             }
             return;
         }
@@ -548,6 +554,9 @@ final class PhoneEventBridge {
                     == PackageManager.PERMISSION_GRANTED);
         body.put("adbBroadcastAnswerAvailable", true);
         body.put("realPhoneState", lastRealPhoneState);
+        body.put("realPhoneStateAt", lastRealPhoneStateAt);
+        body.put("lastAnswerTransport", lastAnswerTransport);
+        body.put("orderedAnswerReplyAvailable", true);
         body.put("privateAnswerPollerActive",
                 active && lastPrivateAnswerPollAt > 0 &&
                 System.currentTimeMillis() - lastPrivateAnswerPollAt < 5000);
@@ -569,17 +578,30 @@ final class PhoneEventBridge {
     /// Atomic private snapshot is read only via previously authorized ADB
     /// "run-as" when the HTTP status tunnel stalls during screen-off.
     /// No numbers, contacts, speech or raw audio are persisted.
-    private synchronized void persistSnapshot() {
-        FileOutputStream out = null;
+    private void persistSnapshot() {
+        ScheduledExecutorService writer = heartbeat;
+        if (writer == null || writer.isShutdown() || !snapshotQueued.compareAndSet(false, true)) return;
         try {
-            byte[] bytes = snapshot(0).toString().getBytes(StandardCharsets.UTF_8);
-            out = snapshotFile.startWrite();
-            out.write(bytes);
-            snapshotFile.finishWrite(out);
-        } catch (Exception error) {
-            if (out != null) snapshotFile.failWrite(out);
-            Log.w("SIMAICompanion", "Anonymous state snapshot failed: "
-                    + error.getClass().getSimpleName());
+            writer.execute(() -> {
+                snapshotQueued.set(false);
+                writeSnapshot();
+            });
+        } catch (RejectedExecutionException ignored) { snapshotQueued.set(false); }
+    }
+
+    private void writeSnapshot() {
+        synchronized (snapshotWriteLock) {
+            FileOutputStream out = null;
+            try {
+                byte[] bytes = snapshot(0).toString().getBytes(StandardCharsets.UTF_8);
+                out = snapshotFile.startWrite();
+                out.write(bytes);
+                snapshotFile.finishWrite(out);
+            } catch (Exception error) {
+                if (out != null) snapshotFile.failWrite(out);
+                Log.w("SIMAICompanion", "Anonymous state snapshot failed: "
+                        + error.getClass().getSimpleName());
+            }
         }
     }
 

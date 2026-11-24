@@ -109,8 +109,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.28"
-    let buildNumber = "45"
+    let version = "0.4.29"
+    let buildNumber = "46"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -236,6 +236,8 @@ final class AssistantModel: ObservableObject {
     private var bridgeGeneration = 0
     private var bridgeUsingFileFallback = false
     private var lastAndroidAnswerPermission: Bool?
+    private var orderedAnswerReplyAvailable = false
+    private var lastAndroidAnswerDiagnostic = ""
     private var nextHTTPRecoveryAttempt = Date.distantPast
     private var bridgeRetryAfter = Date.distantPast
     private var bridgeConsecutiveFailures = 0
@@ -1654,8 +1656,23 @@ final class AssistantModel: ObservableObject {
                 granted ? "Android 已确认授予接听电话权限" : "Android 未授予接听电话权限",
                 details: ["diagnosis": granted ? "ANSWER_PERMISSION_GRANTED" : "ANSWER_PERMISSION_MISSING"])
         }
+        orderedAnswerReplyAvailable = snapshot.orderedAnswerReplyAvailable == true
+        if let result = snapshot.privateAnswerResult,
+           let transport = snapshot.lastAnswerTransport,
+           let seq = snapshot.privateAnswerSequence, seq > 0 {
+            let key = "\(snapshot.session)|\(seq)|\(transport)|\(result)"
+            if key != lastAndroidAnswerDiagnostic {
+                lastAndroidAnswerDiagnostic = key
+                log(.info, .call, "Android 端接听执行阶段",
+                    details: ["result": result, "transport": transport, "sequence": "\(seq)"])
+            }
+        }
         if let real = snapshot.realPhoneState, real != "UNKNOWN",
-           real != snapshot.state {
+           real != snapshot.state,
+           snapshot.realPhoneStateAt.map({ stamp in
+               guard let updated = snapshot.updatedAt else { return false }
+               return stamp > 0 && updated >= stamp && updated - stamp < 4000
+           }) ?? true {
             log(.warn, .call, "手机实际通话状态与缓存事件不一致",
                 details: ["diagnosis": "TELEPHONY_CALLBACK_DELAYED",
                           "actual": real, "cache": snapshot.state])
@@ -2296,10 +2313,12 @@ final class AssistantModel: ObservableObject {
     }
 
     /// Require same Android ring before acknowledging a private-file request.
-    private func recordPrivateAutomaticAnswer(expectedSession: String) -> Bool {
+    private func recordPrivateAutomaticAnswer(expectedSession: String, expectedSequence: Int) -> Bool {
         guard bridgeCursor.session == expectedSession,
               autoStartedWebVoiceForRing,
-              ["RINGING", "OFFHOOK"].contains(livePhoneState) else { return false }
+              (livePhoneState == "RINGING" && bridgeCursor.lastSequence == expectedSequence) ||
+              (livePhoneState == "OFFHOOK" && bridgeCursor.lastSequence == expectedSequence + 1)
+              else { return false }
         automaticAnswerRequested = true
         automaticAnswerAcknowledged = true
         automaticAnswerSession = expectedSession
@@ -2318,7 +2337,8 @@ final class AssistantModel: ObservableObject {
     /// Companion re-checks its own call state, refuses all non-ringing calls,
     /// and requires separate ANSWER_PHONE_CALLS permission.
     func answerIncomingPhoneCall(automatic: Bool = false) {
-        guard !answerCallBusy && !adbInstalling else { return }
+        guard !answerCallBusy && !adbInstalling, livePhoneState == "RINGING",
+              !bridgeCursor.session.isEmpty, bridgeCursor.lastSequence > 0 else { return }
         if automatic {
             automaticAnswerRequested = true
             automaticAnswerAcknowledged = false
@@ -2337,6 +2357,33 @@ final class AssistantModel: ObservableObject {
         let path = selectedADBPath
         Task { [weak self] in
             guard let self else { return }
+            // On the new Companion the explicit foreground broadcast returns
+            // a result from the guarded phone API itself. If the status tunnel
+            // is already using ADB_FILE, avoid waiting for another HTTP timeout.
+            if automatic, self.bridgeUsingFileFallback, self.orderedAnswerReplyAvailable,
+               let existingLink {
+                self.log(.info, .call, "HTTP 状态不稳定，优先使用手机端带回执的接听广播",
+                         details: ["diagnosis": "ANSWER_ORDERED_BROADCAST_FIRST"])
+                let result = await Task.detached(priority: .userInitiated) {
+                    ADBInspector.answerRingingViaPrivateLocalShell(
+                        at: path, expectedSession: expectedRingSession,
+                        expectedSequence: expectedRingSequence, expectedSerial: existingLink.serial)
+                }.value
+                self.log(.info, .call, "手机端广播接听回执", details: ["result": result])
+                if result == "ANSWER_FALLBACK_REQUESTED" {
+                    _ = self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession,
+                        expectedSequence: expectedRingSequence)
+                    self.answerCallBusy = false
+                    return
+                }
+                if ["ANSWER_FALLBACK_PERMISSION_REQUIRED", "ANSWER_FALLBACK_RING_CHANGED",
+                    "ANSWER_FALLBACK_WORKER_INACTIVE", "ANSWER_FALLBACK_IN_PROGRESS"].contains(result) {
+                    self.automaticAnswerRequested = result == "ANSWER_FALLBACK_IN_PROGRESS"
+                    self.answerCallBusy = false
+                    self.answerCallStatus = "手机接听状态：" + result
+                    return
+                }
+            }
             // Regression correction from the verified v0.4.21 path: never
             // reuse a potentially stale/blocked polling TCP forward to answer
             // a cellular call. Create a distinct authenticated ADB forward.
@@ -2371,16 +2418,15 @@ final class AssistantModel: ObservableObject {
             }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            request.timeoutInterval = 6
+            request.timeoutInterval = 3
             request.cachePolicy = .reloadIgnoringLocalCacheData
             request.setValue(link.token, forHTTPHeaderField: "X-SIMAI-Token")
             request.setValue("0", forHTTPHeaderField: "Content-Length")
-            if automatic {
-                request.setValue(expectedRingSession, forHTTPHeaderField: "X-SIMAI-Expected-Session")
-                request.setValue(String(expectedRingSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
-            }
+            request.setValue(expectedRingSession, forHTTPHeaderField: "X-SIMAI-Expected-Session")
+            request.setValue(String(expectedRingSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
             let config = URLSessionConfiguration.ephemeral
-            config.timeoutIntervalForRequest = 6
+            config.connectionProxyDictionary = [:]
+            config.timeoutIntervalForRequest = 3
             let session = URLSession(configuration: config)
             defer { session.invalidateAndCancel() }
             // Restore the successfully tested v0.4.21 order:
@@ -2399,7 +2445,9 @@ final class AssistantModel: ObservableObject {
                 let parsed = (try? JSONSerialization.jsonObject(with: body))
                     as? [String: Any]
                 if http == 200 && parsed?["result"] as? String == "answer_requested" {
-                    if automatic && ["RINGING", "OFFHOOK"].contains(self.livePhoneState) {
+                    if automatic && self.bridgeCursor.session == expectedRingSession &&
+                       ((self.livePhoneState == "RINGING" && self.bridgeCursor.lastSequence == expectedRingSequence) ||
+                        (self.livePhoneState == "OFFHOOK" && self.bridgeCursor.lastSequence == expectedRingSequence + 1)) {
                         self.automaticAnswerAcknowledged = true
                         self.automaticAnswerSession = self.bridgeCursor.session
                         self.autoVoiceCaptureObserved =
@@ -2417,8 +2465,10 @@ final class AssistantModel: ObservableObject {
                     self.log(.info, .system, "用户主动请求接听当前响铃电话",
                              details: ["result": "ANSWER_REQUESTED"])
                 } else {
-                    if automatic { self.automaticAnswerRequested = false }
+                    if automatic { self.automaticAnswerRequested = http == 202 }
                     switch http {
+                    case 202:
+                        self.answerCallStatus = "手机端接听 API 仍在执行，等待 OFFHOOK，不重复接听"
                     case 403:
                         self.answerCallStatus = "手机拒绝接听：请在 Companion 授权「接听电话」"
                     case 404:
@@ -2447,7 +2497,7 @@ final class AssistantModel: ObservableObject {
                             expectedSerial: link.serial)
                     }.value
                     if result == "ANSWER_FALLBACK_REQUESTED" &&
-                       self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession) {
+                       self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession, expectedSequence: expectedRingSequence) {
                         return
                     }
                     self.automaticAnswerRequested = false
@@ -2461,6 +2511,8 @@ final class AssistantModel: ObservableObject {
                     self.log(.warn, .call, "电话接听双路径失败",
                              details: ["reason": "MANUAL_ANSWER_TIMEOUT",
                                        "fallback": result,
+                                       "httpErrorDomain": (error as NSError).domain,
+                                       "httpErrorCode": "\((error as NSError).code)",
                                        "transport": self.bridgeUsingFileFallback ? "ADB_FILE" : "ADB_HTTP"])
                 } else {
                     if automatic { self.automaticAnswerRequested = false }

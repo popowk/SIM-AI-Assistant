@@ -1,4 +1,6 @@
-# SIM AI Assistant · V0.4.28（ChatGPT Voice 麦克风收音检测及修复）
+# SIM AI Assistant · V0.4.29（Android 接听通道与状态回执修复）
+
+> 09:39 实机诊断确认 v0.4.27 回退仍不能接听。Companion v0.3.13 (18) 将电话回调与系统状态查询分离，统一权限与响铃序列守卫下的 HTTP/广播/文件接听，并直接回传手机接听结果；Mac v0.4.29 Build46 优先走带回执的独立广播（状态 HTTP 已失效时），保留独立 HTTP 通道。保留 v0.4.28 音频代码，需升级手机伴侣并再次实机验证。
 
 > 09:12 用户实机日志已确认 v0.4.27 的自动接听、OFFHOOK、电话 PCM（1425 帧、RMS 0.11746）和 BlackHole2 输出回调（1423 帧）都正常，但 GPT 仍无回复。v0.4.28 **不更改手机 Companion v0.3.12、ADB 接听、PCM helper**，修复内嵌 WebKit 麦克风 Web Audio 电平图，并增加 BlackHole2 实际输入回环 RMS、WebKit 轨道静音事件、可用时的 WebRTC 实际发声诊断。若通话依然无 GPT 回答，新诊断可明确故障断在驱动回环、网页麦克风或 WebRTC。Mac v0.4.28 Build45；仍需 vivo 实机复验。
 
