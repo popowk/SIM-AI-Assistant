@@ -1,5 +1,15 @@
 # 变更记录
 
+## 0.4.28（ChatGPT 麦克风真实音量修复与三级音频诊断）— 2026-11-24
+
+- 09:12:45 真实 Mac v0.4.27 Build44 日志：09:11:38 已请求 Android 接听，09:11:40 OFFHOOK，09:11:41 Android PCM 成功建立；接收电话下行 1,425 帧，峰值 RMS 0.11746，BlackHole2 真实 HAL 输出回调渲染 1,423 帧，丢帧 0。GPT 网页验证选中了 BlackHole2，却只在 PCM 尚未启动前发过 BLACKHOLE2_SIGNAL_SILENT；后来未报告有声。GPT 回复捕获 1,416 帧，RMS 0。
+- **不改 Android APK、手机接听流程或已验证的 Android PCM Helper**。Mac v0.4.28 Build45 仅改 ChatGPT 网页收音和诊断。
+- WebKit 注入脚本的麦克风 AudioContext 中为 AnalyserNode 接入音量严格为零的 GainNode → Destination，保证音频图持续被处理但不会重复播放电话声音；不把原始 PCM 样本传给 Swift。麦克风轨道被系统静音/取消静音时单独记录固定诊断码；降低网页 RMS 判有声阈值以减少过小音量误判。
+- 在 WebRTC sender 支持 getStats/totalAudioEnergy 时，仅记录匿名的“实际上向 WebRTC 发送了有声/静音”结果；无法支持时不伪称成功。
+- 仍然出现通话 PCM 有声、GPT 回复零电平时，再自动短暂从 BlackHole2 真实**输入端**读取两秒匿名 RMS，不存储通话录音；区分“HAL 输出看似成功但 BlackHole 输入没声音”与“虚拟声卡有声但 WebKit 麦克风/Voice 未接通”。新增 UI 两级状态及无内容诊断码。只在 GPT 长时间静音时才运行额外捕获，不影响正常通话。
+- **真实电话验证仍待用户完成。** 自动编译通过不等于 GPT 官方 Voice 必然处理通过；也可能需要浏览器的真实交互、有效麦克风音轨或网页 Voice 会话恢复。
+
+
 ## 0.4.27（对照实机成功版本恢复独立接听路径）— 2026-11-24
 
 - 调查用户 01:09 上传的 v0.4.26 Build43 诊断。北京时间 01:07:48 收到 RINGING、01:07:50 WebKit 使用 BlackHole2、01:07:54 Voice 就绪，01:07:57 ADB 文件接听 NO_ACK，01:08:01 HTTP 也失败；全程没有 OFFHOOK 或真正 PCM。手机端接听权限明明显示 ANSWER_PERMISSION_GRANTED，不是 CALL_PHONE 缺失。
