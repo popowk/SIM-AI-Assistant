@@ -149,8 +149,21 @@ enum ADBInspector {
     static func restartADBServer(at selected: String?) -> Bool {
         guard let adb = executable(at: selected) else { return false }
         _ = run(adb, args: ["kill-server"], timeout: 6)
+        // Allow kernel IOKit/AppleUSBHost to release exclusive client lock before starting
+        Thread.sleep(forTimeInterval: 0.8)
         _ = run(adb, args: ["start-server"], timeout: 8)
+        Thread.sleep(forTimeInterval: 0.5)
+        _ = run(adb, args: ["reconnect", "offline"], timeout: 6)
         return true
+    }
+
+    /// Explicitly kicks any offline Android device connection to trigger an instant re-handshake.
+    @discardableResult
+    static func reconnectOffline(at selected: String?) -> Bool {
+        guard let adb = executable(at: selected) else { return false }
+        let outcome = run(adb, args: ["reconnect", "offline"], timeout: 6)
+        if case .completed(0, _) = outcome { return true }
+        return false
     }
 
     static func inspect(at selected: String? = nil, allowRestart: Bool = true) -> ADBInspection {
@@ -171,17 +184,28 @@ enum ADBInspector {
         }
         switch outcome {
         case .completed(0, let output):
-            let items = parseDevices(output)
-            let authorized = items.filter { $0.state == "device" }.count
-            let unauthorized = items.filter { $0.state == "unauthorized" }.count
-            let offline = items.filter { $0.state == "offline" }.count
+            var items = parseDevices(output)
+            var authorized = items.filter { $0.state == "device" }.count
+            var unauthorized = items.filter { $0.state == "unauthorized" }.count
+            var offline = items.filter { $0.state == "offline" }.count
+            if authorized == 0 && offline > 0 {
+                // USB connection dropped or desynced into offline state.
+                // Trigger instant reconnection rather than waiting 90s for keepalive timeout.
+                _ = run(executable, args: ["reconnect", "offline"], timeout: 6)
+                if case .completed(0, let refreshed) = run(executable, args: ["devices"], timeout: 8) {
+                    items = parseDevices(refreshed)
+                    authorized = items.filter { $0.state == "device" }.count
+                    unauthorized = items.filter { $0.state == "unauthorized" }.count
+                    offline = items.filter { $0.state == "offline" }.count
+                }
+            }
             let status: String
             if authorized > 0 {
                 status = "ADB 已授权 \(authorized) 台；安装时必须只连接一台已授权设备"
             } else if unauthorized > 0 {
                 status = "发现 \(unauthorized) 台未授权设备；请在手机上允许 USB 调试"
             } else if offline > 0 {
-                status = "发现 \(offline) 台离线设备；请检查数据线与 USB 调试"
+                status = "发现 \(offline) 台离线设备；已发送重连指令，请检查数据线与 USB 调试"
             } else {
                 status = "ADB 可以运行，但未发现已授权的安卓设备"
             }
@@ -427,6 +451,13 @@ enum ADBInspector {
         default: return .init(link: nil, message: "ADB 无法列出授权手机，将自动重试")
         }
         var authorized = devices.filter { $0.state == "device" }
+        let offline = devices.filter { $0.state == "offline" }
+        if authorized.isEmpty && !offline.isEmpty {
+            _ = run(adb, args: ["reconnect", "offline"], timeout: 6)
+            if case .completed(0, let refreshed) = run(adb, args: ["devices"], timeout: 8) {
+                authorized = parseDevices(refreshed).filter { $0.state == "device" }
+            }
+        }
         if authorized.isEmpty,
            let saved = UserDefaults.standard.string(forKey: "SIMAI_LAST_AUTHORIZED_WIFI_ADB"),
            BridgeRetryPolicy.validWirelessEndpoint(saved) {
@@ -438,9 +469,13 @@ enum ADBInspector {
             }
         }
         guard authorized.count == 1 else {
-            return .init(link: nil, message: authorized.count > 1
+            let offlineRemaining = devices.filter { $0.state == "offline" }.count
+            let msg = authorized.count > 1
                 ? "检测到多台已授权设备；为避免误连，请仅保留一台"
-                : "未发现已授权手机；将自动重试。若手机重启或无线调试关闭，请重新启用/授权")
+                : (offlineRemaining > 0
+                    ? "手机连接处于离线 (offline) 状态，已自动触发重新协商……若仍无法连接请检查 USB 数据线"
+                    : "未发现已授权手机；将自动重试。若手机重启或无线调试关闭，请重新启用/授权")
+            return .init(link: nil, message: msg)
         }
         let serial = authorized[0].serial
         if BridgeRetryPolicy.validWirelessEndpoint(serial) {
@@ -722,16 +757,20 @@ enum ADBInspector {
         guard let serial = target else {
             let offline = devices.contains { $0.state == "offline" }
             let unauthorized = devices.contains { $0.state == "unauthorized" }
-            return .init(transport: unauthorized ? "未授权" : offline ? "设备离线" : "未发现唯一已授权设备",
+            if offline {
+                _ = run(adb, args: ["reconnect", "offline"], timeout: 6)
+            }
+            return .init(transport: unauthorized ? "未授权" : offline ? "设备离线（已自动尝试恢复）" : "未发现唯一已授权设备",
                          shell: "未检测", forward: "未检测",
                          reason: unauthorized ? "请在手机解锁后允许该 Mac 调试；无法自动代替授权"
-                               : "可能是无线调试关闭、Wi-Fi 中断或 OEM 锁屏限制",
+                               : (offline ? "USB 信号曾有波动导致设备离线，已向 ADB 发送重连重置指令"
+                                          : "可能是无线调试关闭、Wi-Fi 中断或 OEM 锁屏限制"),
                          code: unauthorized ? "ADB_UNAUTHORIZED" : offline ? "ADB_OFFLINE" : "ADB_NOT_READY")
         }
 
         // ADB reports "device" even on some systems where a lock-screen
         // shell RPC is suspended. Verify that an actual benign command runs.
-        switch run(adb, args: ["-s", serial, "shell", "echo", "SIMAI_HEALTH_OK"], timeout: 6) {
+        switch run(adb, args: ["-s", serial, "shell", "echo", "SIMAI_HEALTH_OK"], timeout: 12) {
         case .completed(0, let value) where value.contains("SIMAI_HEALTH_OK"):
             break
         case .timedOut:
@@ -922,7 +961,7 @@ enum ADBInspector {
     static func fetchDeviceWiFiIP(at selected: String?, serial: String) -> String? {
         guard let adb = executable(at: selected) else { return nil }
         // 1. Try `ip -4 addr show wlan0`
-        if case let .completed(0, output) = run(adb, args: ["-s", serial, "shell", "ip", "-4", "addr", "show", "wlan0"], timeout: 4) {
+        if case let .completed(0, output) = run(adb, args: ["-s", serial, "shell", "ip", "-4", "addr", "show", "wlan0"], timeout: 8) {
             let pattern = #"inet\s+([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})"#
             if let regex = try? NSRegularExpression(pattern: pattern),
                let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
@@ -932,12 +971,12 @@ enum ADBInspector {
             }
         }
         // 2. Try getprop dhcp.wlan0.ipaddress
-        if case let .completed(0, output) = run(adb, args: ["-s", serial, "shell", "getprop", "dhcp.wlan0.ipaddress"], timeout: 3) {
+        if case let .completed(0, output) = run(adb, args: ["-s", serial, "shell", "getprop", "dhcp.wlan0.ipaddress"], timeout: 6) {
             let ip = output.trimmingCharacters(in: .whitespacesAndNewlines)
             if BridgeRetryPolicy.validWirelessEndpoint("\(ip):18764") { return ip }
         }
         // 3. Try `ip route`
-        if case let .completed(0, output) = run(adb, args: ["-s", serial, "shell", "ip", "route"], timeout: 3) {
+        if case let .completed(0, output) = run(adb, args: ["-s", serial, "shell", "ip", "route"], timeout: 6) {
             for line in output.components(separatedBy: .newlines) {
                 if line.contains("wlan") && line.contains("src ") {
                     let parts = line.components(separatedBy: "src ")
@@ -1165,10 +1204,17 @@ enum ADBInspector {
         process.terminationHandler = { _ in completed.signal() }
         do { try process.run() } catch { return .launchFailed }
         if completed.wait(timeout: .now() + timeout) == .timedOut {
-            if process.isRunning { process.terminate() }
+            if process.isRunning {
+                process.terminate()
+                if completed.wait(timeout: .now() + 0.3) == .timedOut && process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
+            }
+            try? pipe.fileHandleForReading.close()
             return .timedOut
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        try? pipe.fileHandleForReading.close()
         let output = String(data: data, encoding: .utf8) ?? ""
         return .completed(process.terminationStatus, output)
     }

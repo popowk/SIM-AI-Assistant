@@ -81,13 +81,31 @@ public final class ShizukuTelephonyBridge {
                 drainOut.start();
                 drainErr.start();
 
-                boolean finished = process.waitFor(1500, TimeUnit.MILLISECONDS);
+                long deadline = System.currentTimeMillis() + 2500;
+                boolean finished = false;
+                int exitCode = -1;
+                while (System.currentTimeMillis() < deadline) {
+                    try {
+                        exitCode = process.exitValue();
+                        finished = true;
+                        break;
+                    } catch (IllegalThreadStateException | IllegalArgumentException notYet) {
+                        try {
+                            Thread.sleep(50);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    } catch (Throwable t) {
+                        break;
+                    }
+                }
                 if (!finished) {
                     Log.w(TAG, "exec timed out for: " + java.util.Arrays.toString(command));
-                    process.destroyForcibly();
+                    try { process.destroyForcibly(); } catch (Throwable ignored) {}
                     return -1;
                 }
-                return process.exitValue();
+                return exitCode;
             }
         } catch (Throwable t) {
             Log.w(TAG, "exec failed: " + java.util.Arrays.toString(command), t);

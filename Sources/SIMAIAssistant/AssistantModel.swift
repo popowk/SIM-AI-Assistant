@@ -1487,8 +1487,9 @@ final class AssistantModel: ObservableObject {
                 self.adbDiscoveryDescription = description
                 self.lastADBScanAt = Date()
                 let connected = found.authorized == 1
+                let hasOfflineDevice = found.offline > 0
                 self.nextADBScanAt = Date().addingTimeInterval(
-                    self.bridgeLink == nil ? 2.5 :
+                    self.bridgeLink == nil ? (hasOfflineDevice ? 1.0 : 2.5) :
                     BridgeRetryPolicy.adbScanInterval(
                         authorizedDevices: found.authorized,
                         recentlySynced: self.liveBridgeLastSync.map {
@@ -1504,6 +1505,12 @@ final class AssistantModel: ObservableObject {
                                        "unauthorized": "\(found.unauthorized)",
                                        "offline": "\(found.offline)",
                                        "source": description])
+                }
+                if found.offline > 0 && found.authorized == 0 {
+                    self.log(.warn, .system, "检测到 Android 设备处于离线 (offline) 状态，正在执行自动重连指令……")
+                    Task.detached(priority: .utility) {
+                        _ = ADBInspector.reconnectOffline(at: path)
+                    }
                 }
                 // One failed adb devices scan commonly happens while the
                 // shell/PCM helper is busy. Do NOT treat a single empty scan
@@ -3104,12 +3111,16 @@ final class AssistantModel: ObservableObject {
                 self.adbWasAuthorized = result.authorized == 1
                 self.adbScanSignature = "\(result.installed)/\(result.authorized)/\(result.unauthorized)/\(result.offline)/\(description)"
                 self.nextADBScanAt = Date().addingTimeInterval(
-                    self.bridgeLink == nil ? 2.5 :
+                    self.bridgeLink == nil ? (result.offline > 0 ? 1.0 : 2.5) :
                     BridgeRetryPolicy.adbScanInterval(authorizedDevices: result.authorized,
                                                        recentlySynced: false))
                 if result.authorized == 1 && self.liveSyncEnabled && self.bridgeLink == nil {
                     self.resetBridgeRetry()
                     self.pollLiveBridge()
+                } else if result.offline > 0 && result.authorized == 0 {
+                    Task.detached(priority: .utility) {
+                        _ = ADBInspector.reconnectOffline(at: selectedPath)
+                    }
                 }
                 self.log(.info, .system, "Android ADB 自检完成（不读取设备序列号和电话音频）",
                     details: ["adbInstalled": "\(result.installed)",

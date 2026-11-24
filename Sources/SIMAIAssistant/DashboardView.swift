@@ -77,7 +77,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("AI 电话自动值守 · 本地离线接待 · v0.4.41")
+                Text("AI 电话自动值守 · 全双工音频 · v0.4.41")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -581,7 +581,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.40 (Build 57)").font(.caption.monospaced())
+            Text("v0.4.41 (Build 58)").font(.caption.monospaced())
         }
     }
 

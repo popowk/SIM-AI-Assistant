@@ -113,10 +113,12 @@ final class PhoneEventBridge {
             return;
         if (state.equals(lastState)) return;
         lastState = state;
-        events.add(new CallEvent(++sequence, state, System.currentTimeMillis()));
-        while (events.size() > MAX_EVENTS) events.remove(0);
-        // Write snapshot immediately on state change so Mac poll reflects state within 1ms
-        writeSnapshot();
+        synchronized (events) {
+            events.add(new CallEvent(++sequence, state, System.currentTimeMillis()));
+            while (events.size() > MAX_EVENTS) events.remove(0);
+        }
+        // Asynchronously persist snapshot via executor to prevent lock-order deadlock
+        persistSnapshot();
     }
 
     void start() throws Exception {
@@ -187,11 +189,11 @@ final class PhoneEventBridge {
                     requests.execute(() -> {
                         try (Socket connected = client) {
                             connected.setTcpNoDelay(true);
-                            connected.setSoTimeout(1500);
+                            connected.setSoTimeout(3000);
                             handle(connected);
                         } catch (Exception error) {
                             if (active) Log.w("SIMAICompanion", "Local bridge request: "
-                                    + error.getClass().getSimpleName());
+                                    + error.getClass().getSimpleName() + ": " + error.getMessage(), error);
                         }
                     });
                 } catch (RejectedExecutionException busy) {
@@ -557,8 +559,7 @@ final class PhoneEventBridge {
         try { since = Long.parseLong(first.substring(start, end)); }
         catch (NumberFormatException ignored) { since = 0; }
         if (since < 0) since = 0;
-        JSONObject body;
-        synchronized (this) { body = snapshot(since); }
+        JSONObject body = snapshot(since);
         reply(client, 200, body.toString());
     }
 
@@ -579,7 +580,7 @@ final class PhoneEventBridge {
         return null;
     }
 
-    private synchronized JSONObject snapshot(long since) throws Exception {
+    private JSONObject snapshot(long since) throws Exception {
         JSONObject body = new JSONObject();
         body.put("schema", 1);
         body.put("session", session);
@@ -603,13 +604,15 @@ final class PhoneEventBridge {
         body.put("privateAnswerSequence", lastPrivateAnswerSequence);
         body.put("privateAnswerResult", lastPrivateAnswerResult);
         JSONArray rows = new JSONArray();
-        for (CallEvent event : events) {
-            if (event.seq <= since) continue;
-            JSONObject row = new JSONObject();
-            row.put("seq", event.seq);
-            row.put("state", event.state);
-            row.put("at", event.at);
-            rows.put(row);
+        synchronized (events) {
+            for (CallEvent event : events) {
+                if (event.seq <= since) continue;
+                JSONObject row = new JSONObject();
+                row.put("seq", event.seq);
+                row.put("state", event.state);
+                row.put("at", event.at);
+                rows.put(row);
+            }
         }
         body.put("events", rows);
         return body;

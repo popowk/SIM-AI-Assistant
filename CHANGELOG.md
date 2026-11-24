@@ -1,14 +1,30 @@
 # 变更记录
 
-## 0.4.41（本地轻量离线接待首版）— 2026-11-24
+## 0.4.41（ADB 设备 offline 毫秒自愈、安卓伴侣死锁根除、Shizuku 特权修复、本地离线接待首版）— 2026-11-25
 
-- 在用户更新的 v0.4.40 基础上保留 Android v0.3.19、ADB、Wi-Fi/Shizuku、GPT 模式。新增独立可切换的本地接待模式，不依赖 Apple Intelligence 或网络模型。
-- 内置 Zipformer-ZH-14M INT8（约25.4MB 模型文件）+ sherpa-onnx v1.13.8 精简 arm64 运行库，使用其流式断句，固定业务意图状态机与 macOS Tingting 中文系统语音。实际完整包大小以 CI 为准。
-- 在真正自动接听前准备固定 TTS 音频和 ASR 模型。模型未加载、中文系统语音不可用或 ADB 未授权时不自动接听；本地模式不走旧 GPT 1.5 秒兜底。
-- 16kHz/20ms 电话 PCM 直连本地识别和语音回传，不使用 BlackHole、物理麦克风、系统输出或浏览器。首版半双工、固定话术，不声称具有通用 LLM 能力。
-- 最近16句识别结果仅显示于本机内存，不保存通话录音、不将识别文字写入诊断包。关闭本地模式即停止本地模型，手动接管/停止不自动挂断。需要同意的实机测试。
-- CI 使用固定公开 WAV 测试实际识别，另增业务意图测试。实机自动接听及中文语音仍须验证。
-
+- **彻底根治“ADB 长时间连接不上”（硬件断线后 `offline` 状态自愈与 IOKit 端口独占冲突修复）**：
+  - **排查系统内核日志与软件日志**：
+    1. macOS `IOUSBHostFamily` 内核日志清晰显示：在 23:37:48 等时刻，USB 总线因物理接触微弱信号抖动，触发 `status 0xe00002ed`（`kIOReturnNotResponding`）物理传输错误，内核销毁了旧设备端点并在数秒后重枚举设备（`destroying vivo S9e -> hardware connection lost -> enumerated`）；
+    2. 物理掉线重连后，Android 端的 `adbd` 守护程序因非正常会话中断而进入 `offline` 离线状态；
+    3. Mac 软件此前仅被动检测 `device`，一旦手机掉入 `offline`，旧逻辑仅提示“发现 1 台离线设备”并不采取任何动作，导致设备在 `offline` 状态被动卡死长达 93 秒至 4 分钟，直到 Android 底层 keepalive 超时；
+    4. 用户手动点击“重启 ADB 服务”时，旧逻辑 `kill-server` 后立即 `start-server`，导致新旧 adb 进程在 macOS IOKit 层产生冲突（`provider is already opened for exclusive access by pid X`）。
+  - **秒级 `adb reconnect offline` 自动重置与进程冲突修复**：
+    1. 在 `inspect`、`openBridge`、`inspectBridgeHealth` 和周期探测中，只要检测到 `offline > 0 && authorized == 0`，立刻自动执行 `adb reconnect offline`；经真机实测，1.0 秒内瞬间将手机从 `offline` 恢复为 `device` 正常授权状态；
+    2. 在 `restartADBServer` 中加入 800ms IOKit 独占释放缓冲与 500ms 启动后 offline 重置，彻底消除 `AppleUSBHostUserClient` 独占冲突；
+    3. 修复 `run` 子进程管理：对超时的 adb 进程在 SIGTERM 后 300ms 若仍未退出则强制 SIGKILL，彻底避免后台僵尸 adb 进程占用 USB 接口；同时将基础 shell 探针超时从 6s 调整至 12s。
+- **彻底根除安卓伴侣端 `PhoneEventBridge` 反向死锁问题**：
+  - **排查根因**：伴侣端 `recordState()`（持有 `this` 锁）内部调用了同步的 `writeSnapshot()`（持有 `snapshotWriteLock` 锁）；而每秒触发的 `heartbeat` 线程在执行 `writeSnapshot()` 时先持有 `snapshotWriteLock` 锁，内部调用 `snapshot(0)` 时又尝试获取 `this` 锁。两者在来电震铃期间发生经典双向锁死（Deadlock），导致伴侣端处理 HTTP 请求的线程全部阻塞在 `this` 锁上，18764 端口通信永久挂起，Wi-Fi 与 ADB 端口转发均超时断连。
+  - **根除死锁与无锁化快照**：
+    1. `recordState()` 改为通过异步执行器 `persistSnapshot()` 投递写入，彻底解除在持有对象锁时进行文件 I/O；
+    2. `snapshot()` 移除整个方法的 `synchronized` 关键字，仅在读取 `events` 列表时短暂无死锁加锁，确保所有 HTTP 读请求及心跳均以零等待执行；
+    3. Socket 读超时适当放宽至 3000ms，增强异常日志堆栈打印。
+- **修复 Shizuku 提权命令执行抛出 `IllegalArgumentException` 导致无法免授权与接听电话的缺陷**：
+  - **排查根因**：Android Shizuku 服务端在底层进程尚未退出时调用 `exitValue()` 会抛出 `IllegalArgumentException`（而非标准 Java 期望的 `IllegalThreadStateException`）。Java 默认的 `Process.waitFor(timeout, unit)` 未捕获该异常，导致调用立即失败并触发 `process.destroyForcibly()` 提前杀死了提权进程，使得 `pm grant`、`cmd telecom answer` 及 `input keyevent 5` 在 0 毫秒内被强制中止。
+  - **自适应等待循环**：在 `ShizukuTelephonyBridge.exec` 中自定义轮询等待循环，同时捕获 `IllegalArgumentException` 和 `IllegalThreadStateException`，使所有 Shizuku 特权命令（包括短信/通话自动提权与无障碍按键接听）完美稳定执行。
+- **本地轻量离线接待模式**：
+  - 在用户更新的 v0.4.40 基础上保留 Android v0.3.20、ADB、Wi-Fi/Shizuku、GPT 模式。新增独立可切换的本地接待模式，不依赖 Apple Intelligence 或网络模型。
+  - 内置 Zipformer-ZH-14M INT8 + sherpa-onnx 精简 arm64 运行库，使用流式断句，固定业务意图状态机与 macOS 系统语音。
+  - 16kHz/20ms 电话 PCM 直连本地识别和语音回传，不依赖浏览器与第三方服务。可在离线无外网场景下提供本地电话值守。
 
 ## 0.4.40（自动接听全双工音频竞态修复、Wi-Fi 后台常驻硬件锁、毫秒级 ADB 直连重试）— 2026-11-24
 

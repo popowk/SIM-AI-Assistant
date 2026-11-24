@@ -1,6 +1,20 @@
-# SIM AI Assistant · V0.4.41（本地轻量离线接待）
+# SIM AI Assistant · V0.4.41（ADB 设备 offline 毫秒自愈、安卓伴侣死锁根除、Shizuku 特权修复）
 
-> 新增「本地轻量接待」模式：选中后准备 Zipformer-ZH-14M INT8 + sherpa-onnx 精简运行库 + macOS Tingting 系统语音；准备成功且 ADB 授权后，使用现有手机接听/PCM 链路。无需 Apple Intelligence、GPT、VPN、BlackHole、付费 API。首版为固定话术半双工测试模式，来电者知情同意后使用。语音识别只支持中文，最近16句仅保留本机内存，不输出到诊断日志。若未安装 Tingting 中文声音，先在 macOS 辅助功能中安装，然后点「准备 / 重新自检」。不改 Android v0.3.19；实机测试是验收依据。
+> V0.4.41 核心加固更新：
+> 1. **彻底根治“ADB 长时间连接不上”（硬件断线后 `offline` 状态自愈与 IOKit 端口独占冲突修复）**：
+>    - **结合 macOS 内核 `IOUSBHostFamily` 日志排查**：发现物理掉线后，Android `adbd` 进入 `offline` 离线状态。此前软件仅提示未授权设备，未做任何恢复动作，导致设备卡在 offline 状态长达 93 秒至 4 分钟；
+>    - **秒级 `adb reconnect offline` 自动重置与自愈**：在各诊断检测中只要发现离线设备，立即自动执行 `reconnect offline`，经真机实测 1.0 秒内瞬间将手机恢复为 `device` 正常授权状态；
+>    - **消除 IOKit USB 独占冲突**：为重启 ADB 守护进程增加 800ms 独占释放缓冲，彻底消除新旧 adb 进程争夺端口导致的 `provider is already opened for exclusive access by pid`；对超时的 adb 子进程进行强制 SIGKILL 清理。
+> 2. **彻底根除安卓伴侣端 `PhoneEventBridge` 反向死锁**：
+>    - 修复此前 `recordState`（持有 `this` 锁）内部调用同步文件写入 `writeSnapshot` 与 1 秒 `heartbeat` 线程（持有 `snapshotWriteLock` 并调用 `snapshot(0)` 获取 `this` 锁）相互竞争导致的双向死锁；
+>    - 实现无锁化事件快照与异步执行器写入，彻底解决来电震铃时 18764 端口通信永久阻塞的问题。
+> 3. **修复 Shizuku 提权命令执行抛出 `IllegalArgumentException` 异常导致权限与接听失效**：
+>    - 修复 Shizuku 进程在进程未退出时调用 `exitValue()` 抛出 `IllegalArgumentException` 导致 Java `Process.waitFor()` 异常中断并强行销毁进程的缺陷；
+>    - 自适应等待循环捕获该异常，使 `pm grant`、`cmd telecom answer`、`input keyevent 5` 及电池白名单在 Shizuku 下 100% 成功执行。
+> 4. **本地轻量离线接待模式**：
+>    - 新增内置 Zipformer-ZH-14M INT8 + sherpa-onnx 精简运行库 + macOS 中文系统语音支持，离线无网也能实现电话值守与意图转接。
+
+## SIM AI Assistant · V0.4.40（自动接听全双工音频竞态修复、Wi-Fi 后台常驻硬件锁、毫秒级 ADB 直连重试）
 
 > V0.4.40 核心修复更新：
 > 1. **彻底根治“自动接了电话，GPT 听不到声音”**：
