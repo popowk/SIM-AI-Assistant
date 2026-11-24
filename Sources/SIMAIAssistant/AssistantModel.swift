@@ -50,6 +50,16 @@ final class AssistantModel: ObservableObject {
     @Published var answerCallStatus = "尚未请求接听；需手机授予「接听电话」权限"
     @Published var autoCallEnabled =
         UserDefaults.standard.object(forKey: "SIMAI_AUTO_CALL") as? Bool ?? true
+    @Published var localReceptionEnabled = UserDefaults.standard.bool(forKey: "SIMAI_LOCAL_RECEPTION")
+    @Published private(set) var localReceptionReady = false
+    @Published private(set) var localReceptionStatus = "未准备本地接待引擎"
+    @Published private(set) var localReceptionText: [String] = []
+    @Published private(set) var localReceptionPreparing = false
+    private var localReceptionEngine: LocalReceptionEngine?
+    private var localEngineGeneration = UUID()
+    private var localRingSession = ""
+    private var localRingSequence = 0
+    private var localCallAudioRequested = false
     @Published var voiceSessionPrepared = false
     @Published var useEmbeddedVoiceBrowser =
         UserDefaults.standard.object(forKey: "SIMAI_EMBEDDED_VOICE_MODE") as? Bool ?? true
@@ -130,8 +140,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.32"
-    let buildNumber = "49"
+    let version = "0.4.41"
+    let buildNumber = "58"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -387,7 +397,10 @@ final class AssistantModel: ObservableObject {
         // Load the signed-in page ahead of calls without starting Voice or
         // opening the window. This avoids spending 10-15 ringing seconds on
         // navigation. Actual voice recording still requires ring/preflight.
-        if autoCallEnabled && useEmbeddedVoiceBrowser {
+        if localReceptionEnabled {
+            useEmbeddedVoiceBrowser = false
+            prepareLocalReception()
+        } else if autoCallEnabled && useEmbeddedVoiceBrowser {
             embeddedVoiceBrowser.loadIfNeeded()
             log(.info, .audio, "自动值守已预载 ChatGPT 登录页面（未开启麦克风）",
                 details: ["stage": "VOICE_PAGE_PREWARMED_IDLE"])
@@ -518,6 +531,7 @@ final class AssistantModel: ObservableObject {
     /// Enable only after the owner chooses to sign in to chatgpt.com in
     /// the app. Voice launches are UI experiments, not an official API.
     func setEmbeddedVoiceBrowserEnabled(_ enabled: Bool) {
+        if enabled && localReceptionEnabled { return }
         useEmbeddedVoiceBrowser = enabled
         UserDefaults.standard.set(enabled, forKey: "SIMAI_EMBEDDED_VOICE_MODE")
         if enabled {
@@ -887,6 +901,7 @@ final class AssistantModel: ObservableObject {
     }
 
     func shutdownForAppExit() {
+        localReceptionEngine?.stop()
         // Closing the app must stop forwarding caller audio before changing
         // the global sound device.
         // ADB forwards survive Mac process exit in the adb server. Release
@@ -1027,9 +1042,131 @@ final class AssistantModel: ObservableObject {
         }
     }
 
+    // MARK: - Lightweight offline telephone reception
+    func setLocalReceptionEnabled(_ enabled: Bool) {
+        guard !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
+              livePhoneState != "OFFHOOK", livePhoneState != "RINGING" else {
+            alertText = "请在电话空闲时切换语音引擎。"; return
+        }
+        if localReceptionEnabled == enabled { return }
+        localReceptionEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "SIMAI_LOCAL_RECEPTION")
+        ringingFallbackAnswerTimer?.cancel()
+        if enabled {
+            setEmbeddedVoiceBrowserEnabled(false)
+            restoreAutomaticGPTOutput(forceInput: true, userRequested: true)
+            prepareLocalReception()
+        } else {
+            localEngineGeneration = UUID()
+            localReceptionEngine?.stop(); localReceptionEngine = nil
+            localReceptionReady = false; localReceptionPreparing = false
+            localReceptionStatus = "本地引擎已停止"
+            localCallAudioRequested = false
+            localRingSession = ""; localRingSequence = 0
+            setEmbeddedVoiceBrowserEnabled(true)
+        }
+    }
+
+    func prepareLocalReception() {
+        guard localReceptionEnabled, !liveVoiceActive, !liveVoiceStarting,
+              livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
+        localEngineGeneration = UUID()
+        let generation = localEngineGeneration
+        localReceptionEngine?.stop()
+        localReceptionReady = false
+        localReceptionPreparing = true
+        localReceptionStatus = "正在加载本地语音引擎…"
+        let engine = LocalReceptionEngine { [weak self] event in
+            Task { @MainActor in
+                guard let self, self.localEngineGeneration == generation, self.localReceptionEnabled else { return }
+                switch event {
+                case .ready:
+                    self.localReceptionReady = true
+                    self.localReceptionPreparing = false
+                    self.localReceptionStatus = "中文识别与系统语音实际预检通过，等待来电"
+                    self.autoCallStatus = self.autoCallEnabled ? "离线接待已就绪" : "离线接待已就绪；自动接听关闭"
+                    self.log(.info, .audio, "本地接待模型与固定语音已准备", details: ["stage": "LOCAL_RECEPTION_READY"])
+                case .status(let status):
+                    self.localReceptionStatus = status
+                case .heard(let text):
+                    self.localReceptionText.append(text)
+                    self.localReceptionText = Array(self.localReceptionText.suffix(16))
+                    self.log(.info, .audio, "本地接待识别到一句来电者语音", details: ["stage": "LOCAL_ASR_ENDPOINT"])
+                case .failed(let code):
+                    self.localReceptionReady = false
+                    self.localReceptionPreparing = false
+                    self.localReceptionStatus = code == "LOCAL_CHINESE_VOICE_UNAVAILABLE"
+                        ? "未能生成中文系统语音。请在系统设置→辅助功能→朗读内容中安装 Tingting 中文语音，再点准备。"
+                        : "本地引擎不可用：" + code
+                    self.autoCallStatus = "本地引擎不可用，暂停自动接待"
+                    self.log(.warn, .audio, "本地接待引擎预检或执行失败", details: ["reason": code])
+                    if self.liveVoiceActive || self.liveVoiceStarting { self.stopLiveVoice() }
+                }
+            }
+        }
+        localReceptionEngine = engine
+        engine.prepare()
+    }
+
+    private func reactToLocalReception(_ state: String) {
+        previousObservedPhoneState = state
+        if state == "IDLE" {
+            if localCallAudioRequested && (liveVoiceActive || liveVoiceStarting) { stopLiveVoice() }
+            localCallAudioRequested = false
+            automaticAnswerRequested = false; automaticAnswerAcknowledged = false
+            automaticAnswerSession = ""; automaticOffhookSequence = 0
+            localRingSession = ""; localRingSequence = 0
+            autoCallState.reset()
+            if localReceptionReady {
+                autoCallStatus = autoCallEnabled ? "离线接待空闲待命" : "自动接听已关闭"
+            }
+            return
+        }
+        guard autoCallEnabled, localReceptionReady, localReceptionEngine?.isReady == true,
+              !adbInstalling, !audioProbeBusy else { return }
+        if state == "RINGING" {
+            // ADB is still necessary for the existing cellular PCM helper,
+            // even when call state is supplied by Wi-Fi.
+            guard adbWasAuthorized, bridgeCursor.lastSequence > 0,
+                  !bridgeCursor.session.isEmpty,
+                  !answerCallBusy, !liveVoiceActive, !liveVoiceStarting,
+                  !automaticAnswerRequested, !automaticAnswerAcknowledged,
+                  !(localRingSession == bridgeCursor.session && localRingSequence == bridgeCursor.lastSequence),
+                  let jar = Bundle.main.resourceURL?.appendingPathComponent("SIMAI-Audio-Probe.jar"),
+                  FileManager.default.fileExists(atPath: jar.path) else { return }
+            localRingSession = bridgeCursor.session
+            localRingSequence = bridgeCursor.lastSequence
+            localReceptionText.removeAll()
+            autoCallStatus = "本地引擎就绪，正在请求接听"
+            answerIncomingPhoneCall(automatic: true)
+        } else if state == "OFFHOOK",
+                  localRingSession == bridgeCursor.session,
+                  localRingSequence > 0,
+                  bridgeCursor.lastSequence == localRingSequence + 1,
+                  automaticAnswerRequested || automaticAnswerAcknowledged,
+                  !localCallAudioRequested, !liveVoiceActive, !liveVoiceStarting {
+            if automaticAnswerAcknowledged && automaticAnswerSession == bridgeCursor.session {
+                automaticOffhookSequence = bridgeCursor.lastSequence
+            }
+            localCallAudioRequested = true
+            autoCallStatus = "已接通，正在建立本地电话 PCM"
+            startLiveVoice()
+        }
+    }
+
     func setAutoCallEnabled(_ enabled: Bool) {
         autoCallEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "SIMAI_AUTO_CALL")
+        if localReceptionEnabled {
+            if !enabled {
+                localCallAudioRequested = false
+                if liveVoiceActive || liveVoiceStarting { stopLiveVoice() }
+                autoCallStatus = "本地自动接听已停止"
+            } else {
+                autoCallStatus = localReceptionReady ? "本地接待已就绪，等待下一通来电" : "等待本地接待引擎预检通过"
+            }
+            return
+        }
         if !enabled {
             voiceStopCheckGeneration += 1
             automaticAnswerRequested = false
@@ -1127,6 +1264,7 @@ final class AssistantModel: ObservableObject {
     }
 
     private func reactToAutomaticCallState(_ state: String) {
+        if localReceptionEnabled { reactToLocalReception(state); return }
         let newIdle = state == "IDLE" && previousObservedPhoneState != "IDLE" &&
                       !previousObservedPhoneState.isEmpty
         previousObservedPhoneState = state
@@ -1683,7 +1821,7 @@ final class AssistantModel: ObservableObject {
             let ringSeq = snapshot.seq
             ringingFallbackAnswerTimer = Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
-                guard let self else { return }
+                guard !Task.isCancelled, let self, !self.localReceptionEnabled else { return }
                 if self.autoCallEnabled && self.livePhoneState == "RINGING" &&
                    self.bridgeCursor.session == ringSession &&
                    !self.automaticAnswerRequested && !self.automaticAnswerAcknowledged {
@@ -2141,6 +2279,11 @@ final class AssistantModel: ObservableObject {
             alertText = "未找到 Android 电话音频 Helper，请重新安装完整 Mac 包。"
             return
         }
+        let localEngine = localCallAudioRequested ? localReceptionEngine : nil
+        if localCallAudioRequested && localEngine?.isReady != true {
+            autoCallStatus = "本地接待尚未就绪，不建立 AI 电话音频"
+            return
+        }
         let id = UUID().uuidString
         voiceSessionID = id
         liveVoiceStatus = "准备建立 16 kHz 双向 PCM 通道……"
@@ -2173,7 +2316,8 @@ final class AssistantModel: ObservableObject {
         liveVoiceHandshakeAttempts = 0
         log(.info, .audio, "用户确认开始实时电话音频预览",
             details: ["mode": "manual", "mic": "muted", "maxDurationSeconds": "180"])
-        let stream = PhoneAudioStream(physicalMonitorOutput: UInt32(selectedVoiceMonitorOutputID)) { [weak self] update in
+        let stream = PhoneAudioStream(physicalMonitorOutput: UInt32(selectedVoiceMonitorOutputID),
+                                      localReception: localEngine) { [weak self] update in
             Task { @MainActor in
                 guard let self, self.voiceSessionID == id else { return }
                 switch update {
@@ -2185,7 +2329,11 @@ final class AssistantModel: ObservableObject {
                     self.liveVoiceActive = true
                     self.liveVoiceStarting = false
                     self.liveVoiceStatus = "实时播放电话下行中 · 麦克风默认静音"
-                    if self.autoCallAudioRequested {
+                    if localEngine != nil {
+                        self.liveVoiceStatus = "本地离线语音接待已连接 · 半双工"
+                        self.autoCallStatus = "本地接待运行中 · 无 GPT、无虚拟声卡"
+                        self.log(.info, .audio, "本地语音引擎已直连电话 PCM", details: ["stage": "LOCAL_PCM_ACTIVE"])
+                    } else if self.autoCallAudioRequested {
                         self.enableGPTTwoWayPhoneBridge()
                         self.autoCallStatus = self.aiReplyToPhoneEnabled
                             ? "自动电话路由已开启；当前仍依赖事先启动的 ChatGPT Voice 会话"
@@ -2268,10 +2416,14 @@ final class AssistantModel: ObservableObject {
                     // waiting only for IDLE leaves WebKit recording forever.
                     // Fail closed on a terminated auto-answered PCM stream,
                     // without attempting to hang up an uncertain phone call.
-                    let closeAutoVoice = AutoCallVoiceShutdownPolicy.closeOnAudioEnd(
+                    let closeAutoVoice = localEngine == nil && AutoCallVoiceShutdownPolicy.closeOnAudioEnd(
                         reason: reason,
                         automaticAudioSession: self.autoCallAudioRequested
                     )
+                    if localEngine != nil {
+                        self.localCallAudioRequested = false
+                        self.autoCallStatus = "本地语音通道已结束：" + reason
+                    }
                     if reason == "SESSION_LIMIT_180S" &&
                        self.automaticAnswerAcknowledged &&
                        self.livePhoneState == "OFFHOOK" {
@@ -2299,7 +2451,7 @@ final class AssistantModel: ObservableObject {
                     // Resume anonymous call-state synchronization without
                     // rebuilding the ADB connection unnecessarily.
                     self.pollLiveBridge()
-                    if self.liveVoiceRxFrames > 100 &&
+                    if localEngine == nil && self.liveVoiceRxFrames > 100 &&
                        self.liveVirtualRenderFrames == 0 {
                         self.log(.warn, .audio, "BlackHole 虚拟麦克风音频引擎未实际渲染任何 PCM",
                                  details: ["reason": "BLACKHOLE_RENDER_STALLED"])
@@ -2497,6 +2649,10 @@ final class AssistantModel: ObservableObject {
     }
 
     func stopGPTTwoWayPhoneBridge() {
+        if localReceptionEnabled && (liveVoiceActive || liveVoiceStarting) {
+            stopLiveVoice()
+            return
+        }
         if aiReplyToPhoneEnabled { setAIReplyToPhone(false) }
         if aiReplyMonitorEnabled { setAIReplyMonitor(false) }
         if chatGPTVoiceRouteEnabled { setChatGPTVoiceRoute(false) }

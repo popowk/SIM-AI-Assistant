@@ -89,6 +89,12 @@ else
   echo "注意：未设置 ANDROID_AUDIO_PROBE_JAR_PATH，本地构建不含电话音频诊断助手。"
 fi
 
+if [[ "$(uname -m)" == "arm64" && "${TARGET_TRIPLE:-arm64}" == arm64* ]]; then
+  bash "$ROOT/Scripts/build-local-reception.sh" "$APP/Contents/Resources/LocalReception"
+else
+  echo "本地轻量模型目前只为 Apple Silicon 打包"
+fi
+
 chmod +x "$APP/Contents/MacOS/SIMAIAssistant"
 
 if [[ -n "${TARGET_TRIPLE:-}" ]]; then
@@ -109,7 +115,7 @@ codesign --verify --verbose "$APP"
 echo "[5/5] 生成发行 ZIP..."
 ARCH="${TARGET_TRIPLE%%-*}"
 if [[ -z "${TARGET_TRIPLE:-}" ]]; then ARCH="$(uname -m)"; fi
-VERSION="$(defaults read "$APP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "0.4.40")"
+VERSION="$(defaults read "$APP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "0.4.41")"
 ARCHIVE="$DIST/SIM-AI-Assistant-v${VERSION}-macos-$ARCH.zip"
 rm -f "$ARCHIVE"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"

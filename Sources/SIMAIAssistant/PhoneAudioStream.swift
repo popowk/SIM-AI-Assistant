@@ -513,14 +513,17 @@ final class PhoneAudioStream {
     // default; the caller still reaches BlackHole 2ch and GPT unchanged.
     private var callerMonitorEnabled = true
     private let physicalMonitorOutput: AudioDeviceID?
+    private let localReception: LocalReceptionEngine?
     private var setup: ADBAudioStreamSetup?
     private var active = false
     private let onEvent: (LiveAudioEvent) -> Void
     private let maxDuration: TimeInterval = 180
 
     init(physicalMonitorOutput: AudioDeviceID? = nil,
+         localReception: LocalReceptionEngine? = nil,
          onEvent: @escaping (LiveAudioEvent) -> Void) {
         self.physicalMonitorOutput = physicalMonitorOutput
+        self.localReception = localReception
         self.onEvent = onEvent
         self.microphone = LiveMacMicrophone(queue: microphoneQueue)
     }
@@ -543,6 +546,7 @@ final class PhoneAudioStream {
     }
 
     func setMicrophone(_ enabled: Bool) throws {
+        if enabled && localReception != nil { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
         if enabled {
             guard isActive else { throw LiveAudioFailure.reason("AUDIO_NOT_ACTIVE") }
             gate.lock()
@@ -596,6 +600,7 @@ final class PhoneAudioStream {
 
     /// Opt-in receive-only ChatGPT Voice input; never routes AI audio to caller.
     func setChatGPTInputRouting(_ enabled: Bool) throws {
+        if enabled && localReception != nil { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
         if !enabled {
             gate.lock()
             let old = chatGPTVirtualMic
@@ -628,6 +633,7 @@ final class PhoneAudioStream {
     /// The monitor is safe by default: AI audio can be heard locally but
     /// cannot reach the phone unless a second distinct consent action occurs.
     func setAIReplyMonitoring(_ enabled: Bool, physicalOutputID: AudioDeviceID? = nil) throws {
+        if enabled && localReception != nil { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
         if !enabled {
             gate.lock()
             aiReplyToPhone = false
@@ -671,6 +677,7 @@ final class PhoneAudioStream {
     }
 
     func setAIReplyToPhone(_ enabled: Bool) throws {
+        if enabled && localReception != nil { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
         guard isActive else { throw LiveAudioFailure.reason("AI_RETURN_CALL_INACTIVE") }
         if enabled {
             gate.lock()
@@ -729,6 +736,7 @@ final class PhoneAudioStream {
                 _ = Darwin.shutdown(fd, Int32(SHUT_RDWR))
                 _ = Darwin.close(fd)
             }
+            localReception?.endCall()
             virtualMic?.stop()
             aiCapture?.stop()
             if let process, process.isRunning { process.terminate() }
@@ -847,20 +855,21 @@ final class PhoneAudioStream {
         }
         report(.status("实时音频服务握手完成（\(attempts) 次连接尝试）"))
 
-        let speaker: LiveMacSpeaker
-        do {
-            // If the system output is virtual, a physical monitor must be
-            // selected explicitly; never play the carrier downlink to the
-            // GPT return channel or create a feedback loop.
-            if physicalMonitorOutput == nil && AudioInspector().inspect().devices.contains(where: {
-                $0.isDefaultOutput && $0.displayName.localizedCaseInsensitiveContains("BlackHole")
-            }) {
-                throw LiveAudioFailure.reason("PHONE_PHYSICAL_OUTPUT_REQUIRED")
-            }
-            speaker = try LiveMacSpeaker(deviceID: physicalMonitorOutput)
+        // Local reception connects ASR and pre-rendered TTS directly to
+        // cellular PCM. No physical or virtual Mac sound device is needed.
+        let speaker: LiveMacSpeaker?
+        if let localReception {
+            guard localReception.beginCall() else { reason = "LOCAL_ASR_NOT_READY"; return }
+            speaker = nil
+        } else {
+            do {
+                if physicalMonitorOutput == nil && AudioInspector().inspect().devices.contains(where: {
+                    $0.isDefaultOutput && $0.displayName.localizedCaseInsensitiveContains("BlackHole")
+                }) { throw LiveAudioFailure.reason("PHONE_PHYSICAL_OUTPUT_REQUIRED") }
+                speaker = try LiveMacSpeaker(deviceID: physicalMonitorOutput)
+            } catch { reason = "MAC_SPEAKER_START"; return }
         }
-        catch { reason = "MAC_SPEAKER_START"; return }
-        defer { speaker.stop() }
+        defer { speaker?.stop() }
 
         gate.lock()
         active = true
@@ -891,8 +900,13 @@ final class PhoneAudioStream {
             let callerMonitor = callerMonitorEnabled
             let virtualMic = chatGPTVirtualMic
             gate.unlock()
-            if callerMonitor { speaker.feed(frame) }
-            virtualMic?.feed(frame)
+            if let localReception {
+                if !localReception.isReady { reason = "LOCAL_ASR_FAILED"; break }
+                localReception.feed(frame)
+            } else {
+                if callerMonitor { speaker?.feed(frame) }
+                virtualMic?.feed(frame)
+            }
             received += 1
             if received % 50 == 0 {
                 report(.downlinkSignal(peakRMS: downlinkPeakRMS))
@@ -915,7 +929,7 @@ final class PhoneAudioStream {
         return (sent, txLateFrames)
     }
 
-    private func reportMetrics(received: Int, speaker: LiveMacSpeaker) {
+    private func reportMetrics(received: Int, speaker: LiveMacSpeaker?) {
         let mic = microphoneQueue.statistics()
         let sending = sentStatistics()
         gate.lock()
@@ -929,13 +943,13 @@ final class PhoneAudioStream {
                                     peakRMS: stats.peakRMS))
         }
         report(.metrics(received: received, sent: sending.sent,
-                        dropped: speaker.droppedFrames(),
+                        dropped: speaker?.droppedFrames() ?? 0,
                         micUnderflows: mic.underflowFrames,
                         micOverflows: mic.overflowFrames,
                         txLate: sending.late,
                         micBufferedMs: mic.bufferedMilliseconds,
                         voiceRouteDropped: virtualMicDroppedFrames(),
-                        monitorRendered: speaker.renderedFrames(),
+                        monitorRendered: speaker?.renderedFrames() ?? 0,
                         virtualRendered: virtualMicRenderedFrames()))
     }
 
@@ -968,7 +982,9 @@ final class PhoneAudioStream {
             let capture = aiReplyCapture
             gate.unlock()
             let data: [UInt8]
-            if forwardAI, let capture {
+            if let localReception {
+                data = localReception.nextFrame()
+            } else if forwardAI, let capture {
                 data = capture.nextPhoneFrame()
             } else {
                 data = microphoneQueue.nextFrame()

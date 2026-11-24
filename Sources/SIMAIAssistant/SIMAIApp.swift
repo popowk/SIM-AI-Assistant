@@ -38,9 +38,11 @@ private struct MenuBarCommands: View {
         }
         Divider()
         Button("刷新 Mac 音频设备") { model.refresh() }
-        Button("内嵌 ChatGPT Voice（实验）") {
-            model.setEmbeddedVoiceBrowserEnabled(true)
-            model.showEmbeddedVoiceWindow(activate: true)
+        if !model.localReceptionEnabled {
+            Button("内嵌 ChatGPT Voice（实验）") {
+                model.setEmbeddedVoiceBrowserEnabled(true)
+                model.showEmbeddedVoiceWindow(activate: true)
+            }
         }
         Button("挂断当前电话") {
             model.hangupCurrentCall()
@@ -50,7 +52,7 @@ private struct MenuBarCommands: View {
             model.restoreAutomaticGPTOutput(forceInput: true, userRequested: true)
         }
         Divider()
-        Text("v0.4.40 · 毫秒级 ADB 直连重试、根治设备重连卡顿与自愈机制")
+        Text("v0.4.41 · 离线轻量电话接待")
         Button("退出 SIM AI Assistant") {
             model.shutdownForAppExit()
             NSApp.terminate(nil)

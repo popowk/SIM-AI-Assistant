@@ -22,7 +22,7 @@ struct DashboardView: View {
                 header
                 statusBar
                 callControlPanel
-                quickSetupPanel
+                if !model.localReceptionEnabled { quickSetupPanel }
                 adbPanel
                 DisclosureGroup("飞书短信配置", isExpanded: $showFeishuSettings) {
                     feishuPanel
@@ -77,7 +77,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("AI 电话自动值守 · 全双工音频 · v0.4.40")
+                Text("AI 电话自动值守 · 本地离线接待 · v0.4.41")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -157,6 +157,24 @@ struct DashboardView: View {
                     get: { model.autoCallEnabled },
                     set: { model.setAutoCallEnabled($0) }
                 ))
+                Toggle("本地轻量接待（离线，不使用 GPT / BlackHole）", isOn: Binding(
+                    get: { model.localReceptionEnabled },
+                    set: { model.setLocalReceptionEnabled($0) }
+                ))
+                .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                if model.localReceptionEnabled {
+                    Text(model.localReceptionStatus).font(.caption)
+                    Button(model.localReceptionPreparing ? "正在准备…" : "准备 / 重新自检本地模型") {
+                        model.prepareLocalReception()
+                    }.disabled(model.localReceptionPreparing || model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                    Text("中文 Zipformer INT8 + 固定业务逻辑 + 系统中文语音。半双工，播报结束后再说话。识别文字仅保留在内存中。测试前请确保对方知情同意。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if !model.localReceptionText.isEmpty {
+                        Text("本次通话识别（仅本机）").font(.caption.bold())
+                        Text(model.localReceptionText.joined(separator: "\n"))
+                            .font(.caption).textSelection(.enabled)
+                    }
+                } else {
                 Toggle("自动调度 GPT 麦克风与系统音频路由", isOn: Binding(
                     get: { model.automaticGPTOutputEnabled },
                     set: { model.setAutomaticGPTOutputEnabled($0) }
@@ -180,11 +198,13 @@ struct DashboardView: View {
                     .foregroundStyle(.secondary)
                     .padding(.leading, 12)
                 }
+                }
             }
 
             Divider()
 
             // 快捷控制按钮组
+            if !model.localReceptionEnabled {
             HStack(spacing: 12) {
                 Button {
                     model.setEmbeddedVoiceBrowserEnabled(true)
@@ -211,6 +231,11 @@ struct DashboardView: View {
                     }
                     .buttonStyle(.bordered)
                 }
+            }
+
+            } else if model.liveVoiceActive || model.liveVoiceStarting {
+                Button("停止本地接待（不自动挂断）") { model.stopLiveVoice() }
+                    .buttonStyle(.bordered)
             }
 
             // 状态详情

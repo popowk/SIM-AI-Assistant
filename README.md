@@ -1,4 +1,6 @@
-# SIM AI Assistant · V0.4.40（自动接听全双工音频竞态修复、Wi-Fi 后台常驻硬件锁、毫秒级 ADB 直连重试）
+# SIM AI Assistant · V0.4.41（本地轻量离线接待）
+
+> 新增「本地轻量接待」模式：选中后准备 Zipformer-ZH-14M INT8 + sherpa-onnx 精简运行库 + macOS Tingting 系统语音；准备成功且 ADB 授权后，使用现有手机接听/PCM 链路。无需 Apple Intelligence、GPT、VPN、BlackHole、付费 API。首版为固定话术半双工测试模式，来电者知情同意后使用。语音识别只支持中文，最近16句仅保留本机内存，不输出到诊断日志。若未安装 Tingting 中文声音，先在 macOS 辅助功能中安装，然后点「准备 / 重新自检」。不改 Android v0.3.19；实机测试是验收依据。
 
 > V0.4.40 核心修复更新：
 > 1. **彻底根治“自动接了电话，GPT 听不到声音”**：
