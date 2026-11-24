@@ -383,6 +383,8 @@ struct DashboardView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Text("虚拟声卡真实输入：\(model.blackHoleActualInputStatus)")
                     .font(.caption).foregroundStyle(.secondary)
+                Text(model.embeddedVoiceBrowser.webRTPSignalStatus)
+                    .font(.caption).foregroundStyle(.secondary)
                 Label(model.embeddedVoiceBrowser.isolatedOutputReady
                         ? "网页独立音频已配置" : "网页独立音频待就绪",
                       systemImage: model.embeddedVoiceBrowser.isolatedOutputReady
