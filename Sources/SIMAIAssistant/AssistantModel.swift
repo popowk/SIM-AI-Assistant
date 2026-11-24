@@ -2315,7 +2315,7 @@ final class AssistantModel: ObservableObject {
     /// Require same Android ring before acknowledging a private-file request.
     private func recordPrivateAutomaticAnswer(expectedSession: String, expectedSequence: Int) -> Bool {
         guard bridgeCursor.session == expectedSession,
-              autoStartedWebVoiceForRing,
+              autoStartedWebVoiceForRing || incomingVoicePending || voiceSessionPrepared,
               (livePhoneState == "RINGING" && bridgeCursor.lastSequence == expectedSequence) ||
               (livePhoneState == "OFFHOOK" && bridgeCursor.lastSequence == expectedSequence + 1)
               else { return false }
@@ -2357,12 +2357,11 @@ final class AssistantModel: ObservableObject {
         let path = selectedADBPath
         Task { [weak self] in
             guard let self else { return }
-            // On the new Companion the explicit foreground broadcast returns
-            // a result from the guarded phone API itself. If the status tunnel
-            // is already using ADB_FILE, avoid waiting for another HTTP timeout.
-            if automatic, self.bridgeUsingFileFallback, self.orderedAnswerReplyAvailable,
+            // On the new Companion or when status uses ADB_FILE (e.g. during vivo ringing),
+            // use the local guarded shell answer directly to avoid a 3s+ HTTP timeout.
+            if automatic, self.bridgeUsingFileFallback,
                let existingLink {
-                self.log(.info, .call, "HTTP 状态不稳定，优先使用手机端带回执的接听广播",
+                self.log(.info, .call, "HTTP 状态不稳定，优先使用本地受控 Shell 接听",
                          details: ["diagnosis": "ANSWER_ORDERED_BROADCAST_FIRST"])
                 let result = await Task.detached(priority: .userInitiated) {
                     ADBInspector.answerRingingViaPrivateLocalShell(

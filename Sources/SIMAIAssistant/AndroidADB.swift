@@ -503,6 +503,29 @@ enum ADBInspector {
         }
     }
 
+    private static func answerViaSystemTelecom(
+        adb: URL,
+        serial: String
+    ) -> Bool {
+        // 1. Android 8+ official cmd telecom answer (executed with shell UID 2000, MODIFY_PHONE_STATE)
+        if case .completed(0, _) = run(adb, args: ["-s", serial, "shell", "cmd", "telecom", "answer"], timeout: 3) {
+            return true
+        }
+        // 2. Legacy telecom answer command
+        if case .completed(0, _) = run(adb, args: ["-s", serial, "shell", "telecom", "answer"], timeout: 3) {
+            return true
+        }
+        // 3. Fallback: KEYCODE_CALL (5)
+        if case .completed(0, _) = run(adb, args: ["-s", serial, "shell", "input", "keyevent", "5"], timeout: 3) {
+            return true
+        }
+        // 4. Fallback: KEYCODE_HEADSETHOOK (79)
+        if case .completed(0, _) = run(adb, args: ["-s", serial, "shell", "input", "keyevent", "79"], timeout: 3) {
+            return true
+        }
+        return false
+    }
+
     /// Shell-only secondary transport, independently permission-gated by Android.
     /// Never trusts the adb broadcast's exit status: requires the exact ring
     /// sequence and success code from the app's private state snapshot.
@@ -608,12 +631,18 @@ enum ADBInspector {
                 at: selected, adb: adb, serial: expectedSerial,
                 expectedSession: expectedSession,
                 expectedSequence: expectedSequence)
-            if snapshot.orderedAnswerReplyAvailable == true ||
-               ["ANSWER_FALLBACK_REQUESTED",
-                "ANSWER_FALLBACK_PERMISSION_REQUIRED",
-                "ANSWER_FALLBACK_RING_CHANGED"].contains(result) {
+            if result == "ANSWER_FALLBACK_REQUESTED" {
                 return result
             }
+            if ["ANSWER_FALLBACK_PERMISSION_REQUIRED", "ANSWER_FALLBACK_RING_CHANGED"].contains(result) {
+                return result
+            }
+        }
+        // Direct Android system telecom answer via ADB shell.
+        // shell user has MODIFY_PHONE_STATE permission, which bypasses OEM lockscreen
+        // and background restrictions that block third-party app TelecomManager calls.
+        if answerViaSystemTelecom(adb: adb, serial: expectedSerial) {
+            return "ANSWER_FALLBACK_REQUESTED"
         }
         if snapshot.privateAnswerPollerActive == false {
             return "ANSWER_FALLBACK_WORKER_INACTIVE"

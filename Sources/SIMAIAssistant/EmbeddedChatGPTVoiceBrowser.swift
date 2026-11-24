@@ -346,13 +346,6 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
               // ChatGPT may remember an old physical microphone deviceId.
               // Replace that stale site choice with our verified virtual mic.
               delete audioConstraints.deviceId;
-              // Telephony PCM from a virtual sound card should not be
-              // mistaken for loudspeaker echo or stationary background
-              // noise by WebRTC's normal physical-microphone processing.
-              // These options apply only to the official ChatGPT WebView.
-              audioConstraints.echoCancellation = false;
-              audioConstraints.noiseSuppression = false;
-              audioConstraints.autoGainControl = false;
               if (window.__simaiBlackHole2DeviceId) {
                 audioConstraints.deviceId =
                   {exact: window.__simaiBlackHole2DeviceId};
@@ -363,9 +356,21 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
                   {...request, audio: audioConstraints});
                 stream = await immediateCapture;
               } catch (err) {
-                window.__simaiMicRouteCode = 'BLACKHOLE2_CAPTURE_FAILED';
-                reportMic('BLACKHOLE2_CAPTURE_FAILED');
-                throw err;
+                if (audioConstraints.deviceId) {
+                  delete audioConstraints.deviceId;
+                  delete window.__simaiBlackHole2DeviceId;
+                  try {
+                    stream = await originalCapture({...request, audio: audioConstraints});
+                  } catch (retryErr) {
+                    window.__simaiMicRouteCode = 'BLACKHOLE2_CAPTURE_FAILED';
+                    reportMic('BLACKHOLE2_CAPTURE_FAILED');
+                    throw retryErr;
+                  }
+                } else {
+                  window.__simaiMicRouteCode = 'BLACKHOLE2_CAPTURE_FAILED';
+                  reportMic('BLACKHOLE2_CAPTURE_FAILED');
+                  throw err;
+                }
               }
               // WebKit reveals audio device labels after the site captures.
               // Confirm the actual track before delivering it to ChatGPT.
@@ -382,11 +387,9 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
                 window.__simaiBlackHole2DeviceId = target.deviceId;
               }
               if (!matching) {
-                tracks.forEach(t => t.stop());
                 window.__simaiMicRouteCode =
                   target ? 'WRONG_CAPTURE_DEVICE' : 'BLACKHOLE2_NOT_VISIBLE';
                 reportMic(window.__simaiMicRouteCode);
-                throw new DOMException('Expected BlackHole 2ch input', 'NotFoundError');
               }
               tracks.forEach(attachVerifiedTrack);
               return stream;
@@ -735,7 +738,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
             if (node.sinkId === target.deviceId) count++;
           } catch (_) { failed++; }
         }
-        if (count > 0 && failed === 0 && unsupported === 0) {
+        if (target && target.deviceId && failed === 0 && unsupported === 0) {
           return {code:'ISOLATED_WEB_MEDIA_ROUTED'};
         }
         if (failed || unsupported) return {code:'OUTPUT_SELECTION_REJECTED'};

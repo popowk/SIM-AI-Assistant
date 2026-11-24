@@ -76,17 +76,10 @@ final class AutoVoiceInputRouter {
         if current == target {
             return saved == nil ? "INPUT_ALREADY_SELECTED" : "INPUT_ALREADY_MANAGED"
         }
-        if saved != nil {
-            // The user chose a different input during our session.
-            UserDefaults.standard.removeObject(forKey: Self.previousUIDKey)
-            return "INPUT_USER_CHANGED"
+        if saved == nil, let priorUID = Self.uid(current), !priorUID.isEmpty {
+            UserDefaults.standard.set(priorUID, forKey: Self.previousUIDKey)
         }
-        guard let priorUID = Self.uid(current), !priorUID.isEmpty else {
-            return "INPUT_PREVIOUS_UNKNOWN"
-        }
-        UserDefaults.standard.set(priorUID, forKey: Self.previousUIDKey)
         guard Self.setInput(target) else {
-            UserDefaults.standard.removeObject(forKey: Self.previousUIDKey)
             return "INPUT_SWITCH_FAILED"
         }
         return "INPUT_ACTIVE"
