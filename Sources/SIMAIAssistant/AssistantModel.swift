@@ -1264,6 +1264,7 @@ final class AssistantModel: ObservableObject {
         bridgeTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.autoInspectADBIfNeeded()
+                self?.autoDiscoverWiFiCompanionIfNeeded()
                 self?.pollLiveBridge()
                 self?.refreshPendingBlackHoleInstall()
                 self?.checkEmbeddedVoiceHealth()
@@ -1875,6 +1876,19 @@ final class AssistantModel: ObservableObject {
                     if self.bridgeConsecutiveFailures == 0 {
                         self.log(.info, .call, "ADB 端口转发连接建立（未读取设备序列号）")
                     }
+                    let serial = link.serial
+                    Task.detached(priority: .utility) { [weak self] in
+                        if let ip = ADBInspector.fetchDeviceWiFiIP(at: path, serial: serial) {
+                            await MainActor.run {
+                                guard let self else { return }
+                                if self.wifiHost != ip {
+                                    self.wifiHost = ip
+                                    self.log(.info, .system, "通过 ADB 自动获取手机局域网 Wi-Fi IP：\(ip)")
+                                    self.testWiFiConnection()
+                                }
+                            }
+                        }
+                    }
                     self.pollLiveBridge()
                 } else {
                     if self.bridgeConsecutiveFailures == 0 { self.inspectBridgeHealth() }
@@ -1914,7 +1928,8 @@ final class AssistantModel: ObservableObject {
                     await MainActor.run {
                         self.wifiPingTesting = false
                         self.wifiDirectActive = true
-                        self.wifiPingStatus = "✅ 连接成功！响应延迟 \(elapsedMs) ms"
+                        self.connectionTransport = "WIFI_DIRECT"
+                        self.wifiPingStatus = "✅ 局域网直连成功！响应延迟 \(elapsedMs) ms"
                         self.pollLiveBridge()
                     }
                 } else {
@@ -1927,6 +1942,72 @@ final class AssistantModel: ObservableObject {
                 await MainActor.run {
                     self.wifiPingTesting = false
                     self.wifiPingStatus = "❌ 连接超时或失败，请确保手机与 Mac 在同一局域网"
+                }
+            }
+        }
+    }
+
+    private var nextNetworkScanAt = Date.distantPast
+    private var networkScanInProgress = false
+
+    func triggerFullWiFiDiscovery() {
+        wifiDiscovery.stop()
+        wifiDiscovery.start()
+        nextNetworkScanAt = .distantPast
+        networkScanInProgress = false
+        wifiPingStatus = "正在全网自动扫描手机伴侣……"
+        autoDiscoverWiFiCompanionIfNeeded(force: true)
+    }
+
+    func autoDiscoverWiFiCompanionIfNeeded(force: Bool = false) {
+        guard !wifiDirectActive, !networkScanInProgress, force || Date() >= nextNetworkScanAt else { return }
+
+        // 1. Check if Bonjour discovered IP
+        if let ip = wifiDiscovery.discoveredIP, !ip.isEmpty, wifiHost != ip {
+            log(.info, .system, "mDNS 自动发现手机伴侣 IP：\(ip)")
+            wifiHost = ip
+            testWiFiConnection()
+            return
+        }
+
+        // 2. If ADB is connected, query ADB for Wi-Fi IP
+        if let link = bridgeLink {
+            let path = selectedADBPath
+            let serial = link.serial
+            Task.detached(priority: .utility) { [weak self] in
+                if let ip = ADBInspector.fetchDeviceWiFiIP(at: path, serial: serial) {
+                    await MainActor.run {
+                        guard let self else { return }
+                        if self.wifiHost != ip {
+                            self.wifiHost = ip
+                            self.log(.info, .system, "通过 ADB 自动获取手机局域网 Wi-Fi IP：\(ip)")
+                            self.testWiFiConnection()
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Scan local network ARP cache every 15 seconds if disconnected
+        if connectionTransport == "DISCONNECTED" || force {
+            nextNetworkScanAt = Date().addingTimeInterval(15)
+            networkScanInProgress = true
+            Task.detached(priority: .utility) { [weak self] in
+                let ips = LocalNetworkScanner.extractLocalIPs()
+                for ip in ips {
+                    if await LocalNetworkScanner.probeCompanion(on: ip) {
+                        await MainActor.run {
+                            guard let self else { return }
+                            self.log(.info, .system, "局域网 ARP 自动发现手机伴侣：\(ip)")
+                            self.wifiHost = ip
+                            self.networkScanInProgress = false
+                            self.testWiFiConnection()
+                        }
+                        return
+                    }
+                }
+                await MainActor.run {
+                    self?.networkScanInProgress = false
                 }
             }
         }

@@ -77,7 +77,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("AI 电话自动值守 · 全双工音频 · v0.4.34")
+                Text("AI 电话自动值守 · 全双工音频 · v0.4.35")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -406,36 +406,59 @@ struct DashboardView: View {
     // MARK: - 手机连接与高级维护 (Wi-Fi 局域网直连 + ADB)
     private var adbPanel: some View {
         panel("Android · 手机连接与维护", symbol: "network") {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Wi-Fi 局域网直连（免 USB 数据线 · 延迟 <5ms · 推荐）")
-                    .font(.subheadline.bold())
+            VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    TextField("手机 Wi-Fi IP 地址（如 192.168.1.100）", text: $model.wifiHost)
+                    Text("Wi-Fi 局域网全自动发现与直连（免 USB 数据线 · 延迟 <5ms）")
+                        .font(.subheadline.bold())
+                    Spacer()
+                    if model.wifiDirectActive {
+                        Text("● 局域网已直连")
+                            .font(.caption.bold())
+                            .foregroundColor(.green)
+                    } else if model.bridgeLink != nil {
+                        Text("● USB 数据线中")
+                            .font(.caption.bold())
+                            .foregroundColor(.blue)
+                    }
+                }
+
+                HStack(spacing: 8) {
+                    TextField("自动嗅探手机 IP", text: $model.wifiHost)
                         .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 240)
-                    Button("测试 Wi-Fi 连接") {
-                        model.testWiFiConnection()
+                        .frame(maxWidth: 220)
+
+                    Button("自动扫描发现") {
+                        model.triggerFullWiFiDiscovery()
                     }
                     .buttonStyle(.borderedProminent)
+
+                    Button("测试连接") {
+                        model.testWiFiConnection()
+                    }
+                    .buttonStyle(.bordered)
                     .disabled(model.wifiPingTesting || model.wifiHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                     if model.wifiPingTesting {
                         ProgressView().controlSize(.small)
                     }
-                    if !model.wifiPingStatus.isEmpty {
-                        Text(model.wifiPingStatus)
-                            .font(.caption)
-                    }
                 }
+
+                if !model.wifiPingStatus.isEmpty {
+                    Text(model.wifiPingStatus)
+                        .font(.caption)
+                        .foregroundColor(model.wifiDirectActive ? .green : .secondary)
+                }
+
                 if let discovered = model.wifiDiscovery.discoveredDeviceName {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 6) {
                         Image(systemName: "bonjour")
-                        Text("发现局域网手机：\(discovered)")
+                        Text("mDNS 广播已捕捉设备：\(discovered) \(model.wifiHost.isEmpty ? "" : "(\(model.wifiHost))")")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text("提示：可在手机 SIM AI Companion 界面直接查看手机 Wi-Fi 直连地址。配置后完全免拔插数据线；未配置时自动通过 USB 数据线 (ADB) 传输。")
+
+                Text("提示：系统已开启三重全自动探测（USB 快速协商、局域网 mDNS 广播、ARP 自动寻址），手机开机即自动连接，无需手动输入 IP。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -521,7 +544,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.34 (Build 51)").font(.caption.monospaced())
+            Text("v0.4.35 (Build 52)").font(.caption.monospaced())
         }
     }
 

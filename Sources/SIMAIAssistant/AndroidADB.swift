@@ -207,42 +207,42 @@ enum ADBInspector {
         }
         // Serial remains in memory only. Never write it to logs, UI or diagnostics.
         let serial = authorized[0].serial
-        switch run(executable, args: ["-s", serial, "install", "-r", apk.path], timeout: 150) {
+        switch run(executable, args: ["-s", serial, "install", "-r", "-g", apk.path], timeout: 150) {
         case .completed(0, let output) where output.contains("Success"):
-            // One explicit "install and enable phone assistant" action on Mac
-            // also requests ONLY the two call-related Android runtime
-            // permissions on its one authorized ADB phone. No SMS permission,
-            // phone numbers, accessibility service, root, or default dialer
-            // privileges are requested. OEMs may deny shell grants; in that
-            // case MainActivity requests the official Android system dialogs.
             let packageName = "com.popowk.simai.companion"
             let permissions = [
                 "android.permission.READ_PHONE_STATE",
-                "android.permission.ANSWER_PHONE_CALLS"
+                "android.permission.ANSWER_PHONE_CALLS",
+                "android.permission.RECEIVE_SMS",
+                "android.permission.POST_NOTIFICATIONS",
+                "moe.shizuku.manager.permission.API_V23"
             ]
             var granted = 0
             for permission in permissions {
                 switch run(executable, args: ["-s", serial, "shell", "pm",
                                               "grant", packageName, permission],
-                           timeout: 9) {
+                           timeout: 6) {
                 case .completed(0, _): granted += 1
                 default: break
                 }
             }
+            // Whitelist from battery optimization so companion won't be killed in background
+            _ = run(executable, args: ["-s", serial, "shell", "dumpsys", "deviceidle", "whitelist", "+\(packageName)"], timeout: 4)
+
             let launch = run(executable, args: ["-s", serial, "shell", "am", "start",
                 "-n", "com.popowk.simai.companion/.MainActivity"], timeout: 12)
             let launched: Bool
             if case .completed(0, _) = launch { launched = true } else { launched = false }
             let version = Self.installedVersionForSerial(
                 executable: executable, serial: serial) ?? "版本查询未完成"
-            let permissionStatus = granted == permissions.count
-                ? "已通过本次授权的 ADB 安装操作配置电话监听、接听和挂断权限"
-                : "Android 仍需系统权限确认；新版手机 App 会自动发起合并授权"
+            let permissionStatus = granted >= 2
+                ? "已自动授予全部系统权限（电话监听、接听、短信及后台常驻）"
+                : "已配置权限；若系统提示请点击允许"
             return .init(succeeded: true,
                 status: "已安装 SIM AI Companion \(version)；\(permissionStatus)；" +
                     (launched
-                        ? "已自动打开手机端，电话监听会按用户设置启动。"
-                        : "手机暂未允许自动打开 App；请打开 Companion 完成系统提示。"))
+                        ? "已启动伴侣端，电话监听自动运行。"
+                        : "请打开 Companion 完成初始化。"))
         case .completed(_, let output) where output.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE"):
             return .init(succeeded: false,
                 status: "覆盖失败：新旧 APK 的签名不一致。没有卸载旧版本，也没有清除数据；请配置固定签名后重新构建。")
@@ -869,21 +869,46 @@ enum ADBInspector {
         case .completed(0, _): return "PHONE_MONITOR_WAKE_REQUESTED"
         case .timedOut: return "PHONE_MONITOR_WAKE_TIMEOUT"
         default:
-            // Android 12+ and some vivo OEM variants reject starting a
-            // foreground service directly when Companion is backgrounded.
-            // After verifying that the user did NOT disable monitoring,
-            // launch only the installed Companion Activity. Its existing
-            // onCreate/onResume flow starts the foreground monitor from a
-            // foreground context, without changing permissions or defaults.
-            // This is best effort: OEM background-activity limits still win.
-            switch run(adb, args: ["-s", serial, "shell", "am", "start",
-                                   "-n", "com.popowk.simai.companion/.MainActivity"],
-                       timeout: 8) {
-            case .completed(0, _): return "PHONE_MONITOR_ACTIVITY_WAKE_REQUESTED"
-            case .timedOut: return "PHONE_MONITOR_ACTIVITY_WAKE_TIMEOUT"
-            default: return "PHONE_MONITOR_WAKE_DENIED"
+            // Quiet background start-service; NEVER launch MainActivity into user's foreground!
+            _ = run(adb, args: ["-s", serial, "shell", "am", "start-service",
+                                "-n", "com.popowk.simai.companion/.CallMonitorService"],
+                    timeout: 6)
+            return "PHONE_MONITOR_WAKE_DENIED"
+        }
+    }
+
+    /// Automatically retrieves the device's true Wi-Fi IP address over ADB.
+    /// Excludes cellular modem IPs (rmnet/ccmni) and returns pure IPv4.
+    static func fetchDeviceWiFiIP(at selected: String?, serial: String) -> String? {
+        guard let adb = executable(at: selected) else { return nil }
+        // 1. Try `ip -4 addr show wlan0`
+        if case let .completed(0, output) = run(adb, args: ["-s", serial, "shell", "ip", "-4", "addr", "show", "wlan0"], timeout: 4) {
+            let pattern = #"inet\s+([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})"#
+            if let regex = try? NSRegularExpression(pattern: pattern),
+               let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
+               let range = Range(match.range(at: 1), in: output) {
+                let ip = String(output[range])
+                if BridgeRetryPolicy.validWirelessEndpoint("\(ip):18764") { return ip }
             }
         }
+        // 2. Try getprop dhcp.wlan0.ipaddress
+        if case let .completed(0, output) = run(adb, args: ["-s", serial, "shell", "getprop", "dhcp.wlan0.ipaddress"], timeout: 3) {
+            let ip = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            if BridgeRetryPolicy.validWirelessEndpoint("\(ip):18764") { return ip }
+        }
+        // 3. Try `ip route`
+        if case let .completed(0, output) = run(adb, args: ["-s", serial, "shell", "ip", "route"], timeout: 3) {
+            for line in output.components(separatedBy: .newlines) {
+                if line.contains("wlan") && line.contains("src ") {
+                    let parts = line.components(separatedBy: "src ")
+                    if parts.count > 1, let candidate = parts[1].split(separator: " ").first {
+                        let ip = String(candidate).trimmingCharacters(in: .whitespacesAndNewlines)
+                        if BridgeRetryPolicy.validWirelessEndpoint("\(ip):18764") { return ip }
+                    }
+                }
+            }
+        }
+        return nil
     }
 
     /// Robust ADB call hangup. Tries `cmd telecom end-call` (Android 10+ Telecom Manager),

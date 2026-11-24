@@ -2,6 +2,7 @@ package com.popowk.simai.companion;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
@@ -19,31 +20,32 @@ import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import java.util.ArrayList;
 
-/** User-facing test panel. All potentially sensitive actions require a tap. */
+/**
+ * SIM AI Companion - Streamlined, unified control panel.
+ */
 public final class MainActivity extends Activity {
-    private static final int PHONE_PERMISSION_REQUEST = 1021;
-    private static final int SMS_PERMISSION_REQUEST = 1022;
-    private static final int ANSWER_PERMISSION_REQUEST = 1023; // legacy callback
+    private static final int ALL_PERMISSIONS_REQUEST = 1020;
     private static final String ONBOARDING_PREFS = "simai_initial_setup";
-    private static final String KEY_WIZARD_SHOWN = "permissions_wizard_shown";
-    private static final String KEY_PHONE_SETUP_VERSION = "phone_setup_requested_version";
-    private static final int CURRENT_SETUP_VERSION = 12;
+    private static final String KEY_SETUP_VERSION = "phone_setup_requested_version";
+    private static final int CURRENT_SETUP_VERSION = 13;
     private static final String KEY_MONITOR_DESIRED = "phone_state_monitor_desired";
-    private boolean wizardInProgress = false;
-    private TextView state;
+
+    private TextView statusHeader;
     private TextView wifiStatus;
     private TextView shizukuStatus;
+    private Button startOrRestartButton;
     private Button shizukuGrant;
-    private TextView log;
-    private TextView permission;
     private TextView smsStatus;
+    private TextView log;
+
     private rikka.shizuku.Shizuku.OnRequestPermissionResultListener shizukuPermissionListener;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable update = new Runnable() {
         @Override public void run() {
             refresh();
-            handler.postDelayed(this, 900);
+            handler.postDelayed(this, 1000);
         }
     };
 
@@ -52,65 +54,81 @@ public final class MainActivity extends Activity {
         ScrollView scroller = new ScrollView(this);
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
-        int pad = (int)(20 * getResources().getDisplayMetrics().density);
+        int pad = (int)(18 * getResources().getDisplayMetrics().density);
         column.setPadding(pad, pad, pad, pad);
         scroller.addView(column);
 
-        TextView title = new TextView(this);
-        // Display the installed APK manifest version; never hardcode a
-        // release label that can drift from Gradle or the downloaded package.
-        String packageVersion = "未知";
+        // 1. Title
+        String packageVersion = "v0.3.15";
         try {
-            android.content.pm.PackageInfo info =
-                    getPackageManager().getPackageInfo(getPackageName(), 0);
+            android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
             packageVersion = "v" + info.versionName + " (Build " + info.versionCode + ")";
-        } catch (PackageManager.NameNotFoundException ignored) {
-            // Package metadata may be temporarily unavailable on upgrade.
-        }
+        } catch (PackageManager.NameNotFoundException ignored) {}
+
+        TextView title = new TextView(this);
         title.setText("SIM AI Companion · " + packageVersion);
-        title.setTextSize(22f);
+        title.setTextSize(20f);
+        title.setTypeface(null, android.graphics.Typeface.BOLD);
         column.addView(title);
-        TextView description = new TextView(this);
-        description.setText("\n一键配置电话状态、Mac 接听及挂断权限。仅在 Mac 明确启用自动值守且 Voice 已就绪时允许请求接听。\n短信转发权限独立设置；保留 vivo 原来的拨号应用与蓝牙功能。\n");
-        column.addView(description);
 
-        permission = new TextView(this);
-        column.addView(permission);
-        Button grant = new Button(this);
-        grant.setText("一键开启电话助手（电话状态＋Mac 接听／结束）");
-        grant.setOnClickListener(v -> {
-            setMonitorDesired(true);
-            requestPhonePermissionAndAutoStart();
-        });
-        column.addView(grant);
-
-        state = new TextView(this);
-        state.setTextSize(18);
-        column.addView(state);
-        Button stop = new Button(this);
-        stop.setText("停止监听");
-        stop.setOnClickListener(v -> {
-            setMonitorDesired(false);
-            stopService(new Intent(this, CallMonitorService.class));
-            refresh();
-        });
-        column.addView(stop);
+        // 2. Status Overview
+        statusHeader = new TextView(this);
+        statusHeader.setTextSize(15f);
+        statusHeader.setPadding(0, 16, 0, 8);
+        column.addView(statusHeader);
 
         wifiStatus = new TextView(this);
         wifiStatus.setTextSize(15f);
+        wifiStatus.setTypeface(android.graphics.Typeface.MONOSPACE);
+        wifiStatus.setPadding(0, 4, 0, 8);
         column.addView(wifiStatus);
 
         shizukuStatus = new TextView(this);
-        shizukuStatus.setTextSize(15f);
+        shizukuStatus.setTextSize(14f);
+        shizukuStatus.setPadding(0, 4, 0, 12);
         column.addView(shizukuStatus);
+
+        // 3. Primary Actions
+        startOrRestartButton = new Button(this);
+        startOrRestartButton.setText("一键全部授权并启动服务");
+        startOrRestartButton.setOnClickListener(v -> {
+            setMonitorDesired(true);
+            requestAllPermissionsAndAutoStart();
+        });
+        column.addView(startOrRestartButton);
 
         shizukuGrant = new Button(this);
         shizukuGrant.setText("授权 Shizuku 特权（免 Root 极速接听／挂断）");
         shizukuGrant.setOnClickListener(v -> ShizukuTelephonyBridge.requestPermission(1030));
         column.addView(shizukuGrant);
 
+        LinearLayout row1 = new LinearLayout(this);
+        row1.setOrientation(LinearLayout.HORIZONTAL);
+        row1.setPadding(0, 8, 0, 8);
+
+        Button stop = new Button(this);
+        stop.setText("停止服务");
+        stop.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
+        stop.setOnClickListener(v -> {
+            setMonitorDesired(false);
+            stopService(new Intent(this, CallMonitorService.class));
+            refresh();
+        });
+        row1.addView(stop);
+
+        Button batterySettings = new Button(this);
+        batterySettings.setText("系统权限/自启动");
+        batterySettings.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
+        batterySettings.setOnClickListener(v -> {
+            Intent settings = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(settings);
+        });
+        row1.addView(batterySettings);
+        column.addView(row1);
+
         CheckBox stayAwake = new CheckBox(this);
-        stayAwake.setText("锁屏运行增强（新安装默认开启，增加耗电）");
+        stayAwake.setText("锁屏常驻增强（保持 CPU 唤醒锁）");
         stayAwake.setChecked(getSharedPreferences(CallMonitorService.PREFS, MODE_PRIVATE)
                 .getBoolean(CallMonitorService.KEEP_AWAKE, true));
         stayAwake.setOnCheckedChangeListener((buttonView, enabled) -> {
@@ -119,40 +137,21 @@ public final class MainActivity extends Activity {
             if (CallMonitorService.running) {
                 try {
                     startService(new Intent(this, CallMonitorService.class));
-                } catch (Exception error) {
-                    CallMonitorService.note("锁屏运行设置应用失败：" + error.getClass().getSimpleName());
-                }
+                } catch (Exception ignored) {}
             }
             refresh();
         });
         column.addView(stayAwake);
 
-        TextView stayAwakeHelp = new TextView(this);
-        stayAwakeHelp.setText("新安装默认开启锁屏增强，并保留手动关闭的选择。只维持电话状态监听服务的 CPU 唤醒锁（服务运行时），不点亮屏幕，不能绕过系统对无线 ADB/Doze 的限制。长期启用会增加电量消耗；可到 vivo 设置允许后台运行/自启动。");
-        column.addView(stayAwakeHelp);
-        Button batterySettings = new Button(this);
-        batterySettings.setText("打开本应用系统设置 · 检查电池/后台权限");
-        batterySettings.setOnClickListener(v -> {
-            Intent settings = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    Uri.parse("package:" + getPackageName()));
-            startActivity(settings);
-        });
-        column.addView(batterySettings);
-
-        // SMS receiver does not depend on the foreground call monitor/ADB;
-        // it is off in practice until the user grants the Android permission
-        // and manually provides a valid official Feishu bot HTTPS endpoint.
+        // 4. SMS Forwarding Section
         TextView smsTitle = new TextView(this);
-        smsTitle.setText("\n短信转发至飞书 Webhook");
-        smsTitle.setTextSize(20);
+        smsTitle.setText("\n飞书短信转发设置");
+        smsTitle.setTextSize(17f);
+        smsTitle.setTypeface(null, android.graphics.Typeface.BOLD);
         column.addView(smsTitle);
 
-        TextView smsHelp = new TextView(this);
-        smsHelp.setText("新收到的短信将保留全文及发送方，通过 HTTPS 推送到你配置的飞书群机器人，包含验证码等敏感信息。开关默认开启；但必须先在本机授予短信接收权限并设置飞书 Webhook，才会实际发送。仅限你本人管理的私人飞书群，请勿公开 Webhook。无需 Mac、ADB 或电话监听服务常驻。");
-        column.addView(smsHelp);
-
         CheckBox smsEnabled = new CheckBox(this);
-        smsEnabled.setText("自动转发新短信（默认开启）");
+        smsEnabled.setText("自动转发新收到短信至飞书群机器人");
         smsEnabled.setChecked(SmsWebhookForwarder.isEnabled(this));
         smsEnabled.setOnCheckedChangeListener((buttonView, value) -> {
             SmsWebhookForwarder.setEnabled(this, value);
@@ -160,117 +159,113 @@ public final class MainActivity extends Activity {
         });
         column.addView(smsEnabled);
 
-        Button smsPermissionButton = new Button(this);
-        smsPermissionButton.setText("授权接收短信（Android 系统弹窗）");
-        smsPermissionButton.setOnClickListener(v ->
-                requestPermissions(new String[]{Manifest.permission.RECEIVE_SMS},
-                        SMS_PERMISSION_REQUEST));
-        column.addView(smsPermissionButton);
-
         EditText webhookInput = new EditText(this);
-        webhookInput.setHint("粘贴飞书自定义机器人 Webhook（https://open.feishu.cn/...）");
-        webhookInput.setInputType(InputType.TYPE_CLASS_TEXT |
-                InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        webhookInput.setHint("飞书 Webhook 地址 (https://open.feishu.cn/...)");
+        webhookInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         webhookInput.setSingleLine(true);
         column.addView(webhookInput);
 
         EditText signatureInput = new EditText(this);
-        signatureInput.setHint("飞书签名密钥（可选，留空则保留已有密钥）");
-        signatureInput.setInputType(InputType.TYPE_CLASS_TEXT |
-                InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        signatureInput.setHint("飞书签名密钥（可选）");
+        signatureInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         signatureInput.setSingleLine(true);
         column.addView(signatureInput);
 
+        LinearLayout smsButtonRow = new LinearLayout(this);
+        smsButtonRow.setOrientation(LinearLayout.HORIZONTAL);
+        smsButtonRow.setPadding(0, 6, 0, 6);
+
         Button saveWebhook = new Button(this);
-        saveWebhook.setText("保存飞书 Webhook 和签名设置");
+        saveWebhook.setText("保存配置");
+        saveWebhook.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
         saveWebhook.setOnClickListener(v -> {
             String url = webhookInput.getText().toString().trim();
             String secret = signatureInput.getText().toString();
             if (!SmsWebhookForwarder.configure(this, url, secret, !secret.isEmpty())) {
-                Toast.makeText(this, "地址无效：仅允许官方飞书机器人 HTTPS Webhook",
-                        Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "地址格式无效：必须是官方飞书 HTTPS Webhook", Toast.LENGTH_LONG).show();
                 return;
             }
             webhookInput.setText("");
             signatureInput.setText("");
-            Toast.makeText(this, "已安全保存配置，短信内容不会写入日志", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "飞书配置已安全保存", Toast.LENGTH_SHORT).show();
             refresh();
         });
-        column.addView(saveWebhook);
-
-        Button clearWebhook = new Button(this);
-        clearWebhook.setText("清除飞书 Webhook / 签名（立即停止实际转发）");
-        clearWebhook.setOnClickListener(v -> {
-            new android.app.AlertDialog.Builder(this)
-                    .setTitle("清除短信推送配置？")
-                    .setMessage("这会清除手机本应用保存的 Webhook 地址和签名密钥；无法再转发短信，直到你重新配置。")
-                    .setNegativeButton("取消", null)
-                    .setPositiveButton("确认清除", (dialog, which) -> {
-                        SmsWebhookForwarder.clearConfiguration(this);
-                        webhookInput.setText("");
-                        signatureInput.setText("");
-                        refresh();
-                    }).show();
-        });
-        column.addView(clearWebhook);
+        smsButtonRow.addView(saveWebhook);
 
         Button testWebhook = new Button(this);
-        testWebhook.setText("发送一条不含验证码的测试消息");
+        testWebhook.setText("测试发送");
+        testWebhook.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
         testWebhook.setOnClickListener(v -> {
             testWebhook.setEnabled(false);
             SmsWebhookForwarder.sendTest(this, () ->
-                handler.post(() -> {
-                    testWebhook.setEnabled(true);
-                    refresh();
-                }));
+                    handler.post(() -> {
+                        testWebhook.setEnabled(true);
+                        refresh();
+                    }));
         });
-        column.addView(testWebhook);
+        smsButtonRow.addView(testWebhook);
+
+        Button clearWebhook = new Button(this);
+        clearWebhook.setText("清除");
+        clearWebhook.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 0.7f));
+        clearWebhook.setOnClickListener(v -> {
+            SmsWebhookForwarder.clearConfiguration(this);
+            webhookInput.setText("");
+            signatureInput.setText("");
+            Toast.makeText(this, "已清除配置", Toast.LENGTH_SHORT).show();
+            refresh();
+        });
+        smsButtonRow.addView(clearWebhook);
+        column.addView(smsButtonRow);
 
         smsStatus = new TextView(this);
+        smsStatus.setTextSize(13f);
+        smsStatus.setPadding(0, 4, 0, 8);
         column.addView(smsStatus);
-        TextView smsFootnote = new TextView(this);
-        smsFootnote.setText("安全提醒：飞书群成员可能看到完整验证码。请使用私有群并开启签名。开关默认开启，但短信系统权限和有效 Webhook 缺一不可。Android 对包含其他应用 SMS Retriever 哈希的验证码可能不发送普通 SMS_RECEIVED 广播，此类短信无法保证自动读取。应用不读取历史收件箱、不保存正文，也不写入诊断 ZIP。\n");
-        column.addView(smsFootnote);
 
-        TextView caution = new TextView(this);
-        caution.setText("\n拨打测试：用另一部手机拨打本机联通 SIM，检查 RINGING → OFFHOOK → IDLE。\n授权电话状态后会自动启动监听服务，手动点「停止监听」则尊重该选择。后台省电限制可能中止服务；默认启用锁屏运行增强也不能保证无线 ADB 锁屏后始终可用。\n");
-        column.addView(caution);
+        // 5. Recent Events
+        TextView logTitle = new TextView(this);
+        logTitle.setText("\n最近事件");
+        logTitle.setTextSize(16f);
+        logTitle.setTypeface(null, android.graphics.Typeface.BOLD);
+        column.addView(logTitle);
+
         log = new TextView(this);
         log.setTextIsSelectable(true);
+        log.setTextSize(13f);
+        log.setTypeface(android.graphics.Typeface.MONOSPACE);
         column.addView(log);
 
         setContentView(scroller);
+
         try {
-            shizukuPermissionListener = (req, grantResult) -> {
-                handler.post(this::refresh);
-            };
+            shizukuPermissionListener = (req, grantResult) -> handler.post(this::refresh);
             rikka.shizuku.Shizuku.addRequestPermissionResultListener(shizukuPermissionListener);
         } catch (Throwable ignored) {}
-        // ADB's installer launches this activity after an install or explicit
-        // clean reinstall. Offer one transparent permission wizard, then
-        // start the monitor after Android actually grants the phone permission.
+
         handler.post(() -> {
-            if (monitorDesired() &&
-                    checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
-                            == PackageManager.PERMISSION_GRANTED) startPhoneMonitorIfAllowed();
+            if (monitorDesired() && hasCorePermissions()) {
+                startPhoneMonitorIfAllowed();
+            }
             offerFirstRunSetup();
         });
     }
 
+    private boolean hasCorePermissions() {
+        return checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED &&
+               checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED;
+    }
+
     private boolean monitorDesired() {
-        return getSharedPreferences(ONBOARDING_PREFS, MODE_PRIVATE)
-                .getBoolean(KEY_MONITOR_DESIRED, true);
+        return getSharedPreferences(ONBOARDING_PREFS, MODE_PRIVATE).getBoolean(KEY_MONITOR_DESIRED, true);
     }
 
     private void setMonitorDesired(boolean desired) {
-        getSharedPreferences(ONBOARDING_PREFS, MODE_PRIVATE).edit()
-                .putBoolean(KEY_MONITOR_DESIRED, desired).apply();
+        getSharedPreferences(ONBOARDING_PREFS, MODE_PRIVATE).edit().putBoolean(KEY_MONITOR_DESIRED, desired).apply();
     }
 
     private void startPhoneMonitorIfAllowed() {
-        if (!monitorDesired() || CallMonitorService.running ||
-                checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
-                        != PackageManager.PERMISSION_GRANTED) return;
+        if (!monitorDesired() || CallMonitorService.running || !hasCorePermissions()) return;
         try {
             Intent service = new Intent(this, CallMonitorService.class);
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
@@ -281,107 +276,124 @@ public final class MainActivity extends Activity {
         refresh();
     }
 
-    private void requestPhonePermissionAndAutoStart() {
-        // A single app action requests BOTH ordinary Android dangerous phone
-        // permissions. Android itself decides whether one or more OS dialogs
-        // are necessary; no second Companion button or in-app confirmation.
-        boolean canRead = checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
-                == PackageManager.PERMISSION_GRANTED;
-        boolean canAnswer = checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
-                == PackageManager.PERMISSION_GRANTED;
-        if (canRead && canAnswer) {
+    private void requestAllPermissionsAndAutoStart() {
+        ArrayList<String> missing = new ArrayList<>();
+        if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
+            missing.add(Manifest.permission.READ_PHONE_STATE);
+        }
+        if (checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) != PackageManager.PERMISSION_GRANTED) {
+            missing.add(Manifest.permission.ANSWER_PHONE_CALLS);
+        }
+        if (checkSelfPermission(Manifest.permission.RECEIVE_SMS) != PackageManager.PERMISSION_GRANTED) {
+            missing.add(Manifest.permission.RECEIVE_SMS);
+        }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) {
+            missing.add("android.permission.POST_NOTIFICATIONS");
+        }
+
+        if (missing.isEmpty()) {
             startPhoneMonitorIfAllowed();
             refresh();
         } else {
-            java.util.ArrayList<String> missing = new java.util.ArrayList<>();
-            if (!canRead) missing.add(Manifest.permission.READ_PHONE_STATE);
-            if (!canAnswer) missing.add(Manifest.permission.ANSWER_PHONE_CALLS);
-            requestPermissions(missing.toArray(new String[0]), PHONE_PERMISSION_REQUEST);
+            requestPermissions(missing.toArray(new String[0]), ALL_PERMISSIONS_REQUEST);
         }
     }
 
     private void offerFirstRunSetup() {
-        android.content.SharedPreferences setup =
-                getSharedPreferences(ONBOARDING_PREFS, MODE_PRIVATE);
-        if (!monitorDesired()) return; // explicit Android user stop wins
-        if (setup.getInt(KEY_PHONE_SETUP_VERSION, 0) >= CURRENT_SETUP_VERSION) return;
-        // Mark before requesting to avoid repeated prompting after denial.
-        // Installing / upgrading through the user's single Mac action
-        // launches this Activity; an Android OS permission dialog may appear.
-        setup.edit().putInt(KEY_PHONE_SETUP_VERSION, CURRENT_SETUP_VERSION)
-                .putBoolean(KEY_WIZARD_SHOWN, true).apply();
-        requestPhonePermissionAndAutoStart();
+        android.content.SharedPreferences setup = getSharedPreferences(ONBOARDING_PREFS, MODE_PRIVATE);
+        if (!monitorDesired()) return;
+        if (setup.getInt(KEY_SETUP_VERSION, 0) >= CURRENT_SETUP_VERSION) return;
+        setup.edit().putInt(KEY_SETUP_VERSION, CURRENT_SETUP_VERSION).apply();
+        requestAllPermissionsAndAutoStart();
     }
 
     private void refresh() {
-        permission.setText("电话状态权限：" + (checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
-            == PackageManager.PERMISSION_GRANTED ? "已授权" : "未授权") +
-            " · Mac 自动接听／挂断：" + (checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
-            == PackageManager.PERMISSION_GRANTED ? "已授权" : "未授权，可点一键开启"));
-        state.setText("服务：" + (CallMonitorService.running ? "运行中" : "停止")
-                + "   状态：" + CallMonitorService.lastState);
-        if (wifiStatus != null) {
-            String ip = getLocalIpAddress();
-            wifiStatus.setText("\n📶 Wi-Fi 局域网直连: http://" + ip + ":18764\n" +
-                    "（Mac 端高级设置填入此地址可实现无数据线 <5ms 极速直连）\n");
+        boolean hasPhone = checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED;
+        boolean hasAnswer = checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED;
+        boolean hasSms = checkSelfPermission(Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED;
+
+        String serviceState = CallMonitorService.running ? "🟢 服务运行中" : "⚪ 服务已停止";
+        statusHeader.setText(serviceState + " · 通话状态: " + CallMonitorService.lastState +
+                "\n电话权限: " + (hasPhone && hasAnswer ? "已授权" : "未授权") +
+                " · 短信权限: " + (hasSms ? "已授权" : "未授权"));
+
+        if (!hasPhone || !hasAnswer || !hasSms) {
+            startOrRestartButton.setText("一键全部授权并启动服务");
+        } else if (CallMonitorService.running) {
+            startOrRestartButton.setText("重启监听服务");
+        } else {
+            startOrRestartButton.setText("启动监听服务");
         }
+
+        String ip = getLocalIpAddress();
+        if (wifiStatus != null) {
+            wifiStatus.setText("📶 Wi-Fi 直连: http://" + ip + ":18764\n(Mac 端已支持自动扫描发现，免手动填写)");
+        }
+
         if (shizukuStatus != null) {
             if (ShizukuTelephonyBridge.isReady()) {
-                shizukuStatus.setText("🛡️ Shizuku 引擎：已连接且已授权 (免 Root 特权控制 100% 成功)");
+                shizukuStatus.setText("🛡️ Shizuku 引擎: 已连接且已授权 (免 Root 特权控制 100% 成功)");
                 if (shizukuGrant != null) shizukuGrant.setVisibility(View.GONE);
             } else if (ShizukuTelephonyBridge.isShizukuAvailable()) {
-                shizukuStatus.setText("🛡️ Shizuku 引擎：服务运行中，尚未授予此应用权限");
+                shizukuStatus.setText("🛡️ Shizuku 引擎: 服务运行中，尚未授权");
                 if (shizukuGrant != null) {
                     shizukuGrant.setVisibility(View.VISIBLE);
-                    shizukuGrant.setText("一键授权 Shizuku 特权");
+                    shizukuGrant.setText("授权 Shizuku 特权");
                 }
             } else {
-                shizukuStatus.setText("🛡️ Shizuku 引擎：未运行 (可选，启动 Shizuku 可获得免 Root 极速特权)");
+                shizukuStatus.setText("🛡️ Shizuku 引擎: 未运行 (可选，启动后可获得免 Root 极速接听)");
                 if (shizukuGrant != null) shizukuGrant.setVisibility(View.GONE);
             }
         }
+
         if (smsStatus != null) {
-            boolean smsGranted = checkSelfPermission(Manifest.permission.RECEIVE_SMS)
-                    == PackageManager.PERMISSION_GRANTED;
-            smsStatus.setText("短信权限：" + (smsGranted ? "已授权" : "未授权") +
-                    " · 自动转发：" + (SmsWebhookForwarder.isEnabled(this) ? "开启" : "关闭") +
-                    " · 飞书地址：" + (SmsWebhookForwarder.hasConfiguration(this) ? "已配置" : "未配置") +
-                    "\n收到普通短信广播：" + SmsWebhookForwarder.receivedBroadcastCount(this) +
-                    " 次（最近：" + SmsWebhookForwarder.lastBroadcastDescription(this) + "）" +
-                    "\n最近发送结果：" + SmsWebhookForwarder.status(this));
+            smsStatus.setText("转发状态: " + (SmsWebhookForwarder.isEnabled(this) ? "开启" : "关闭") +
+                    " · 地址: " + (SmsWebhookForwarder.hasConfiguration(this) ? "已配置" : "未配置") +
+                    " · 累计接收: " + SmsWebhookForwarder.receivedBroadcastCount(this) + " 条\n" +
+                    "最近结果: " + SmsWebhookForwarder.status(this));
         }
-        log.setText("最近事件（不保存号码）：\n" +
-                String.join("\n", CallMonitorService.eventSnapshot()));
+
+        if (log != null) {
+            log.setText(String.join("\n", CallMonitorService.eventSnapshot()));
+        }
     }
-    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions,
-                                                     int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == PHONE_PERMISSION_REQUEST) {
-            boolean granted = checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
-                    == PackageManager.PERMISSION_GRANTED;
-            if (granted) {
-                startPhoneMonitorIfAllowed();
-            } else {
-                Toast.makeText(this, "电话状态读取权限尚未授权；电话监听无法启动",
-                        Toast.LENGTH_LONG).show();
+
+    private String getLocalIpAddress() {
+        try {
+            android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager)
+                    getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null) {
+                int ipInt = wm.getConnectionInfo().getIpAddress();
+                if (ipInt != 0) {
+                    return android.text.format.Formatter.formatIpAddress(ipInt);
+                }
             }
-            boolean answerGranted = checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
-                    == PackageManager.PERMISSION_GRANTED;
-            Toast.makeText(this, answerGranted
-                    ? "电话助手权限已就绪；接听与挂断无需额外授权按钮"
-                    : "接听／挂断权限未获系统允许；可以在一键开启中重试",
-                    Toast.LENGTH_LONG).show();
-        } else if (requestCode == ANSWER_PERMISSION_REQUEST) {
-            // Compatibility for a permission dialog opened before upgrading.
-            refresh();
-        } else if (requestCode == SMS_PERMISSION_REQUEST) {
-            wizardInProgress = false;
-            boolean granted = checkSelfPermission(Manifest.permission.RECEIVE_SMS)
-                    == PackageManager.PERMISSION_GRANTED;
-            Toast.makeText(this, granted
-                    ? "短信接收权限已授权；配置 Webhook 后可自动发送新短信"
-                    : "短信权限未获授权。部分 Android 设备会限制侧载应用的短信权限，请检查系统权限与安装来源",
-                    Toast.LENGTH_LONG).show();
+        } catch (Throwable ignored) {}
+
+        try {
+            java.util.List<java.net.NetworkInterface> interfaces =
+                    java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces());
+            for (java.net.NetworkInterface intf : interfaces) {
+                if (!intf.isUp() || intf.isLoopback()) continue;
+                String name = intf.getName().toLowerCase();
+                if (name.contains("wlan") || name.contains("wifi") || name.contains("eth")) {
+                    for (java.net.InetAddress addr : java.util.Collections.list(intf.getInetAddresses())) {
+                        if (!addr.isLoopbackAddress() && addr instanceof java.net.Inet4Address) {
+                            String host = addr.getHostAddress();
+                            if (!host.startsWith("127.")) return host;
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return "未连接 Wi-Fi";
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (hasCorePermissions()) {
+            startPhoneMonitorIfAllowed();
         }
         refresh();
     }
@@ -390,14 +402,11 @@ public final class MainActivity extends Activity {
         super.onResume();
         handler.removeCallbacks(update);
         handler.post(update);
-        // If the user granted phone permission through Android Settings, also
-        // resume the previously requested monitor without an extra tap.
-        if (monitorDesired() && !CallMonitorService.running &&
-                checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
-                        == PackageManager.PERMISSION_GRANTED) {
+        if (monitorDesired() && !CallMonitorService.running && hasCorePermissions()) {
             startPhoneMonitorIfAllowed();
         }
     }
+
     @Override protected void onPause() {
         handler.removeCallbacks(update);
         super.onPause();
@@ -410,21 +419,5 @@ public final class MainActivity extends Activity {
                 rikka.shizuku.Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener);
             }
         } catch (Throwable ignored) {}
-    }
-
-    private String getLocalIpAddress() {
-        try {
-            for (java.util.Enumeration<java.net.NetworkInterface> en = java.net.NetworkInterface.getNetworkInterfaces(); en.hasMoreElements();) {
-                java.net.NetworkInterface intf = en.nextElement();
-                if (intf.isLoopback() || !intf.isUp()) continue;
-                for (java.util.Enumeration<java.net.InetAddress> enumIpAddr = intf.getInetAddresses(); enumIpAddr.hasMoreElements();) {
-                    java.net.InetAddress inetAddress = enumIpAddr.nextElement();
-                    if (!inetAddress.isLoopbackAddress() && inetAddress instanceof java.net.Inet4Address) {
-                        return inetAddress.getHostAddress();
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-        return "未知";
     }
 }

@@ -1,5 +1,27 @@
 # 变更记录
 
+## 0.4.35（局域网全自动发现与免手动输入、防后台弹窗、全权限自动授予与伴侣端界面精简）— 2026-11-24
+
+- **Wi-Fi 局域网全自动免配置发现（彻底告别手动输入 IP 与连接超时失败）**：
+  - **三重全自动寻址引擎**：
+    1. **ADB 快速 IP 协商**：手机通过 USB 接入时，Mac 毫秒级探测获取手机 wlan0 真实 Wi-Fi IP 并自动建联切换至无线通道。
+    2. **Bonjour / mDNS 自动解析**：伴侣端广播 `_simai._tcp`，Mac 端通过 `NWBrowser` 与 `NWConnection` 自动解析出远程 IPv4 节点，免手动配置自动直连。
+    3. **局域网 ARP 自动嗅探**：当处于断开状态时，Mac 自动扫描 ARP 缓存中的局域网活跃主机并快速探测 `/ping`，全自动发现手机伴侣端。
+  - **修复手机蜂窝 IP 导致超时**：修复了旧版本获取到蜂窝移动网络 IP（rmnet/ccmni）导致 Mac 连接超时的 bug；现在严格优先返回 `wlan0` / `wifi` 接口的真实局域网内网地址。
+  - **组播锁保障休眠常驻**：伴侣端添加 `CHANGE_WIFI_MULTICAST_STATE` 权限与 `WifiManager.MulticastLock`，确保手机休眠和息屏期间 mDNS 广播不被 Android 系统挂起。
+- **彻底解决 APK 隔段时间自动跳转前台抢占手机屏幕**：
+  - **根因分析**：Mac 端 `wakePhoneMonitorIfDesired()` 在唤醒后台监控时，若服务启动受限曾回退执行 `am start -n com.popowk.simai.companion/.MainActivity`，导致每隔 90 秒强行将 Companion 界面弹到手机屏幕最前台，打断手机正常使用。
+  - **彻底修复**：移除所有拉起前台 Activity 的兜底操作，全部改为后台静默启动 `CallMonitorService`，彻底杜绝手机屏幕被抢占弹窗。
+- **安装后自动静默授权全套系统权限（含短信转发与电池优化白名单）**：
+  - Mac 端执行安装时自动追加 `-g` 标识（`adb install -r -g`）。
+  - 自动通过 `pm grant` 授予：`READ_PHONE_STATE`、`ANSWER_PHONE_CALLS`、`RECEIVE_SMS`、`POST_NOTIFICATIONS` 以及 `moe.shizuku.manager.permission.API_V23`。
+  - 自动将伴侣端加入系统电池优化白名单（`dumpsys deviceidle whitelist +com.popowk.simai.companion`），防止 Android 系统在后台冻结或杀死伴侣端进程。
+- **Android 伴侣端（v0.3.15 · Build 20）界面极致精简与按钮合并**：
+  - 移除 5 大段冗长重复的条款式文本说明；
+  - 按钮整合为醒目的单一操作：「一键全部授权并启动服务」，合并发起电话、短信、通知全套系统授权；
+  - 紧凑横排「停止服务」与「系统权限/自启动」快捷入口；
+  - 飞书 Webhook 保存、测试与清除操作合并为同一水平按钮组，界面清爽现代。
+
 ## 0.4.34（Shizuku WiFi 局域网直连版、特权接听/挂断、状态极速同步与连接防抖）— 2026-11-24
 
 - **正式推出 Shizuku WiFi 局域网直连版（免 USB 数据线与免 Root 特权控制）**：

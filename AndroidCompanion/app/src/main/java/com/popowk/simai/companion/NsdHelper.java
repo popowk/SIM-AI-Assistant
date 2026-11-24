@@ -3,6 +3,7 @@ package com.popowk.simai.companion;
 import android.content.Context;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.util.Log;
 
@@ -11,14 +12,26 @@ import android.util.Log;
  */
 public final class NsdHelper {
     private static final String TAG = "SIMAINsd";
-    private static final String SERVICE_TYPE = "_simai._tcp.";
+    private static final String SERVICE_TYPE = "_simai._tcp";
     private NsdManager nsdManager;
     private NsdManager.RegistrationListener registrationListener;
+    private WifiManager.MulticastLock multicastLock;
     private boolean isRegistered = false;
 
     public synchronized void register(Context context, int port) {
         if (isRegistered) return;
         try {
+            WifiManager wm = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null) {
+                try {
+                    multicastLock = wm.createMulticastLock("SIMAIMulticastLock");
+                    multicastLock.setReferenceCounted(true);
+                    multicastLock.acquire();
+                } catch (Throwable t) {
+                    Log.w(TAG, "Failed to acquire MulticastLock: " + t.getMessage());
+                }
+            }
+
             nsdManager = (NsdManager) context.getSystemService(Context.NSD_SERVICE);
             if (nsdManager == null) return;
 
@@ -62,12 +75,19 @@ public final class NsdHelper {
     }
 
     public synchronized void unregister() {
-        if (!isRegistered || nsdManager == null || registrationListener == null) return;
-        try {
-            nsdManager.unregisterService(registrationListener);
+        if (nsdManager != null && registrationListener != null && isRegistered) {
+            try {
+                nsdManager.unregisterService(registrationListener);
+            } catch (Throwable t) {
+                Log.w(TAG, "Failed to unregister NSD: " + t.getMessage());
+            }
             isRegistered = false;
-        } catch (Throwable t) {
-            Log.w(TAG, "Failed to unregister NSD: " + t.getMessage());
+        }
+        if (multicastLock != null && multicastLock.isHeld()) {
+            try {
+                multicastLock.release();
+            } catch (Throwable ignored) {}
+            multicastLock = null;
         }
     }
 }
