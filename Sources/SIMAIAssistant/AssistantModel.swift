@@ -20,8 +20,27 @@ final class AssistantModel: ObservableObject {
     @Published var adbInstalling = false
     @Published var apkInstallStatus = "尚未安装伴侣 APK"
     @Published var liveSyncEnabled = UserDefaults.standard.object(forKey: "SIMAI_LIVE_SYNC") as? Bool ?? true
-    @Published var liveBridgeStatus = "正在检查 ADB 连接"
+    @Published var liveBridgeStatus = "正在检查手机连接"
     @Published var livePhoneState = "未连接"
+    @Published var connectionTransport = "DISCONNECTED" // "WIFI_DIRECT", "ADB_HTTP", "ADB_FILE", "DISCONNECTED"
+    @Published var wifiHost = UserDefaults.standard.string(forKey: "simai_companion_wifi_host") ?? "" {
+        didSet {
+            UserDefaults.standard.set(wifiHost, forKey: "simai_companion_wifi_host")
+        }
+    }
+    @Published var wifiDirectActive = false
+    @Published var isShizukuReady = false
+    @Published var wifiPingStatus = ""
+    @Published var wifiPingTesting = false
+    let wifiDiscovery = BonjourWiFiScanner()
+    private var consecutivePollFailures: Int = 0
+    private let maxPollFailuresBeforeDisconnect: Int = 3
+
+    var wifiDirectEndpoint: String? {
+        let clean = wifiHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return nil }
+        return clean.contains(":") ? clean : "\(clean):18764"
+    }
     @Published var answerCallBusy = false
     @Published var answerCallStatus = "尚未请求接听；需手机授予「接听电话」权限"
     @Published var autoCallEnabled =
@@ -1242,7 +1261,7 @@ final class AssistantModel: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in self?.recoverAfterMacWake() }
         }
-        bridgeTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        bridgeTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.autoInspectADBIfNeeded()
                 self?.pollLiveBridge()
@@ -1568,13 +1587,15 @@ final class AssistantModel: ObservableObject {
 
     private func noteBridgeFailure(code: String, domain: String) {
         bridgeConsecutiveFailures += 1
-        let delay = Int(BridgeRetryPolicy.delay(after: bridgeConsecutiveFailures))
+        let delay = consecutivePollFailures < maxPollFailuresBeforeDisconnect ? 1 : Int(BridgeRetryPolicy.delay(after: bridgeConsecutiveFailures))
         bridgeRetryAfter = Date().addingTimeInterval(TimeInterval(delay))
         let isStartup = Date() < startupBridgeGraceUntil &&
             bridgeConsecutiveFailures <= 5
         liveBridgeStatus = isStartup
             ? "手机启动同步中 · 正在自动恢复电话监听（无需手动重连）"
-            : "连接中断，将在约 \(delay) 秒后自动重试"
+            : (consecutivePollFailures < maxPollFailuresBeforeDisconnect
+                ? "正在同步手机状态（重试中）"
+                : "连接中断，将在约 \(delay) 秒后自动重试")
         // One warning per outage, then sparse checkpoints. Avoid dozens of
         // redundant JSONL entries when the phone's ADB tunnel remains unreachable.
         if bridgeConsecutiveFailures == 1 || bridgeConsecutiveFailures % 8 == 0 {
@@ -1654,17 +1675,25 @@ final class AssistantModel: ObservableObject {
         adbForwardHealth = source == "ADB_FILE" ? "HTTP 备用路径" : "工作正常"
         adbBridgeHealthDetail = source == "ADB_FILE"
             ? "HTTP 连接暂不可靠，已使用 ADB 私有状态快照"
-            : "HTTP 状态桥接已恢复"
+            : (source == "WIFI_DIRECT" ? "Wi-Fi 局域网极速直连中" : "HTTP 状态桥接正常")
         if bridgeConsecutiveFailures > 0 {
-            log(.info, .call, "ADB 电话状态同步已恢复",
+            log(.info, .call, "电话状态同步已恢复",
                 details: ["failedAttempts": "\(bridgeConsecutiveFailures)",
                           "transport": source])
         }
         resetBridgeRetry()
         startupBridgeGraceUntil = .distantPast
-        liveBridgeStatus = source == "ADB_FILE"
-            ? "已连接 · ADB 私有状态快照（HTTP 备用）"
-            : "已连接 · ADB HTTP 自动同步"
+        if source == "WIFI_DIRECT" {
+            connectionTransport = "WIFI_DIRECT"
+            wifiDirectActive = true
+            liveBridgeStatus = "已连接 · Wi-Fi 局域网直连 (极速\(isShizukuReady ? " + Shizuku 特权" : ""))"
+        } else if source == "ADB_HTTP" {
+            connectionTransport = "ADB_HTTP"
+            liveBridgeStatus = "已连接 · USB ADB HTTP 自动同步"
+        } else {
+            connectionTransport = "ADB_FILE"
+            liveBridgeStatus = "已连接 · ADB 私有状态快照"
+        }
     }
 
     private func pollPrivateSnapshot(generation: Int) {
@@ -1681,19 +1710,20 @@ final class AssistantModel: ObservableObject {
                     self.applyBridgeSnapshot(snapshot, source: "ADB_FILE")
                     self.bridgeUsingFileFallback = true
                 } else {
-                    // Keep polling the private file during Android startup.
-                    // Alternating to HTTP after every stale snapshot added
-                    // another timeout and made the UI look disconnected.
                     self.bridgeUsingFileFallback = true
-                    // An HTTP retry should happen occasionally, not after
-                    // every stale file attempt. Preserve the established ADB
-                    // forward and debounce failed file reads.
                     if self.nextHTTPRecoveryAttempt <= Date() {
-                        self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(35)
+                        self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(20)
                     }
-                    self.schedulePhoneMonitorWakeIfNeeded(reason: result.reason)
-                    self.noteBridgeFailure(code: result.reason, domain: "SIMAI.ADBFile")
-                    self.livePhoneState = "未连接"
+                    self.consecutivePollFailures += 1
+                    if self.consecutivePollFailures >= self.maxPollFailuresBeforeDisconnect {
+                        self.livePhoneState = "未连接"
+                        self.connectionTransport = "DISCONNECTED"
+                        self.wifiDirectActive = false
+                        self.schedulePhoneMonitorWakeIfNeeded(reason: result.reason)
+                        self.noteBridgeFailure(code: result.reason, domain: "SIMAI.ADBFile")
+                    } else {
+                        self.liveBridgeStatus = "已连接 · 正在同步手机状态（重试 \(self.consecutivePollFailures)/\(self.maxPollFailuresBeforeDisconnect)）"
+                    }
                 }
             }
         }
@@ -1706,24 +1736,60 @@ final class AssistantModel: ObservableObject {
         guard !liveVoiceStarting, !liveVoiceActive,
               liveSyncEnabled, !adbInstalling, !bridgeBusy,
               !initialPhoneMonitorWarmup,
-              !(adbChecking && !adbWasAuthorized && bridgeLink == nil),
+              !(adbChecking && !adbWasAuthorized && bridgeLink == nil && wifiDirectEndpoint == nil),
               Date() >= bridgeRetryAfter else { return }
         bridgeBusy = true
-        if bridgeUsingFileFallback && Date() < nextHTTPRecoveryAttempt {
-            pollPrivateSnapshot(generation: bridgeGeneration)
+        let generation = bridgeGeneration
+        let since = bridgeCursor.lastSequence
+
+        // Tier 1: Try Wi-Fi direct first if configured
+        if let wifi = wifiDirectEndpoint {
+            Task { [weak self] in
+                guard let self else { return }
+                guard let url = URL(string: "http://\(wifi)/events?since=\(since)") else {
+                    self.bridgeBusy = false
+                    return
+                }
+                var request = URLRequest(url: url)
+                request.httpMethod = "GET"
+                request.timeoutInterval = 1.8
+                request.setValue("simai-wifi", forHTTPHeaderField: "X-SIMAI-Token")
+                request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
+                do {
+                    let (data, response) = try await URLSession.shared.data(for: request)
+                    guard self.liveSyncEnabled, generation == self.bridgeGeneration else { return }
+                    let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    guard status == 200 else {
+                        throw NSError(domain: "SIMAI.WiFiBridge.HTTP", code: status)
+                    }
+                    let snapshot = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: data)
+                    guard snapshot.schema == 1, snapshot.running,
+                          ["IDLE", "RINGING", "OFFHOOK"].contains(snapshot.state) else {
+                        throw NSError(domain: "SIMAI.WiFiBridge", code: 422)
+                    }
+                    self.applyBridgeSnapshot(snapshot, source: "WIFI_DIRECT")
+                    self.bridgeBusy = false
+                } catch {
+                    guard self.liveSyncEnabled, generation == self.bridgeGeneration else { return }
+                    self.wifiDirectActive = false
+                    self.pollLiveBridgeViaADB(generation: generation, since: since)
+                }
+            }
             return
         }
+
+        // Tier 2: No Wi-Fi endpoint configured -> poll via USB ADB
+        pollLiveBridgeViaADB(generation: generation, since: since)
+    }
+
+    private func pollLiveBridgeViaADB(generation: Int, since: Int) {
         if let link = bridgeLink {
-            let generation = bridgeGeneration
-            // The cursor establishes an initial baseline so history from a
-            // recovering phone is never misreported as live transitions.
-            let since = bridgeCursor.lastSequence
             Task { [weak self] in
                 guard let self else { return }
                 var request = URLRequest(url: URL(
                     string: "http://127.0.0.1:\(link.localPort)/events?since=\(since)")!)
                 request.httpMethod = "GET"
-                request.timeoutInterval = 3.0
+                request.timeoutInterval = 2.5
                 request.setValue(link.token, forHTTPHeaderField: "X-SIMAI-Token")
                 request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
                 do {
@@ -1741,23 +1807,12 @@ final class AssistantModel: ObservableObject {
                         throw NSError(domain: "SIMAI.ADBBridge", code: 422)
                     }
                     self.applyBridgeSnapshot(snapshot, source: "ADB_HTTP")
-                    // HTTP GET timed out on vivo once a real ring started.
-                    // Prefer the established private-file reader for the
-                    // rest of this ring and for its OFFHOOK transition.
-                    let callPending = snapshot.state == "RINGING" ||
-                        snapshot.state == "OFFHOOK"
-                    self.bridgeUsingFileFallback = callPending
-                    self.nextHTTPRecoveryAttempt = callPending
-                        ? Date().addingTimeInterval(75) : .distantPast
+                    self.bridgeUsingFileFallback = false
                 } catch {
                     guard self.liveSyncEnabled, generation == self.bridgeGeneration else {
                         return
                     }
-                    let nsError = error as NSError
                     let adb = self.selectedADBPath
-                    // HTTP can stall while an authorized ADB shell still works.
-                    // Try the private state file before tearing down a valid
-                    // port forward. This bypasses the HTTP socket only.
                     let fallback = await Task.detached(priority: .utility) {
                         ADBInspector.readPrivateStateSnapshot(
                             at: adb, authorizedSerial: link.serial)
@@ -1766,46 +1821,37 @@ final class AssistantModel: ObservableObject {
                         return
                     }
                     if let snapshot = fallback.snapshot {
-                        if !self.bridgeUsingFileFallback {
-                            self.log(.warn, .call, "电话状态 HTTP 暂不可用，切换到 ADB 快照",
-                                     details: ["httpErrorCode": "\(nsError.code)",
-                                               "fallback": "ADB_FILE"])
-                        }
-                        self.bridgeUsingFileFallback = true
-                        self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(20)
                         self.applyBridgeSnapshot(snapshot, source: "ADB_FILE")
                     } else {
-                        self.bridgeUsingFileFallback = true
-                        self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(35)
-                        self.schedulePhoneMonitorWakeIfNeeded(reason: fallback.reason)
-                        self.noteBridgeFailure(code: fallback.reason, domain: "SIMAI.ADBFile")
-                        self.livePhoneState = "未连接"
-                        if self.bridgeConsecutiveFailures == 4 {
-                            self.inspectBridgeHealth()
-                        }
-                        // Preserve a valid ADB forward if only the Android
-                        // listener or its snapshot is stale. Reopening the
-                        // tunnel repeatedly delayed recovery in real logs.
-                        if self.bridgeConsecutiveFailures >= 5 &&
-                           self.adbTransientMissingScans >= 3 &&
-                           ["ADB_NOT_READY", "ADB_ENUMERATION_FAILED",
-                            "ADB_ENUMERATION_TIMEOUT"].contains(fallback.reason) {
-                            self.closeLiveBridge()
+                        self.consecutivePollFailures += 1
+                        if self.consecutivePollFailures >= self.maxPollFailuresBeforeDisconnect {
+                            self.livePhoneState = "未连接"
+                            self.connectionTransport = "DISCONNECTED"
+                            self.schedulePhoneMonitorWakeIfNeeded(reason: fallback.reason)
+                            self.noteBridgeFailure(code: fallback.reason, domain: "SIMAI.ADBFile")
+                            if self.bridgeConsecutiveFailures == 4 {
+                                self.inspectBridgeHealth()
+                            }
+                            if self.bridgeConsecutiveFailures >= 5 &&
+                               self.adbTransientMissingScans >= 3 &&
+                               ["ADB_NOT_READY", "ADB_ENUMERATION_FAILED",
+                                "ADB_ENUMERATION_TIMEOUT"].contains(fallback.reason) {
+                                self.closeLiveBridge()
+                            }
+                        } else {
+                            self.liveBridgeStatus = "已连接 · 正在同步手机状态（重试 \(self.consecutivePollFailures)/\(self.maxPollFailuresBeforeDisconnect)）"
                         }
                     }
                 }
                 self.bridgeBusy = false
             }
         } else {
-            // Preserve scarce ADB slots. The original app could repeatedly
-            // run port forwarding while Android was restoring its service.
             guard Date() >= nextBridgeForwardAttempt else {
                 bridgeBusy = false
                 return
             }
-            nextBridgeForwardAttempt = Date().addingTimeInterval(12)
+            nextBridgeForwardAttempt = Date().addingTimeInterval(3)
             let path = selectedADBPath
-            let generation = bridgeGeneration
             Task { [weak self] in
                 let result = await Task.detached(priority: .utility) {
                     ADBInspector.openBridge(at: path)
@@ -1825,11 +1871,6 @@ final class AssistantModel: ObservableObject {
                     self.adbStatus = "ADB 已自动识别 1 台已授权手机"
                     self.adbDiscoveryDescription = ADBInspector.discoveryLabel(at: path)
                     self.adbWasAuthorized = true
-                    // On first connect, read the private snapshot immediately.
-                    // Waiting for an HTTP request to time out made startup
-                    // take over a minute when Android's listener was asleep.
-                    self.bridgeUsingFileFallback = true
-                    self.nextHTTPRecoveryAttempt = Date().addingTimeInterval(10)
                     self.liveBridgeStatus = result.message
                     if self.bridgeConsecutiveFailures == 0 {
                         self.log(.info, .call, "ADB 端口转发连接建立（未读取设备序列号）")
@@ -1837,8 +1878,55 @@ final class AssistantModel: ObservableObject {
                     self.pollLiveBridge()
                 } else {
                     if self.bridgeConsecutiveFailures == 0 { self.inspectBridgeHealth() }
-                    self.noteBridgeFailure(code: "ADB_UNAVAILABLE", domain: "SIMAI.ADB")
-                    self.liveBridgeStatus = "\(result.message)；自动重连已退避"
+                    self.consecutivePollFailures += 1
+                    if self.consecutivePollFailures >= self.maxPollFailuresBeforeDisconnect {
+                        self.livePhoneState = "未连接"
+                        self.connectionTransport = "DISCONNECTED"
+                        self.noteBridgeFailure(code: "ADB_UNAVAILABLE", domain: "SIMAI.ADB")
+                        self.liveBridgeStatus = "\(result.message)；自动重连已退避"
+                    }
+                }
+            }
+        }
+    }
+
+    func testWiFiConnection() {
+        let clean = wifiHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else {
+            wifiPingStatus = "请先输入手机 Wi-Fi IP 地址"
+            return
+        }
+        let target = clean.contains(":") ? clean : "\(clean):18764"
+        guard let url = URL(string: "http://\(target)/ping") else {
+            wifiPingStatus = "IP 格式无效"
+            return
+        }
+        wifiPingTesting = true
+        wifiPingStatus = "正在测试连接……"
+        let start = Date()
+        Task {
+            do {
+                var req = URLRequest(url: url)
+                req.timeoutInterval = 2.0
+                let (_, response) = try await URLSession.shared.data(for: req)
+                let elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
+                if (response as? HTTPURLResponse)?.statusCode == 200 {
+                    await MainActor.run {
+                        self.wifiPingTesting = false
+                        self.wifiDirectActive = true
+                        self.wifiPingStatus = "✅ 连接成功！响应延迟 \(elapsedMs) ms"
+                        self.pollLiveBridge()
+                    }
+                } else {
+                    await MainActor.run {
+                        self.wifiPingTesting = false
+                        self.wifiPingStatus = "❌ 响应异常 (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))"
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.wifiPingTesting = false
+                    self.wifiPingStatus = "❌ 连接超时或失败，请确保手机与 Mac 在同一局域网"
                 }
             }
         }
@@ -2328,6 +2416,27 @@ final class AssistantModel: ObservableObject {
         let path = selectedADBPath
         Task { [weak self] in
             guard let self else { return }
+
+            // Wi-Fi direct instant answer (with Shizuku privilege)
+            if let wifi = self.wifiDirectEndpoint,
+               let url = URL(string: "http://\(wifi)/call/answer") {
+                var req = URLRequest(url: url)
+                req.httpMethod = "POST"
+                req.timeoutInterval = 2.0
+                req.cachePolicy = .reloadIgnoringLocalCacheData
+                req.setValue(expectedRingSession, forHTTPHeaderField: "X-SIMAI-Expected-Session")
+                req.setValue(String(expectedRingSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
+                req.setValue("0", forHTTPHeaderField: "Content-Length")
+                if let (_, response) = try? await URLSession.shared.data(for: req),
+                   (response as? HTTPURLResponse)?.statusCode == 200 {
+                    self.log(.info, .call, "已通过 Wi-Fi 直连执行接听请求 (Shizuku)")
+                    self.answerCallBusy = false
+                    self.answerCallStatus = "已通过 Wi-Fi 发送接听请求"
+                    _ = self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession, expectedSequence: expectedRingSequence)
+                    return
+                }
+            }
+
             // On the new Companion or when status uses ADB_FILE (e.g. during vivo ringing),
             // use the local guarded shell answer directly to avoid a 3s+ HTTP timeout.
             if automatic, self.bridgeUsingFileFallback,
@@ -2750,7 +2859,18 @@ final class AssistantModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
 
-            // 1. Try HTTP hangup if link is available
+            // 0. Try Wi-Fi direct HTTP hangup (with Shizuku privilege)
+            if let wifi = self.wifiDirectEndpoint, let url = URL(string: "http://\(wifi)/call/hangup") {
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.timeoutInterval = 2
+                request.setValue(expectedSession, forHTTPHeaderField: "X-SIMAI-Expected-Session")
+                request.setValue(String(expectedSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
+                request.setValue("0", forHTTPHeaderField: "Content-Length")
+                _ = try? await URLSession.shared.data(for: request)
+            }
+
+            // 1. Try HTTP hangup via ADB forward if link is available
             if let link = existingLink, let url = URL(string: "http://127.0.0.1:\(link.localPort)/call/hangup") {
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"

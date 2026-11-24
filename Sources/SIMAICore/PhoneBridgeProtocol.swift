@@ -31,6 +31,8 @@ public struct PhoneBridgeSnapshot: Codable, Equatable {
     public var orderedAnswerReplyAvailable: Bool? = nil
     public var privateAnswerSequence: Int? = nil
     public var privateAnswerResult: String? = nil
+    public var shizukuReady: Bool? = nil
+    public var wifiListening: Bool? = nil
 
     /// Private-file transport uses a periodically refreshed timestamp; this
     /// prevents a killed Android service's last snapshot appearing online.

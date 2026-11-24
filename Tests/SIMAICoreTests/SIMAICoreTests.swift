@@ -470,4 +470,25 @@ final class SIMAICoreTests: XCTestCase {
         XCTAssertFalse(json.contains("AA:BB"))
         XCTAssertTrue(json.contains("音频设备 1"))
     }
+
+    func testPhoneBridgeSnapshotDecodesShizukuAndWiFiFlags() throws {
+        let json = """
+        {
+            "schema": 1,
+            "session": "sess-wifi-001",
+            "running": true,
+            "state": "IDLE",
+            "seq": 4,
+            "events": [{"seq": 4, "state": "IDLE", "at": 1700000000}],
+            "updatedAt": 1700000000,
+            "shizukuReady": true,
+            "wifiListening": true
+        }
+        """.data(using: .utf8)!
+        let snapshot = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: json)
+        XCTAssertEqual(snapshot.schema, 1)
+        XCTAssertEqual(snapshot.session, "sess-wifi-001")
+        XCTAssertEqual(snapshot.shizukuReady, true)
+        XCTAssertEqual(snapshot.wifiListening, true)
+    }
 }

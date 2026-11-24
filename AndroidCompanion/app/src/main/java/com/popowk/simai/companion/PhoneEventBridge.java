@@ -58,6 +58,7 @@ final class PhoneEventBridge {
     private ScheduledExecutorService stateQueryWorker;
     private final Object snapshotWriteLock = new Object();
     private final java.util.concurrent.atomic.AtomicBoolean snapshotQueued = new java.util.concurrent.atomic.AtomicBoolean();
+    private final NsdHelper nsdHelper = new NsdHelper();
     private volatile long lastRealPhoneStateAt = 0;
     private volatile String lastAnswerTransport = "NONE";
     // Anonymous health/status markers, never phone numbers or request tokens.
@@ -114,14 +115,16 @@ final class PhoneEventBridge {
         lastState = state;
         events.add(new CallEvent(++sequence, state, System.currentTimeMillis()));
         while (events.size() > MAX_EVENTS) events.remove(0);
-        persistSnapshot();
+        // Write snapshot immediately on state change so Mac poll reflects state within 1ms
+        writeSnapshot();
     }
 
     void start() throws Exception {
         if (active) return;
-        listener = new ServerSocket(PORT, 12, InetAddress.getByName("127.0.0.1"));
-        requests = new ThreadPoolExecutor(2, 2, 30L, TimeUnit.SECONDS,
-                new ArrayBlockingQueue<>(8), job -> {
+        // Bind to all local interfaces (0.0.0.0) so Wi-Fi LAN direct and ADB forward loopback both work
+        listener = new ServerSocket(PORT, 32);
+        requests = new ThreadPoolExecutor(4, 8, 30L, TimeUnit.SECONDS,
+                new ArrayBlockingQueue<>(32), job -> {
                     Thread thread = new Thread(job, "SIMAI-CallBridge-Request");
                     thread.setDaemon(true);
                     return thread;
@@ -132,10 +135,12 @@ final class PhoneEventBridge {
             thread.setDaemon(true);
             return thread;
         });
-        persistSnapshot();
+        writeSnapshot();
         heartbeat.scheduleWithFixedDelay(() -> {
             if (active) writeSnapshot();
-        }, 2, 2, TimeUnit.SECONDS);
+        }, 1, 1, TimeUnit.SECONDS);
+        // Register mDNS / Bonjour for zero-config Mac discovery over Wi-Fi
+        nsdHelper.register(context, PORT);
         privateAnswerPoller = Executors.newSingleThreadScheduledExecutor(job -> {
             Thread thread = new Thread(job, "SIMAI-PrivateAnswer");
             thread.setDaemon(true);
@@ -163,6 +168,7 @@ final class PhoneEventBridge {
 
     void stop() {
         active = false;
+        nsdHelper.unregister();
         if (stateQueryWorker != null) stateQueryWorker.shutdownNow();
         if (privateAnswerPoller != null) privateAnswerPoller.shutdownNow();
         if (heartbeat != null) heartbeat.shutdownNow();
@@ -180,6 +186,7 @@ final class PhoneEventBridge {
                 try {
                     requests.execute(() -> {
                         try (Socket connected = client) {
+                            connected.setTcpNoDelay(true);
                             connected.setSoTimeout(1500);
                             handle(connected);
                         } catch (Exception error) {
@@ -331,8 +338,18 @@ final class PhoneEventBridge {
                     }
                 }
                 Log.i("SIMAICompanion", "Answer invoked via " + transport);
-                telecom.acceptRingingCall();
-                result = "ANSWER_REQUESTED";
+                if (ShizukuTelephonyBridge.isReady()) {
+                    String shizukuRes = ShizukuTelephonyBridge.answerCall(context);
+                    if ("ANSWER_REQUESTED".equals(shizukuRes)) {
+                        result = "ANSWER_REQUESTED";
+                    } else {
+                        telecom.acceptRingingCall();
+                        result = "ANSWER_REQUESTED";
+                    }
+                } else {
+                    telecom.acceptRingingCall();
+                    result = "ANSWER_REQUESTED";
+                }
             }
         } catch (SecurityException permission) {
             result = "PERMISSION_REQUIRED";
@@ -437,6 +454,14 @@ final class PhoneEventBridge {
                         reply(client, 409, "{\"error\":\"call_changed_or_not_active\"}");
                         return;
                     }
+                    // Prefer privileged Shizuku hangup if available
+                    if (ShizukuTelephonyBridge.isReady()) {
+                        String shizukuRes = ShizukuTelephonyBridge.endCall(context);
+                        if ("HANGUP_SUCCESS".equals(shizukuRes)) {
+                            reply(client, 200, "{\"ok\":true,\"result\":\"hangup_requested\"}");
+                            return;
+                        }
+                    }
                     // Android 13 exposes this permission-gated legacy API.
                     // OEM restrictions and emergency call protection still apply.
                     @SuppressWarnings("deprecation")
@@ -508,6 +533,11 @@ final class PhoneEventBridge {
             return;
         }
 
+        if (first.startsWith("GET /ping HTTP/1.")) {
+            reply(client, 200, "{\"ok\":true,\"status\":\"pong\"}");
+            return;
+        }
+
         if (!first.startsWith("GET /events?since=")) {
             reply(client, 404, "{\"error\":\"not_found\"}");
             return;
@@ -549,6 +579,8 @@ final class PhoneEventBridge {
         body.put("state", lastState);
         body.put("seq", sequence);
         body.put("updatedAt", System.currentTimeMillis());
+        body.put("shizukuReady", ShizukuTelephonyBridge.isReady());
+        body.put("wifiListening", true);
         body.put("answerPermissionGranted",
                 context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
                     == PackageManager.PERMISSION_GRANTED);

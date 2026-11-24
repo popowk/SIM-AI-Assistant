@@ -6,11 +6,15 @@
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- Shizuku API permission for privileged shell operations -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23"/>
     <!-- RECEIVE_SMS receives NEW messages only; READ_SMS is intentionally absent. -->
     <uses-permission android:name="android.permission.RECEIVE_SMS"/>
     <application android:label="SIM AI Companion" android:allowBackup="false"
-        android:usesCleartextTraffic="false" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:usesCleartextTraffic="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>

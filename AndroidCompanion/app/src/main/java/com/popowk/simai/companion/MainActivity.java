@@ -32,9 +32,13 @@ public final class MainActivity extends Activity {
     private static final String KEY_MONITOR_DESIRED = "phone_state_monitor_desired";
     private boolean wizardInProgress = false;
     private TextView state;
+    private TextView wifiStatus;
+    private TextView shizukuStatus;
+    private Button shizukuGrant;
     private TextView log;
     private TextView permission;
     private TextView smsStatus;
+    private rikka.shizuku.Shizuku.OnRequestPermissionResultListener shizukuPermissionListener;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable update = new Runnable() {
         @Override public void run() {
@@ -91,6 +95,19 @@ public final class MainActivity extends Activity {
             refresh();
         });
         column.addView(stop);
+
+        wifiStatus = new TextView(this);
+        wifiStatus.setTextSize(15f);
+        column.addView(wifiStatus);
+
+        shizukuStatus = new TextView(this);
+        shizukuStatus.setTextSize(15f);
+        column.addView(shizukuStatus);
+
+        shizukuGrant = new Button(this);
+        shizukuGrant.setText("授权 Shizuku 特权（免 Root 极速接听／挂断）");
+        shizukuGrant.setOnClickListener(v -> ShizukuTelephonyBridge.requestPermission(1030));
+        column.addView(shizukuGrant);
 
         CheckBox stayAwake = new CheckBox(this);
         stayAwake.setText("锁屏运行增强（新安装默认开启，增加耗电）");
@@ -223,6 +240,12 @@ public final class MainActivity extends Activity {
         column.addView(log);
 
         setContentView(scroller);
+        try {
+            shizukuPermissionListener = (req, grantResult) -> {
+                handler.post(this::refresh);
+            };
+            rikka.shizuku.Shizuku.addRequestPermissionResultListener(shizukuPermissionListener);
+        } catch (Throwable ignored) {}
         // ADB's installer launches this activity after an install or explicit
         // clean reinstall. Offer one transparent permission wizard, then
         // start the monitor after Android actually grants the phone permission.
@@ -297,6 +320,26 @@ public final class MainActivity extends Activity {
             == PackageManager.PERMISSION_GRANTED ? "已授权" : "未授权，可点一键开启"));
         state.setText("服务：" + (CallMonitorService.running ? "运行中" : "停止")
                 + "   状态：" + CallMonitorService.lastState);
+        if (wifiStatus != null) {
+            String ip = getLocalIpAddress();
+            wifiStatus.setText("\n📶 Wi-Fi 局域网直连: http://" + ip + ":18764\n" +
+                    "（Mac 端高级设置填入此地址可实现无数据线 <5ms 极速直连）\n");
+        }
+        if (shizukuStatus != null) {
+            if (ShizukuTelephonyBridge.isReady()) {
+                shizukuStatus.setText("🛡️ Shizuku 引擎：已连接且已授权 (免 Root 特权控制 100% 成功)");
+                if (shizukuGrant != null) shizukuGrant.setVisibility(View.GONE);
+            } else if (ShizukuTelephonyBridge.isShizukuAvailable()) {
+                shizukuStatus.setText("🛡️ Shizuku 引擎：服务运行中，尚未授予此应用权限");
+                if (shizukuGrant != null) {
+                    shizukuGrant.setVisibility(View.VISIBLE);
+                    shizukuGrant.setText("一键授权 Shizuku 特权");
+                }
+            } else {
+                shizukuStatus.setText("🛡️ Shizuku 引擎：未运行 (可选，启动 Shizuku 可获得免 Root 极速特权)");
+                if (shizukuGrant != null) shizukuGrant.setVisibility(View.GONE);
+            }
+        }
         if (smsStatus != null) {
             boolean smsGranted = checkSelfPermission(Manifest.permission.RECEIVE_SMS)
                     == PackageManager.PERMISSION_GRANTED;
@@ -358,5 +401,30 @@ public final class MainActivity extends Activity {
     @Override protected void onPause() {
         handler.removeCallbacks(update);
         super.onPause();
+    }
+
+    @Override protected void onDestroy() {
+        super.onDestroy();
+        try {
+            if (shizukuPermissionListener != null) {
+                rikka.shizuku.Shizuku.removeRequestPermissionResultListener(shizukuPermissionListener);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private String getLocalIpAddress() {
+        try {
+            for (java.util.Enumeration<java.net.NetworkInterface> en = java.net.NetworkInterface.getNetworkInterfaces(); en.hasMoreElements();) {
+                java.net.NetworkInterface intf = en.nextElement();
+                if (intf.isLoopback() || !intf.isUp()) continue;
+                for (java.util.Enumeration<java.net.InetAddress> enumIpAddr = intf.getInetAddresses(); enumIpAddr.hasMoreElements();) {
+                    java.net.InetAddress inetAddress = enumIpAddr.nextElement();
+                    if (!inetAddress.isLoopbackAddress() && inetAddress instanceof java.net.Inet4Address) {
+                        return inetAddress.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return "未知";
     }
 }

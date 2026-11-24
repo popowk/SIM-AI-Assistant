@@ -77,7 +77,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("AI 电话自动值守 · 全双工音频 · v0.4.33")
+                Text("AI 电话自动值守 · 全双工音频 · v0.4.34")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -98,6 +98,20 @@ struct DashboardView: View {
                 symbol: model.livePhoneState == "OFFHOOK" ? "phone.fill" : (model.livePhoneState == "RINGING" ? "phone.arrow.down.left.fill" : "phone"),
                 tint: model.livePhoneState == "OFFHOOK" ? .green : (model.livePhoneState == "RINGING" ? .orange : .secondary)
             )
+            statusPill(
+                title: "传输通道",
+                value: model.connectionTransport == "WIFI_DIRECT" ? "Wi-Fi 局域网直连" : (model.connectionTransport == "ADB_HTTP" ? "USB 数据线 (ADB)" : (model.connectionTransport == "ADB_FILE" ? "ADB 快照备用" : "未连接")),
+                symbol: model.connectionTransport == "WIFI_DIRECT" ? "wifi" : (model.connectionTransport == "ADB_HTTP" ? "cable.connector" : "wifi.slash"),
+                tint: model.connectionTransport == "WIFI_DIRECT" ? .green : (model.connectionTransport == "ADB_HTTP" ? .blue : .secondary)
+            )
+            if model.isShizukuReady {
+                statusPill(
+                    title: "特权引擎",
+                    value: "Shizuku 就绪",
+                    symbol: "bolt.shield.fill",
+                    tint: .green
+                )
+            }
             statusPill(
                 title: "手机连接",
                 value: model.liveSyncEnabled ? (model.adbBridgeHealthChecking ? "检测中…" : model.liveBridgeStatus) : "已暂停",
@@ -389,9 +403,47 @@ struct DashboardView: View {
         }
     }
 
-    // MARK: - 高级 ADB 维护
+    // MARK: - 手机连接与高级维护 (Wi-Fi 局域网直连 + ADB)
     private var adbPanel: some View {
-        panel("Android · ADB 维护", symbol: "cable.connector") {
+        panel("Android · 手机连接与维护", symbol: "network") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Wi-Fi 局域网直连（免 USB 数据线 · 延迟 <5ms · 推荐）")
+                    .font(.subheadline.bold())
+                HStack {
+                    TextField("手机 Wi-Fi IP 地址（如 192.168.1.100）", text: $model.wifiHost)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 240)
+                    Button("测试 Wi-Fi 连接") {
+                        model.testWiFiConnection()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.wifiPingTesting || model.wifiHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    if model.wifiPingTesting {
+                        ProgressView().controlSize(.small)
+                    }
+                    if !model.wifiPingStatus.isEmpty {
+                        Text(model.wifiPingStatus)
+                            .font(.caption)
+                    }
+                }
+                if let discovered = model.wifiDiscovery.discoveredDeviceName {
+                    HStack(spacing: 8) {
+                        Image(systemName: "bonjour")
+                        Text("发现局域网手机：\(discovered)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text("提示：可在手机 SIM AI Companion 界面直接查看手机 Wi-Fi 直连地址。配置后完全免拔插数据线；未配置时自动通过 USB 数据线 (ADB) 传输。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(10)
+            .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
+
+            Divider()
+
             HStack {
                 Text(model.selectedADBPath.isEmpty ? "ADB：自动搜索" : "ADB：\(model.selectedADBPath)")
                     .font(.caption.monospaced())
@@ -469,7 +521,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.33 (Build 50)").font(.caption.monospaced())
+            Text("v0.4.34 (Build 51)").font(.caption.monospaced())
         }
     }
 

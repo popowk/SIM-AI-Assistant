@@ -22,8 +22,8 @@ android {
         applicationId = "com.popowk.simai.companion"
         minSdk = 26
         targetSdk = 32
-        versionCode = 18
-        versionName = "0.3.13"
+        versionCode = 19
+        versionName = "0.3.14"
     }
     signingConfigs {
         if (hasStableSigning) {
@@ -47,4 +47,9 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+}
+
+dependencies {
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 }
