@@ -24,7 +24,7 @@ struct DashboardView: View {
                 callControlPanel
                 if !model.localReceptionEnabled { quickSetupPanel }
                 adbPanel
-                DisclosureGroup("飞书短信配置", isExpanded: $showFeishuSettings) {
+                DisclosureGroup("飞书 Webhook 配置", isExpanded: $showFeishuSettings) {
                     feishuPanel
                         .padding(.top, 8)
                 }
@@ -77,7 +77,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.41" : "AI 电话自动值守 · 全双工音频 · v0.4.41")
+                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.42" : "AI 电话自动值守 · 全双工音频 · v0.4.42")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -164,10 +164,20 @@ struct DashboardView: View {
                 .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
                 if model.localReceptionEnabled {
                     Text(model.localReceptionStatus).font(.caption)
+                    Toggle("保存本地双向录音和识别文字", isOn: $model.localRecordAudio)
+                        .disabled(model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK" || model.liveVoiceActive || model.liveVoiceStarting)
+                    Toggle("挂断后通过已配置的飞书 Webhook 推送文字", isOn: $model.localSendTranscript)
+                        .disabled(model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK" || model.liveVoiceActive || model.liveVoiceStarting)
+                    Text("开启后，接通时先询问来电者是否同意。仅在明确同意后保存或转发；拒绝或撤回即停止。录音保存在 Mac，不随诊断包上传。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Button("打开录音目录") { model.openLocalRecordings() }
+                        Text(model.localCaptureStatus).font(.caption)
+                    }
                     Button(model.localReceptionPreparing ? "正在准备…" : "准备 / 重新自检本地模型") {
                         model.prepareLocalReception()
                     }.disabled(model.localReceptionPreparing || model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
-                    Text("中文 Zipformer INT8 + 固定业务逻辑 + 系统中文语音。半双工，播报结束后再说话。识别文字仅保留在内存中。测试前请确保对方知情同意。")
+                    Text("中文 Zipformer INT8 + 固定业务逻辑 + 系统中文语音。半双工，播报结束后再说话。未开启保存/推送时，识别文字仅保留在内存中。测试前请确保对方知情同意。")
                         .font(.caption).foregroundStyle(.secondary)
                     if !model.localReceptionText.isEmpty {
                         Text("本次通话识别（仅本机）").font(.caption.bold())
@@ -581,7 +591,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.41 (Build 58)").font(.caption.monospaced())
+            Text("v0.4.42 (Build 58)").font(.caption.monospaced())
         }
     }
 

@@ -28,6 +28,8 @@ final class LocalReceptionEngine {
     private var quietUntil = Date.distantPast
     private var policy = LocalReceptionPolicy()
     private var ignoreAfterGoodbye = false
+    private var capture: LocalCallCapture?
+    private var consentPending = false
     init(onEvent: @escaping (Event) -> Void) { self.onEvent = onEvent }
     var isReady: Bool { gate.lock(); defer { gate.unlock() }; return ready && !disposed }
     func prepare() {
@@ -99,7 +101,23 @@ final class LocalReceptionEngine {
                 gate.lock()
                 guard active, !disposed, !ignoreAfterGoodbye,
                       cursor >= speaking.count, Date() >= quietUntil else { gate.unlock(); continue }
-                let reply = policy.reply(to: text)
+                let reply: LocalReceptionPolicy.Reply
+                if consentPending {
+                    consentPending = false
+                    if LocalCaptureConsent.accepts(text) {
+                        capture?.authorize()
+                        reply = .consentAccepted
+                    } else {
+                        capture?.revoke()
+                        reply = .consentDeclined
+                    }
+                } else if LocalCaptureConsent.revokes(text) {
+                    capture?.revoke()
+                    reply = .consentDeclined
+                } else {
+                    reply = policy.reply(to: text)
+                    capture?.addTurn(text, reply: reply)
+                }
                 speaking = replyPCM[reply] ?? []
                 cursor = 0
                 if reply == .goodbye { ignoreAfterGoodbye = true }
@@ -111,9 +129,11 @@ final class LocalReceptionEngine {
     }
 
     /// Invoked only after the Android PCM handshake. No desktop audio output.
-    func beginCall() -> Bool {
+    func beginCall(capture: LocalCallCapture? = nil) -> Bool {
         gate.lock()
-        guard ready, !disposed, !active, let greeting = replyPCM[.greeting], !greeting.isEmpty else { gate.unlock(); return false }
+        guard ready, !disposed, !active, let greeting = replyPCM[capture?.greeting ?? .greeting], !greeting.isEmpty else { gate.unlock(); return false }
+        self.capture = capture
+        consentPending = capture != nil
         generation += 1; let epoch = generation
         active = true; policy = LocalReceptionPolicy(); ignoreAfterGoodbye = false
         speaking = greeting; cursor = 0; quietUntil = .distantPast
@@ -126,10 +146,11 @@ final class LocalReceptionEngine {
         gate.lock()
         if !active { gate.unlock(); return }
         active = false; generation += 1; let epoch = generation
+        capture = nil; consentPending = false
         speaking.removeAll(); cursor = 0
         gate.unlock()
         enqueueReset(epoch)
-        onEvent(.status("本地接待已结束；识别文字仅保留在本次运行界面"))
+        onEvent(.status("本地接待已结束"))
     }
     private func enqueueReset(_ epoch: Int) {
         writeQueue.async { [weak self] in

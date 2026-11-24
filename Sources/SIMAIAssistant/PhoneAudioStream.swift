@@ -514,6 +514,7 @@ final class PhoneAudioStream {
     private var callerMonitorEnabled = true
     private let physicalMonitorOutput: AudioDeviceID?
     private let localReception: LocalReceptionEngine?
+    private let localCapture: LocalCallCapture?
     private var setup: ADBAudioStreamSetup?
     private var active = false
     private let onEvent: (LiveAudioEvent) -> Void
@@ -521,9 +522,11 @@ final class PhoneAudioStream {
 
     init(physicalMonitorOutput: AudioDeviceID? = nil,
          localReception: LocalReceptionEngine? = nil,
+         localCapture: LocalCallCapture? = nil,
          onEvent: @escaping (LiveAudioEvent) -> Void) {
         self.physicalMonitorOutput = physicalMonitorOutput
         self.localReception = localReception
+        self.localCapture = localCapture
         self.onEvent = onEvent
         self.microphone = LiveMacMicrophone(queue: microphoneQueue)
     }
@@ -859,7 +862,7 @@ final class PhoneAudioStream {
         // cellular PCM. No physical or virtual Mac sound device is needed.
         let speaker: LiveMacSpeaker?
         if let localReception {
-            guard localReception.beginCall() else { reason = "LOCAL_ASR_NOT_READY"; return }
+            guard localReception.beginCall(capture: localCapture) else { reason = "LOCAL_ASR_NOT_READY"; return }
             speaker = nil
         } else {
             do {
@@ -902,6 +905,7 @@ final class PhoneAudioStream {
             gate.unlock()
             if let localReception {
                 if !localReception.isReady { reason = "LOCAL_ASR_FAILED"; break }
+                localCapture?.append(frame, uplink: false)
                 localReception.feed(frame)
             } else {
                 if callerMonitor { speaker?.feed(frame) }
@@ -990,6 +994,7 @@ final class PhoneAudioStream {
                 data = microphoneQueue.nextFrame()
             }
             guard Self.sendAll(fd, data) else { break }
+            localCapture?.append(data, uplink: true)
             gate.lock()
             sent += 1
             txLateFrames = pacing.lateFrames

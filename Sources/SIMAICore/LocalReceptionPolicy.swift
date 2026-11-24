@@ -5,9 +5,15 @@ import Foundation
 public struct LocalReceptionPolicy {
     public enum Reply: String, CaseIterable {
         case greeting, purpose, delivery, business, callback, noted, repeatPlease, goodbye, noSensitive
+        case consentRecording, consentWebhook, consentBoth, consentAccepted, consentDeclined
         public var text: String {
             switch self {
             case .greeting: return "您好，我是王先生的AI电话助理，本次通话由本地语音程序处理。请问您有什么事情？"
+            case .consentRecording: return "您好，我是王先生的AI电话助理。是否同意本次通话在本机录音？请说同意或不同意。"
+            case .consentWebhook: return "您好，我是王先生的AI电话助理。是否同意将本次通话识别文字发送给王先生的飞书机器人？请说同意或不同意。"
+            case .consentBoth: return "您好，我是王先生的AI电话助理。是否同意本机录音并将识别文字发送给王先生的飞书机器人？请说同意或不同意。"
+            case .consentAccepted: return "好的，请问您有什么事情？"
+            case .consentDeclined: return "好的，不录音也不转发文字。请问您有什么事情？"
             case .purpose: return "请问您找王先生具体有什么事情？"
             case .delivery: return "好的，请说明是什么物品，是否需要本人处理？"
             case .business: return "好的，请简单说明您的需求和需要转达的事项。"
@@ -54,5 +60,17 @@ public struct LocalReceptionPolicy {
         if s.count < 4 { return .repeatPlease }
         awaitingDetails = false
         return .noted
+    }
+}
+
+/// Strict opt-in. Unknown or negative answers never authorize persistence or forwarding.
+public enum LocalCaptureConsent {
+    public static func accepts(_ text: String) -> Bool {
+        let clean = text.replacingOccurrences(of: "[\\s，。！？、,.!?]", with: "", options: .regularExpression)
+        if ["不","别","拒绝","取消","停止","没同意"].contains(where: { clean.contains($0) }) { return false }
+        return ["同意","我同意","好的同意","可以录音","同意录音","同意转发","同意录音和转发","同意录音并转发","同意录音和发送文字"].contains(clean)
+    }
+    public static func revokes(_ text: String) -> Bool {
+        ["停止录音","不要录音","别录音","取消录音","不同意录音","不要转发","停止转发","取消转发","不要发送文字","撤回同意"].contains(where: { text.contains($0) })
     }
 }

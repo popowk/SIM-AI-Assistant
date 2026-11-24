@@ -25,6 +25,12 @@
         </activity>
         <service android:name=".CallMonitorService" android:exported="true"
             android:permission="android.permission.DUMP"/>
+        <!-- PHONE_STATE is an Android protected system broadcast. -->
+        <receiver android:name=".PhoneStateWakeReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PHONE_STATE"/>
+            </intent-filter>
+        </receiver>
         <!-- Shizuku provider bridge to receive binder from shizuku_server -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

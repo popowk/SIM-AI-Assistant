@@ -51,6 +51,7 @@ public final class CallMonitorService extends Service {
     private TelephonyManager telephonyManager;
     private PhoneEventBridge bridge;
     private static volatile PhoneEventBridge activeAnswerBridge;
+    private static volatile CallMonitorService activeMonitor;
     private TelephonyCallback telephonyCallback;
     private java.util.concurrent.ExecutorService callStateExecutor;
     private PhoneStateListener legacyListener;
@@ -74,6 +75,10 @@ public final class CallMonitorService extends Service {
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        if (!getSharedPreferences("simai_initial_setup", MODE_PRIVATE)
+                .getBoolean("phone_state_monitor_desired", true)) {
+            stopSelf(); return START_NOT_STICKY;
+        }
         if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
             lastState = "缺少电话状态权限";
             note("权限不足，监听服务未启动");
@@ -94,6 +99,7 @@ public final class CallMonitorService extends Service {
                 activeAnswerBridge = bridge;
                 telephonyManager = (TelephonyManager) getSystemService(TELEPHONY_SERVICE);
                 if (telephonyManager == null) throw new IllegalStateException("TelephonyManager unavailable");
+                lastState = "UNKNOWN";
                 handleState(telephonyManager.getCallState());
                 if (Build.VERSION.SDK_INT >= 31) {
                     StateCallback callback = new StateCallback();
@@ -109,6 +115,7 @@ public final class CallMonitorService extends Service {
                     };
                     telephonyManager.listen(legacyListener, PhoneStateListener.LISTEN_CALL_STATE);
                 }
+                activeMonitor = this;
                 running = true;
                 applyKeepAwakeSetting();
                 note("监听已启动，等待实际来电");
@@ -151,9 +158,8 @@ public final class CallMonitorService extends Service {
             if (wifiLock == null) {
                 android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
                 if (wm != null) {
-                    int mode = Build.VERSION.SDK_INT >= 29
-                        ? android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                        : android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+                    // LOW_LATENCY applies only under foreground/screen-on conditions on Android 13.
+                    int mode = android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF;
                     wifiLock = wm.createWifiLock(mode, "SIMAI:CompanionWiFiLock");
                     wifiLock.setReferenceCounted(false);
                 }
@@ -180,7 +186,7 @@ public final class CallMonitorService extends Service {
         }
     }
 
-    private void handleState(int state) {
+    private synchronized void handleState(int state) {
         String next;
         switch (state) {
             case TelephonyManager.CALL_STATE_RINGING: next = "RINGING"; break;
@@ -195,6 +201,11 @@ public final class CallMonitorService extends Service {
         }
     }
 
+    static void deliverSystemPhoneState(int state) {
+        CallMonitorService monitor = activeMonitor;
+        if (monitor != null && running) monitor.handleState(state);
+    }
+
     private final class StateCallback extends TelephonyCallback implements TelephonyCallback.CallStateListener {
         @Override public void onCallStateChanged(int state) { handleState(state); }
     }
@@ -206,6 +217,7 @@ public final class CallMonitorService extends Service {
     }
 
     @Override public void onDestroy() {
+        activeMonitor = null;
         activeAnswerBridge = null;
         releaseWakeLock();
         if (bridge != null) { bridge.stop(); bridge = null; }
