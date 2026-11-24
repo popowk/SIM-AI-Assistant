@@ -46,6 +46,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     @Published private(set) var isolatedMicrophoneReady = false
     @Published private(set) var isolatedMicrophoneStatus = "等待确认 ChatGPT 实际录音设备为 BlackHole 2ch"
     @Published private(set) var microphoneSignalStatus = "尚未检测网页虚拟麦克风的实际声音电平"
+    @Published private(set) var webRTPSignalStatus = "等待确认 ChatGPT 是否实际向 WebRTC 发送声音"
     var onIsolatedMicrophoneChange: ((Bool) -> Void)?
     private var lastMicrophoneRouteCheck = Date.distantPast
     private var lastVerifiedMicrophoneFrameAt = Date.distantPast
@@ -80,9 +81,9 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
             return
         }
         if code.hasPrefix("BLACKHOLE2_RTP_") {
-            microphoneSignalStatus = code == "BLACKHOLE2_RTP_AUDIO_PRESENT"
-                ? "网页 WebRTC 已发送非静音音频，可进一步确认 GPT 是否响应"
-                : "网页 WebRTC 音频持续无能量，需核对输入音轨"
+            webRTPSignalStatus = code == "BLACKHOLE2_RTP_AUDIO_PRESENT"
+                ? "WebRTC 音轨已发送非静音音频（不代表 GPT 已识别）"
+                : "WebRTC 输出音轨持续无声，GPT 可能没有收到声音"
             onDiagnostic?(code)
             return
         }
@@ -582,6 +583,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         lastPlaybackCheck = .distantPast
         playbackBlocked = false
         microphoneSignalStatus = "尚未检测网页虚拟麦克风的实际声音电平"
+        webRTPSignalStatus = "等待确认 ChatGPT 是否实际向 WebRTC 发送声音"
         isolateCheckBusy = false
         updateIsolatedOutputReady(false)
         webView.stopLoading()
