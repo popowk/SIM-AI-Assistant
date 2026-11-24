@@ -50,7 +50,7 @@ private struct MenuBarCommands: View {
             model.restoreAutomaticGPTOutput(forceInput: true, userRequested: true)
         }
         Divider()
-        Text("v0.4.37 · 局域网纯 Wi-Fi 深度修复与多轮自动接听稳定加固")
+        Text("v0.4.38 · 彻底解决来电断连、多轮自动接听及 Shizuku 权限死锁")
         Button("退出 SIM AI Assistant") {
             model.shutdownForAppExit()
             NSApp.terminate(nil)

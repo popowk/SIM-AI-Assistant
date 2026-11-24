@@ -4,7 +4,9 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.util.Log;
 import rikka.shizuku.Shizuku;
+import java.io.InputStream;
 import java.lang.reflect.Method;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Privileged telephony operations via Shizuku (UID 2000 shell).
@@ -12,6 +14,7 @@ import java.lang.reflect.Method;
  */
 public final class ShizukuTelephonyBridge {
     private static final String TAG = "SIMAIShizuku";
+    private static volatile boolean permissionsGranted = false;
 
     public static boolean isShizukuAvailable() {
         try {
@@ -44,32 +47,63 @@ public final class ShizukuTelephonyBridge {
     }
 
     public static void autoGrantAppPermissions(Context context) {
-        if (!isReady() || context == null) return;
-        try {
-            String pkg = context.getPackageName();
-            exec(new String[]{"pm", "grant", pkg, "android.permission.ANSWER_PHONE_CALLS"});
-            exec(new String[]{"pm", "grant", pkg, "android.permission.READ_PHONE_STATE"});
-            exec(new String[]{"pm", "grant", pkg, "android.permission.RECEIVE_SMS"});
-            exec(new String[]{"appops", "set", pkg, "SYSTEM_ALERT_WINDOW", "allow"});
-            Log.i(TAG, "autoGrantAppPermissions executed via Shizuku for: " + pkg);
-        } catch (Throwable t) {
-            Log.w(TAG, "autoGrantAppPermissions failed", t);
-        }
+        if (permissionsGranted || !isReady() || context == null) return;
+        permissionsGranted = true;
+        final Context appCtx = context.getApplicationContext();
+        new Thread(() -> {
+            try {
+                String pkg = appCtx.getPackageName();
+                exec(new String[]{"pm", "grant", pkg, "android.permission.ANSWER_PHONE_CALLS"});
+                exec(new String[]{"pm", "grant", pkg, "android.permission.READ_PHONE_STATE"});
+                exec(new String[]{"pm", "grant", pkg, "android.permission.RECEIVE_SMS"});
+                exec(new String[]{"appops", "set", pkg, "SYSTEM_ALERT_WINDOW", "allow"});
+                Log.i(TAG, "autoGrantAppPermissions executed asynchronously via Shizuku for: " + pkg);
+            } catch (Throwable t) {
+                Log.w(TAG, "autoGrantAppPermissions async failed", t);
+            }
+        }, "SIMAI-ShizukuAutoGrant").start();
     }
 
     private static int exec(String[] command) {
+        Process process = null;
         try {
             Method newProcessMethod = Shizuku.class.getDeclaredMethod(
                     "newProcess", String[].class, String[].class, String.class);
             newProcessMethod.setAccessible(true);
-            Process process = (Process) newProcessMethod.invoke(null, (Object) command, null, null);
+            process = (Process) newProcessMethod.invoke(null, (Object) command, null, null);
             if (process != null) {
-                return process.waitFor();
+                final Process p = process;
+                Thread drainOut = new Thread(() -> drainStream(p.getInputStream()));
+                Thread drainErr = new Thread(() -> drainStream(p.getErrorStream()));
+                drainOut.setDaemon(true);
+                drainErr.setDaemon(true);
+                drainOut.start();
+                drainErr.start();
+
+                boolean finished = process.waitFor(1500, TimeUnit.MILLISECONDS);
+                if (!finished) {
+                    Log.w(TAG, "exec timed out for: " + java.util.Arrays.toString(command));
+                    process.destroyForcibly();
+                    return -1;
+                }
+                return process.exitValue();
             }
         } catch (Throwable t) {
             Log.w(TAG, "exec failed: " + java.util.Arrays.toString(command), t);
+            if (process != null) {
+                try { process.destroyForcibly(); } catch (Throwable ignored) {}
+            }
         }
         return -1;
+    }
+
+    private static void drainStream(InputStream in) {
+        if (in == null) return;
+        try {
+            byte[] buf = new byte[512];
+            while (in.read(buf) != -1) {}
+            in.close();
+        } catch (Throwable ignored) {}
     }
 
     /**
@@ -79,21 +113,21 @@ public final class ShizukuTelephonyBridge {
         if (!isReady()) return "SHIZUKU_NOT_READY";
         Log.i(TAG, "Attempting privileged answerCall via Shizuku...");
 
-        // 1. Android 10+ Telecom Manager CLI
+        // 1. KEYCODE_HEADSETHOOK (79) universally answers incoming call across all Android versions
+        if (exec(new String[]{"input", "keyevent", "79"}) == 0) {
+            Log.i(TAG, "keyevent 79 (HEADSETHOOK) succeeded via Shizuku");
+            return "ANSWER_REQUESTED";
+        }
+
+        // 2. Hardware KEYCODE_CALL (5)
+        if (exec(new String[]{"input", "keyevent", "5"}) == 0) {
+            Log.i(TAG, "keyevent 5 (CALL) succeeded via Shizuku");
+            return "ANSWER_REQUESTED";
+        }
+
+        // 3. Android 10+ Telecom Manager CLI fallback
         if (exec(new String[]{"cmd", "telecom", "answer"}) == 0) {
             Log.i(TAG, "cmd telecom answer succeeded via Shizuku");
-            return "ANSWER_REQUESTED";
-        }
-
-        // 2. Legacy telecom answer CLI
-        if (exec(new String[]{"telecom", "answer"}) == 0) {
-            Log.i(TAG, "telecom answer succeeded via Shizuku");
-            return "ANSWER_REQUESTED";
-        }
-
-        // 3. Hardware KEYCODE_CALL fallback
-        if (exec(new String[]{"input", "keyevent", "5"}) == 0) {
-            Log.i(TAG, "keyevent 5 succeeded via Shizuku");
             return "ANSWER_REQUESTED";
         }
 
@@ -107,22 +141,21 @@ public final class ShizukuTelephonyBridge {
         if (!isReady()) return "SHIZUKU_NOT_READY";
         Log.i(TAG, "Attempting privileged endCall via Shizuku...");
 
-        // 1. Android 10+ Telecom Manager CLI
-        if (exec(new String[]{"cmd", "telecom", "end-call"}) == 0) {
-            exec(new String[]{"input", "keyevent", "6"});
-            Log.i(TAG, "cmd telecom end-call succeeded via Shizuku");
-            return "HANGUP_SUCCESS";
-        }
-
-        // 2. Legacy telecom end-call CLI
-        if (exec(new String[]{"telecom", "end-call"}) == 0) {
-            Log.i(TAG, "telecom end-call succeeded via Shizuku");
-            return "HANGUP_SUCCESS";
-        }
-
-        // 3. Hardware KEYCODE_ENDCALL fallback
+        // 1. Hardware KEYCODE_ENDCALL (6)
         if (exec(new String[]{"input", "keyevent", "6"}) == 0) {
             Log.i(TAG, "keyevent 6 succeeded via Shizuku");
+            return "HANGUP_SUCCESS";
+        }
+
+        // 2. KEYCODE_HEADSETHOOK (79) terminates active call
+        if (exec(new String[]{"input", "keyevent", "79"}) == 0) {
+            Log.i(TAG, "keyevent 79 succeeded via Shizuku");
+            return "HANGUP_SUCCESS";
+        }
+
+        // 3. Android 10+ Telecom Manager CLI fallback
+        if (exec(new String[]{"cmd", "telecom", "end-call"}) == 0) {
+            Log.i(TAG, "cmd telecom end-call succeeded via Shizuku");
             return "HANGUP_SUCCESS";
         }
 

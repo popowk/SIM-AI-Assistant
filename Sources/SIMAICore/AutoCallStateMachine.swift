@@ -35,4 +35,11 @@ public struct AutoCallStateMachine {
         attemptedAnswer = false
         requestedAudio = false
     }
+
+    /// Explicitly tracks that an answer was commanded outside the state machine
+    /// (e.g. by safety timer, Wi-Fi Shizuku, or local guarded shell),
+    /// so the subsequent OFFHOOK state properly triggers openCallAudio.
+    public mutating func markAnswerAttempted() {
+        attemptedAnswer = true
+    }
 }

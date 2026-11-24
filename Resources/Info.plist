@@ -9,8 +9,8 @@
     <key>CFBundleName</key><string>SIM AI Assistant</string>
     <key>CFBundleDisplayName</key><string>SIM AI Assistant</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.4.37</string>
-    <key>CFBundleVersion</key><string>54</string>
+    <key>CFBundleShortVersionString</key><string>0.4.38</string>
+    <key>CFBundleVersion</key><string>55</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
     <key>NSMicrophoneUsageDescription</key><string>仅在您主动启用“麦克风电平测试”或“实时通话麦克风”时读取音频。实时声音经已授权的手机通话传输；你还可以明确开启 BlackHole 16ch 的 GPT 回复监听和电话回传。软件不保存录音。</string>

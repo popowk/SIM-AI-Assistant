@@ -1,5 +1,22 @@
 # 变更记录
 
+## 0.4.38（彻底解决来电断连 ANR、补齐 Wi-Fi Token、加固多轮自动接听与全双工音频）— 2026-11-24
+
+- **彻底根治“一来电话就全断了”（伴侣端 UI 线程 ANR 与进程死锁修复）**：
+  - **消除主线程阻塞 `pm grant`**：排查发现伴侣端 `MainActivity.refresh()` 此前每隔 1000ms 在 Android UI 主线程上同步阻塞执行 `pm grant` 与 `appops` 特权命令。当来电到达、系统尝试展示来电悬浮通知时，由于伴侣端 UI 线程被 `process.waitFor()` 冻结，导致 Android 系统直接判定 ANR 将伴侣端杀死，进而断开端口与 Wi-Fi 连接。
+  - **异步化与单次自愈保护**：新增 `permissionsGranted` 单次执行防重标志，并将权限自动授予完全分发至后台守护线程异步执行，主线程零阻塞。
+  - **Shizuku 进程标准流死锁消除与 1500ms 超时熔断**：为 Shizuku 进程管道增加独立的 `drainStream` 守护线程，后台实时排空 stdout/stderr 缓冲区，防止管道写满引发死锁；增加 1500ms 超时保护并引入 `process.destroyForcibly()` 异常降级，确保任何 shell 调用绝不卡死。
+- **补齐 Wi-Fi 直连接听与挂断 Token 鉴权（解决 Wi-Fi 无法接听电话）**：
+  - 排查发现 Mac 端此前在 Wi-Fi 直连触发 `POST /call/answer` 和 `POST /call/hangup` 时，未携带 `X-SIMAI-Token` 请求头，导致伴侣端返回 `403 Forbidden`。
+  - 现已在 Wi-Fi 接听与挂断请求中完整注入 `X-SIMAI-Token: simai-wifi`，实现真正的纯局域网免 USB 瞬时特权接听与挂断。
+- **加固多轮自动接听与全双工音频建立（彻底解决“接听一次后无法再次自动接听”）**：
+  - **`AutoCallStateMachine` 新增 `markAnswerAttempted`**：当来电由 1.5 秒安全兜底定时器、Wi-Fi 直连或受控 Shell 接起时，显式标记接听已发起，使状态机在收到 `OFFHOOK` 时百分百能够触发 `.openCallAudio`，无缝建立双向 PCM 与 GPT 语音通道。
+  - **放宽接听回执判定门槛**：移除 `recordPrivateAutomaticAnswer` 中过严的前提条件，将序列号限制从严格等于调整为 `>= expectedSequence`，彻底解决高频事件推进导致接听确认被跳过的问题。
+  - **状态锁自愈与计数归零**：在通话结束 `newIdle` 和新响铃 `RINGING` 时主动释放 `answerCallBusy` 锁；在状态快照成功获取后立即将 `consecutivePollFailures` 归零，彻底根除偶发丢包被误判为永久断连的隐患。
+  - **缩短安全兜底时间**：将响铃兜底自动接听由 3.5 秒精简至 1.5 秒，保证来电第一声铃声即可迅速自动接通。
+- **多途径硬件级接听挂断兜底**：
+  - 伴侣端增加 `input keyevent 79 (KEYCODE_HEADSETHOOK)` 和 `keyevent 6 (KEYCODE_ENDCALL)`，与 Android Telecom API 形成多层特权兜底，完美适配全品牌 Android 系统的锁屏接听需求。
+
 ## 0.4.37（局域网纯 Wi-Fi 深度修复、多轮自动接听稳定加固、Shizuku 自动授权与接听安全兜底）— 2026-11-24
 
 - **彻底修复局域网纯 Wi-Fi 断连与无法接听问题**：

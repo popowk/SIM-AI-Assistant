@@ -1,17 +1,22 @@
-# SIM AI Assistant · V0.4.37（局域网纯 Wi-Fi 深度修复、多轮自动接听稳定加固、Shizuku 自动授权与接听安全兜底）
+# SIM AI Assistant · V0.4.38（彻底解决来电断连 ANR、补齐 Wi-Fi Token、加固多轮自动接听与全双工音频）
 
-> V0.4.37 彻底攻克纯无线直连断连与多轮自动接听稳定性问题：
-> 1. **彻底修复局域网纯 Wi-Fi 断连与无法接电话**：
->    - 消除 link-local IPv6 污染：强制限定 Bonjour 节点解析为纯 IPv4（`NWProtocolIP.Options.version = .v4`），且严格过滤掉所有 `:` 与 `%` 非 IPv4 节点；
->    - Android 伴侣端注册 NSD 服务时，在 TXT 记录中直接广播真实 `ipv4`，Mac 端优先秒级提取局域网 IP，避免多播解析迟延；
->    - 增加 Wi-Fi 直连容错机制，避免网络偶发丢包导致误判断连，接听电话在纯 Wi-Fi 下提供自动重试机制。
-> 2. **彻底解决 USB 接入接听一次电话后无法再次自动接听的顽疾**：
->    - 修复 `incomingVoiceBlockedUntilIdle` 状态死锁：修正了此前在通话结束回调中无条件将标志置为 `true` 导致第二轮来电无法被触发的严重 bug，并在新来电触发时彻底重置全套状态机；
->    - 保留 ChatGPT Web 温暖页面：通话结束后仅通过 DOM 挂断按钮（`stopVoiceSessionIfActive()`）停止声音采集并保留已登录的页面，第二轮来电时可在毫秒级恢复 Voice，免去网页重新载入与鉴权所导致的数秒延迟；
->    - 来电 3.5 秒接听安全兜底：开启自动接听后，若因 WebKit 或音频设备响应稍慢，系统自动启动 3.5 秒安全兜底定时器，确保来电必定会被自动接起，绝不会出现响铃无人接听的现象。
-> 3. **Shizuku 自动化特权与权限秒级自愈**：
->    - 检测到 Shizuku 就绪后，伴侣端自动通过特权 shell 静默执行 `pm grant` 授予全套系统权限（接听电话、读取状态、接收短信及悬浮窗），无需手动繁琐操作；
->    - 只要 Shizuku 已授权，伴侣端即可通过 `cmd telecom answer` 特权直接接听与挂断，彻底不受 OEM 定制系统权限限制。
+> V0.4.38 深度修复来电断连与多轮自动接听稳定性问题：
+> 1. **彻底根治“一来电话就全断了”（消除伴侣端 UI 线程 ANR 与进程死锁）**：
+>    - 消除主线程阻塞 `pm grant`：伴侣端此前在 UI 线程每秒同步执行 4 个 `pm grant` 与 `appops` 命令，导致来电弹窗时 UI 线程冻结被 Android ActivityManager 判定 ANR 杀死，端口与 Wi-Fi 连接瞬间崩溃断开；
+>    - 权限授予改为单次异步守护线程执行，主线程零阻塞；
+>    - Shizuku 进程标准输出/错误流增加后台实时排空线程，防止管道写满引发死锁；增加 1500ms 超时并引入 `process.destroyForcibly()` 异常熔断。
+> 2. **补齐 Wi-Fi 直连接听与挂断 Token 鉴权（解决纯 Wi-Fi 无法接听电话）**：
+>    - 在 Wi-Fi 直连的 `POST /call/answer` 和 `POST /call/hangup` 请求中补齐 `X-SIMAI-Token: simai-wifi` 请求头，解决伴侣端返回 403 Forbidden 导致无线无法接听的问题。
+> 3. **加固多轮自动接听与全双工音频建立（彻底解决“接听一次后无法再次自动接听”）**：
+>    - `AutoCallStateMachine` 增加 `markAnswerAttempted()`，确保通过安全兜底定时器、Wi-Fi 直连或受控 Shell 接听后，状态机能无缝将 OFFHOOK 转为 `.openCallAudio`，稳定建立全双工 PCM 与 GPT 语音通道；
+>    - 放宽 `recordPrivateAutomaticAnswer` 限制，移除过严的前提条件，将序列号校验改为 `>= expectedSequence`，彻底解决高频事件推进导致接听确认被跳过的问题；
+>    - 通话结束 `newIdle` 和新响铃 `RINGING` 阶段重置 `answerCallBusy` 状态锁；
+>    - 状态轮询成功后立即将丢包失败计数归零，彻底根除偶发丢包被误判断开的隐患；
+>    - 响铃兜底接听定时器由 3.5 秒缩短至 1.5 秒，保证来电第一声铃声即可迅速接起。
+> 4. **多途径硬件级接听挂断兜底**：
+>    - 伴侣端增加 `input keyevent 79 (KEYCODE_HEADSETHOOK)` 和 `keyevent 6 (KEYCODE_ENDCALL)`，完美适配全品牌 Android 系统的锁屏接听与挂断需求。
+
+## SIM AI Assistant · V0.4.37（局域网纯 Wi-Fi 深度修复、多轮自动接听稳定加固、Shizuku 自动授权与接听安全兜底）
 
 ## SIM AI Assistant · V0.4.36（Shizuku 特权一键启动与 Provider 修复、ADB 冲突自动重启自愈、局域网直连免密探针）
 

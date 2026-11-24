@@ -1140,6 +1140,7 @@ final class AssistantModel: ObservableObject {
         }
         if newIdle {
             ringingFallbackAnswerTimer?.cancel()
+            answerCallBusy = false
             // A phone can report IDLE before the audio stream's end callback.
             // Close only sessions our app acknowledged as auto-answered;
             // a manually opened ChatGPT tab is otherwise left alone.
@@ -1625,6 +1626,8 @@ final class AssistantModel: ObservableObject {
     /// Existing phone-event decoder is shared by HTTP and shell-file paths,
     /// so there is exactly one state cursor across transport switches.
     private func applyBridgeSnapshot(_ snapshot: PhoneBridgeSnapshot, source: String) {
+        consecutivePollFailures = 0
+        bridgeConsecutiveFailures = 0
         let priorSession = bridgeCursor.session
         let received = bridgeCursor.consume(snapshot)
         if priorSession != bridgeCursor.session {
@@ -1660,20 +1663,22 @@ final class AssistantModel: ObservableObject {
             autoVoiceCaptureObserved = false
             autoHangupBusy = false
             autoHangupAttempted = false
+            answerCallBusy = false
 
-            // Safety fallback: if incoming call rings for 3.5s without being picked up,
+            // Safety fallback: if incoming call rings for 1.5s without being picked up,
             // answer it automatically so caller is not left ringing forever
             ringingFallbackAnswerTimer?.cancel()
             let ringSession = snapshot.session
             let ringSeq = snapshot.seq
             ringingFallbackAnswerTimer = Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 3_500_000_000)
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
                 guard let self else { return }
                 if self.autoCallEnabled && self.livePhoneState == "RINGING" &&
                    self.bridgeCursor.session == ringSession &&
                    !self.automaticAnswerRequested && !self.automaticAnswerAcknowledged {
-                    self.log(.info, .call, "来电响铃 3.5 秒安全兜底触发自动接听",
+                    self.log(.info, .call, "来电响铃 1.5 秒安全兜底触发自动接听",
                              details: ["session": ringSession, "seq": "\(ringSeq)"])
+                    self.autoCallState.markAnswerAttempted()
                     self.answerIncomingPhoneCall(automatic: true)
                 }
             }
@@ -1819,18 +1824,24 @@ final class AssistantModel: ObservableObject {
                     self.bridgeBusy = false
                 } catch {
                     guard self.liveSyncEnabled, generation == self.bridgeGeneration else { return }
-                    self.wifiDirectActive = false
                     self.consecutivePollFailures += 1
-                    if self.bridgeLink == nil {
-                        if self.consecutivePollFailures >= self.maxPollFailuresBeforeDisconnect {
-                            self.livePhoneState = "未连接"
-                            self.connectionTransport = "DISCONNECTED"
-                            self.liveBridgeStatus = "Wi-Fi 直连已断开，正在自动重新扫描手机伴侣……"
+                    if self.consecutivePollFailures >= self.maxPollFailuresBeforeDisconnect {
+                        self.wifiDirectActive = false
+                        if self.bridgeLink == nil {
+                            if self.livePhoneState != "RINGING" && self.livePhoneState != "OFFHOOK" {
+                                self.livePhoneState = "未连接"
+                                self.connectionTransport = "DISCONNECTED"
+                                self.liveBridgeStatus = "Wi-Fi 直连已断开，正在自动重新扫描手机伴侣……"
+                            }
+                            self.bridgeBusy = false
+                            return
                         }
-                        self.bridgeBusy = false
-                        return
                     }
-                    self.pollLiveBridgeViaADB(generation: generation, since: since)
+                    if self.bridgeLink != nil {
+                        self.pollLiveBridgeViaADB(generation: generation, since: since)
+                    } else {
+                        self.bridgeBusy = false
+                    }
                 }
             }
             return
@@ -1866,6 +1877,7 @@ final class AssistantModel: ObservableObject {
                     }
                     self.applyBridgeSnapshot(snapshot, source: "ADB_HTTP")
                     self.bridgeUsingFileFallback = false
+                    self.consecutivePollFailures = 0
                 } catch {
                     guard self.liveSyncEnabled, generation == self.bridgeGeneration else {
                         return
@@ -2545,13 +2557,13 @@ final class AssistantModel: ObservableObject {
     /// Require same Android ring before acknowledging a private-file request.
     private func recordPrivateAutomaticAnswer(expectedSession: String, expectedSequence: Int) -> Bool {
         guard bridgeCursor.session == expectedSession,
-              autoStartedWebVoiceForRing || incomingVoicePending || voiceSessionPrepared,
-              (livePhoneState == "RINGING" && bridgeCursor.lastSequence == expectedSequence) ||
-              (livePhoneState == "OFFHOOK" && bridgeCursor.lastSequence == expectedSequence + 1)
+              (livePhoneState == "RINGING" && bridgeCursor.lastSequence >= expectedSequence) ||
+              (livePhoneState == "OFFHOOK" && bridgeCursor.lastSequence >= expectedSequence)
               else { return false }
         automaticAnswerRequested = true
         automaticAnswerAcknowledged = true
         automaticAnswerSession = expectedSession
+        autoCallState.markAnswerAttempted()
         autoVoiceCaptureObserved = autoVoiceCaptureObserved || embeddedVoiceCaptureActive
         answerCallStatus = "Android 已通过独立私有通道请求接听；正在确认 OFFHOOK"
         log(.info, .call, "Android 独立私有通道接听请求成功",
@@ -2578,6 +2590,7 @@ final class AssistantModel: ObservableObject {
             automaticOffhookSequence = 0
             autoVoiceCaptureObserved = embeddedVoiceCaptureActive
             autoHangupAttempted = false
+            autoCallState.markAnswerAttempted()
         }
         answerCallBusy = true
         answerCallStatus = "正在使用已授权电话桥接请求接听……"
@@ -2596,6 +2609,7 @@ final class AssistantModel: ObservableObject {
                     req.httpMethod = "POST"
                     req.timeoutInterval = 1.8
                     req.cachePolicy = .reloadIgnoringLocalCacheData
+                    req.setValue("simai-wifi", forHTTPHeaderField: "X-SIMAI-Token")
                     req.setValue(expectedRingSession, forHTTPHeaderField: "X-SIMAI-Expected-Session")
                     req.setValue(String(expectedRingSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
                     req.setValue("0", forHTTPHeaderField: "Content-Length")
@@ -2604,6 +2618,12 @@ final class AssistantModel: ObservableObject {
                         self.log(.info, .call, "已通过 Wi-Fi 直连执行接听请求 (Shizuku)")
                         self.answerCallBusy = false
                         self.answerCallStatus = "已通过 Wi-Fi 发送接听请求"
+                        if automatic {
+                            self.automaticAnswerAcknowledged = true
+                            self.automaticAnswerSession = expectedRingSession
+                            self.autoCallState.markAnswerAttempted()
+                            self.autoVoiceCaptureObserved = self.autoVoiceCaptureObserved || self.embeddedVoiceCaptureActive
+                        }
                         _ = self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession, expectedSequence: expectedRingSequence)
                         return
                     }
@@ -2701,10 +2721,11 @@ final class AssistantModel: ObservableObject {
                     as? [String: Any]
                 if http == 200 && parsed?["result"] as? String == "answer_requested" {
                     if automatic && self.bridgeCursor.session == expectedRingSession &&
-                       ((self.livePhoneState == "RINGING" && self.bridgeCursor.lastSequence == expectedRingSequence) ||
-                        (self.livePhoneState == "OFFHOOK" && self.bridgeCursor.lastSequence == expectedRingSequence + 1)) {
+                       ((self.livePhoneState == "RINGING" && self.bridgeCursor.lastSequence >= expectedRingSequence) ||
+                        (self.livePhoneState == "OFFHOOK" && self.bridgeCursor.lastSequence >= expectedRingSequence)) {
                         self.automaticAnswerAcknowledged = true
                         self.automaticAnswerSession = self.bridgeCursor.session
+                        self.autoCallState.markAnswerAttempted()
                         self.autoVoiceCaptureObserved =
                             self.autoVoiceCaptureObserved || self.embeddedVoiceCaptureActive
                         if self.livePhoneState == "OFFHOOK" {
@@ -3040,6 +3061,7 @@ final class AssistantModel: ObservableObject {
                 var request = URLRequest(url: url)
                 request.httpMethod = "POST"
                 request.timeoutInterval = 2
+                request.setValue("simai-wifi", forHTTPHeaderField: "X-SIMAI-Token")
                 request.setValue(expectedSession, forHTTPHeaderField: "X-SIMAI-Expected-Session")
                 request.setValue(String(expectedSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
                 request.setValue("0", forHTTPHeaderField: "Content-Length")
