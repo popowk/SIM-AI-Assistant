@@ -1946,38 +1946,6 @@ final class AssistantModel: ObservableObject {
                     self.chatGPTVoiceRouteDropped = voiceRouteDropped
                     self.livePhysicalRenderFrames = monitorRendered
                     self.liveVirtualRenderFrames = virtualRendered
-                    // HAL output being pulled does NOT prove that BlackHole's
-                    // actual input has non-silent samples. Once real phone PCM
-                    // flows, make one brief independent level-only check.
-                    if !self.ranBlackHoleInputProbe &&
-                       received >= 200 && virtualRendered >= 100 &&
-                       self.liveDownlinkPeakRMS > 0.01 &&
-                       self.chatGPTVoiceRouteEnabled &&
-                       self.embeddedVoiceCaptureActive {
-                        self.ranBlackHoleInputProbe = true
-                        self.log(.info, .audio, "正在核验 BlackHole 2ch 真实输入端音量",
-                            details: ["diagnosis": "BLACKHOLE2_INPUT_PROBE_STARTED"])
-                        Task.detached(priority: .utility) { [weak self] in
-                            let report = BlackHoleInputProbe.run(duration: 2.0)
-                            await MainActor.run {
-                                guard let self else { return }
-                                self.blackHoleActualInputStatus =
-                                    report.code == "BLACKHOLE2_LOOPBACK_PRESENT"
-                                    ? "BlackHole 2ch 输入端确认有电话 PCM，正在核验 ChatGPT 网页"
-                                    : report.code == "BLACKHOLE2_LOOPBACK_SILENT"
-                                        ? "BlackHole 2ch 真实输入仍静音，请检查虚拟声卡回环"
-                                        : "虚拟声卡输入检测不可用：" + report.code
-                                self.log(report.code == "BLACKHOLE2_LOOPBACK_PRESENT"
-                                         ? .info : .warn, .audio,
-                                    "BlackHole 2ch 实际输入端电平核验结果",
-                                    details: [
-                                        "diagnosis": report.code,
-                                        "peakRMS": String(format: "%.5f", report.peakRMS),
-                                        "sampledFrames": "\(report.sampledFrames)"
-                                    ])
-                            }
-                        }
-                    }
                 case .downlinkSignal(let peakRMS):
                     self.liveDownlinkPeakRMS = peakRMS
                 case .aiReturnMetrics(let captured, let monitorDropped, let uplinkUnderflow, let peakRMS):
@@ -1993,6 +1961,40 @@ final class AssistantModel: ObservableObject {
                             "电话声音已到 BlackHole 2ch，但 GPT 回复仍完全静音；请检查 Voice 是否识别语音或是否实际输出到 BlackHole 16ch"
                         self.log(.warn, .audio, "检测到真实电话下行但 GPT 返回通道持续静音",
                             details: ["reason": "GPT_ZERO_RETURN_WITH_PHONE_AUDIO"])
+                    // Verify the driver only when Voice remains silent
+                    // despite sustained non-silent phone PCM. Opening a second
+                    // macOS capture client on every healthy call is unnecessary.
+                        // HAL output being pulled does NOT prove that BlackHole's
+                        // actual input has non-silent samples. Once real phone PCM
+                        // flows, make one brief independent level-only check.
+                        if !self.ranBlackHoleInputProbe &&
+                           self.liveVoiceRxFrames >= 350 &&
+                           self.liveVirtualRenderFrames >= 200 &&
+                           self.embeddedVoiceCaptureActive {
+                            self.ranBlackHoleInputProbe = true
+                            self.log(.info, .audio, "正在核验 BlackHole 2ch 真实输入端音量",
+                                details: ["diagnosis": "BLACKHOLE2_INPUT_PROBE_STARTED"])
+                            Task.detached(priority: .utility) { [weak self] in
+                                let report = BlackHoleInputProbe.run(duration: 2.0)
+                                await MainActor.run {
+                                    guard let self, self.voiceSessionID == id else { return }
+                                    self.blackHoleActualInputStatus =
+                                        report.code == "BLACKHOLE2_LOOPBACK_PRESENT"
+                                        ? "BlackHole 2ch 输入端确认有电话 PCM，正在核验 ChatGPT 网页"
+                                        : report.code == "BLACKHOLE2_LOOPBACK_SILENT"
+                                                ? "BlackHole 2ch 真实输入仍静音，请检查虚拟声卡回环"
+                                                : "虚拟声卡输入检测不可用：" + report.code
+                                    self.log(report.code == "BLACKHOLE2_LOOPBACK_PRESENT"
+                                                 ? .info : .warn, .audio,
+                                        "BlackHole 2ch 实际输入端电平核验结果",
+                                        details: [
+                                                "diagnosis": report.code,
+                                                "peakRMS": String(format: "%.5f", report.peakRMS),
+                                                "sampledFrames": "\(report.sampledFrames)"
+                                        ])
+                                }
+                            }
+                        }
                     }
                 case .finished(let reason):
                     // The Android PCM helper independently watches the real
