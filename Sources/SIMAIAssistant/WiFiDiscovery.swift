@@ -23,6 +23,17 @@ final class BonjourWiFiScanner: ObservableObject {
                 for result in results {
                     if case let .service(name, _, _, _) = result.endpoint {
                         self.discoveredDeviceName = name
+                        // 1. Prefer IPv4 advertised in Bonjour TXT record
+                        if case let .bonjour(txt) = result.metadata {
+                            let dict = txt.dictionary
+                            if let ip = dict["ipv4"], !ip.isEmpty,
+                               !ip.contains(":"), !ip.contains("%"),
+                               !ip.hasPrefix("127.") && !ip.hasPrefix("169.254.") {
+                                self.discoveredIP = ip
+                                return
+                            }
+                        }
+                        // 2. Resolve endpoint with IPv4 restriction
                         self.resolve(endpoint: result.endpoint)
                         return
                     }
@@ -35,20 +46,30 @@ final class BonjourWiFiScanner: ObservableObject {
 
     private func resolve(endpoint: NWEndpoint) {
         resolverConnection?.cancel()
-        let conn = NWConnection(to: endpoint, using: .tcp)
+        let params = NWParameters.tcp
+        if let ipOptions = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
+            ipOptions.version = .v4
+        }
+        let conn = NWConnection(to: endpoint, using: params)
         resolverConnection = conn
         conn.stateUpdateHandler = { [weak self, weak conn] state in
             if case .ready = state {
                 if let path = conn?.currentPath,
                    let remote = path.remoteEndpoint,
                    case let .hostPort(host, _) = remote {
-                    let ip: String
+                    var candidateIP: String? = nil
                     switch host {
-                    case let .ipv4(v4): ip = "\(v4)"
-                    default: ip = host.debugDescription
+                    case let .ipv4(v4):
+                        let ip = "\(v4)"
+                        if !ip.isEmpty && !ip.hasPrefix("127.") && !ip.hasPrefix("169.254.") && !ip.contains(":") {
+                            candidateIP = ip
+                        }
+                    default:
+                        // Strictly drop IPv6 and link-local addresses
+                        break
                     }
-                    Task { @MainActor [weak self] in
-                        if !ip.isEmpty && !ip.hasPrefix("127.") {
+                    if let ip = candidateIP {
+                        Task { @MainActor [weak self] in
                             self?.discoveredIP = ip
                         }
                     }

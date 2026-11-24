@@ -1,5 +1,19 @@
 # 变更记录
 
+## 0.4.37（局域网纯 Wi-Fi 深度修复、多轮自动接听稳定加固、Shizuku 自动授权与接听安全兜底）— 2026-11-24
+
+- **彻底修复局域网纯 Wi-Fi 断连与无法接听问题**：
+  - **拦截 IPv6 Link-Local 污染**：排查发现 Bonjour `NWBrowser` 解析时，macOS 默认优先返回 link-local IPv6（如 `fe80::...%en1`），导致 `wifiHost` 被破坏且 `URLSession` 请求解析失败。现将 mDNS 解析强制限定为纯 IPv4（`NWProtocolIP.Options.version = .v4`），且严格过滤掉所有 `:` 与 `%` 非 IPv4 节点。
+  - **伴侣端 Bonjour TXT 广播真实 IPv4**：Android 伴侣端在注册 NSD 服务时，通过 TXT 记录同时广播 `ipv4` 字段，Mac 端优先秒级提取局域网 IP，避免多播解析迟延。
+  - **增强 Wi-Fi 直连容错机制**：无线轮询引入丢包重试保护，避免偶发网络抖动导致直接断连；接听电话在纯 Wi-Fi 下提供自动重试机制。
+- **彻底解决 USB 接入接听一次电话后无法再次自动接听的顽疾**：
+  - **修复 `incomingVoiceBlockedUntilIdle` 状态死锁**：此前在电话接通后远端音频关闭（`AUTO_CALL_PCM_REMOTE_CLOSED`）以及 `endAutoAnsweredVoiceBrowser` 中无条件将 `incomingVoiceBlockedUntilIdle` 置为 `true`。当手机已先进入 `IDLE` 后再执行此回调，导致此标志永远无法被清除，后续第二轮、第三轮来电全部被直接忽略拦截。现已彻底修正标志清理逻辑，并在新来电触发时强制重置。
+  - **保留 ChatGPT Web 页面免反复重载**：此前通话结束后直接调用 `releaseForIdle()` 将整个网页置空为 `""`，导致再次来电时网页需花数秒重新加载 JS/DOM 与鉴权，进而导致接听超时。现改为在通话结束后触发 DOM 挂断按钮（`stopVoiceSessionIfActive()`）停止声音采集并保留已登录的温暖页面，第二轮来电时可在毫秒级恢复 Voice。
+  - **来电 3.5 秒接听安全兜底**：当开启自动接听后，若因 WebKit 或音频设备响应稍慢，系统自动启动 3.5 秒安全兜底定时器，确保来电必定会被自动接起，绝不会出现响铃无人接听的现象。
+- **Shizuku 自动化特权与权限秒级自愈**：
+  - **检测到 Shizuku 后全自动授予所有系统权限**：伴侣端在 Shizuku 连接就绪后，直接通过 Shizuku 特权 shell 自动静默执行 `pm grant` 授予 `ANSWER_PHONE_CALLS`、`READ_PHONE_STATE`、`RECEIVE_SMS` 及悬浮窗权限，无需手动逐项授权。
+  - **免系统权限特权接听**：只要 Shizuku 已授权，伴侣端即可通过 `cmd telecom answer` 特权直接接听与挂断，彻底不受 OEM 定制系统权限限制。
+
 ## 0.4.36（Shizuku 特权一键启动与 Provider 修复、ADB 冲突自动重启自愈、局域网直连免密探针）— 2026-11-24
 
 - **彻底修复 Shizuku 提示未运行问题（Provider 桥接与底层一键启动）**：

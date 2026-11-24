@@ -43,6 +43,20 @@ public final class ShizukuTelephonyBridge {
         return isShizukuAvailable() && hasPermission();
     }
 
+    public static void autoGrantAppPermissions(Context context) {
+        if (!isReady() || context == null) return;
+        try {
+            String pkg = context.getPackageName();
+            exec(new String[]{"pm", "grant", pkg, "android.permission.ANSWER_PHONE_CALLS"});
+            exec(new String[]{"pm", "grant", pkg, "android.permission.READ_PHONE_STATE"});
+            exec(new String[]{"pm", "grant", pkg, "android.permission.RECEIVE_SMS"});
+            exec(new String[]{"appops", "set", pkg, "SYSTEM_ALERT_WINDOW", "allow"});
+            Log.i(TAG, "autoGrantAppPermissions executed via Shizuku for: " + pkg);
+        } catch (Throwable t) {
+            Log.w(TAG, "autoGrantAppPermissions failed", t);
+        }
+    }
+
     private static int exec(String[] command) {
         try {
             Method newProcessMethod = Shizuku.class.getDeclaredMethod(

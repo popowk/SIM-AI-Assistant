@@ -40,8 +40,11 @@ final class AssistantModel: ObservableObject {
 
     var wifiDirectEndpoint: String? {
         let clean = wifiHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty else { return nil }
-        return clean.contains(":") ? clean : "\(clean):18764"
+        guard !clean.isEmpty, !clean.contains("%"), !clean.hasPrefix("fe80") else { return nil }
+        if clean.contains(":") {
+            return clean
+        }
+        return "\(clean):18764"
     }
     @Published var answerCallBusy = false
     @Published var answerCallStatus = "尚未请求接听；需手机授予「接听电话」权限"
@@ -193,7 +196,7 @@ final class AssistantModel: ObservableObject {
         incomingVoicePending = false
         incomingVoiceDeadline = nil
         incomingPreflightPassed = false
-        incomingVoiceBlockedUntilIdle = true
+        incomingVoiceBlockedUntilIdle = (livePhoneState != "IDLE")
         autoVoiceCaptureObserved = false
         automaticAnswerAcknowledged = false
         automaticAnswerRequested = false
@@ -202,9 +205,11 @@ final class AssistantModel: ObservableObject {
         resumeAIForwardAfterMicrophoneRestored = false
         voiceSessionPrepared = false
         autoStartedWebVoiceForRing = false
+        autoCallState.reset()
         hideEmbeddedVoiceWindow(force: true)
-        embeddedVoiceBrowser.releaseForIdle()
-        log(.info, .audio, "已在手机通话结束后关闭自动 Voice 网页及麦克风",
+        embeddedVoiceBrowser.preservePageAfterCall(reason: reason)
+        embeddedVoiceBrowser.stopVoiceSessionIfActive()
+        log(.info, .audio, "已在手机通话结束后停止 Voice 采集并保留页面就绪状态",
             details: ["reason": reason])
     }
     private let microphoneProbe = MicrophoneLevelProbe()
@@ -212,6 +217,7 @@ final class AssistantModel: ObservableObject {
     private var autoCallState = AutoCallStateMachine()
     private var autoCallAudioRequested = false
     private var incomingVoicePending = false
+    private var ringingFallbackAnswerTimer: Task<Void, Never>?
     /// The current ringing session owns this WebKit Voice page even if the
     /// Android answer response was lost. It is safe to close on real IDLE.
     private var autoStartedWebVoiceForRing = false
@@ -688,17 +694,17 @@ final class AssistantModel: ObservableObject {
     /// the official Voice page and attempt to start its Voice UI.
     private func beginOnDemandVoiceForRinging() {
         guard autoCallEnabled && useEmbeddedVoiceBrowser,
-              !incomingVoicePending && !incomingVoiceBlockedUntilIdle,
+              !incomingVoicePending,
               !incomingPreflightRunning && !voiceSessionPrepared else { return }
+        incomingVoiceBlockedUntilIdle = false
+        embeddedVoiceBrowser.resetStartAttemptThrottle()
         refresh()
         let problems = automaticVoiceReadinessIssues()
         if !problems.isEmpty {
-            incomingVoiceBlockedUntilIdle = true
             autoCallStatus = "本次未自动接听：" + problems.joined(separator: "；")
             return
         }
         guard prepareAutomaticGPTOutput() else {
-            incomingVoiceBlockedUntilIdle = true
             autoCallStatus = "本次未自动接听：虚拟音频路由准备失败"
             return
         }
@@ -723,7 +729,6 @@ final class AssistantModel: ObservableObject {
                 }
                 guard code == "PREFLIGHT_OK" else {
                     self.incomingVoicePending = false
-                    self.incomingVoiceBlockedUntilIdle = true
                     self.voiceSessionPrepared = false
                     self.autoCallStatus = "未接听：音频实际渲染预检失败"
                     self.log(.warn, .audio, "来电前音频输出预检失败",
@@ -733,10 +738,10 @@ final class AssistantModel: ObservableObject {
                 }
                 self.incomingPreflightPassed = true
                 self.autoCallStatus = "音频预检成功：正在加载网页并启动 Voice"
-                // Ownership begins when we start the ring-triggered page,
-                // not only after the unreliable HTTP /call/answer returns.
                 self.autoStartedWebVoiceForRing = true
                 self.showEmbeddedVoiceWindow(activate: false)
+                self.embeddedVoiceBrowser.resetStartAttemptThrottle()
+                self.embeddedVoiceBrowser.attemptVoiceStart()
                 self.checkEmbeddedVoiceHealth()
             }
         }
@@ -1125,10 +1130,16 @@ final class AssistantModel: ObservableObject {
         let newIdle = state == "IDLE" && previousObservedPhoneState != "IDLE" &&
                       !previousObservedPhoneState.isEmpty
         previousObservedPhoneState = state
-        if state == "RINGING" && !voiceSessionPrepared {
-            beginOnDemandVoiceForRinging()
+        if state == "RINGING" {
+            incomingVoiceBlockedUntilIdle = false
+            autoHangupBusy = false
+            autoHangupAttempted = false
+            if !voiceSessionPrepared {
+                beginOnDemandVoiceForRinging()
+            }
         }
         if newIdle {
+            ringingFallbackAnswerTimer?.cancel()
             // A phone can report IDLE before the audio stream's end callback.
             // Close only sessions our app acknowledged as auto-answered;
             // a manually opened ChatGPT tab is otherwise left alone.
@@ -1162,6 +1173,7 @@ final class AssistantModel: ObservableObject {
             incomingVoiceBlockedUntilIdle = false
             incomingVoiceDeadline = nil
             voiceSessionPrepared = false
+            autoCallState.reset()
             if useEmbeddedVoiceBrowser && embeddedVoiceBrowser.loaded {
                 // The live auto-answered Voice page was already closed above.
                 // Only preserve login/debug pages unrelated to auto-answer.
@@ -1178,6 +1190,7 @@ final class AssistantModel: ObservableObject {
             if autoCallEnabled && useEmbeddedVoiceBrowser {
                 embeddedVoiceBrowser.loadIfNeeded()
             }
+            autoCallStatus = "空闲就绪 · 来电时自动应答并建立语音通道"
             autoCallStatus = "空闲已预载页面 · 来电时再启动 Voice"
         } else if state == "OFFHOOK" && automaticAnswerAcknowledged &&
                   bridgeCursor.session == automaticAnswerSession {
@@ -1636,6 +1649,37 @@ final class AssistantModel: ObservableObject {
             manualPickupFromTrackedRing = false
             manualPickupPCMStarts = 0
             manualPickupPCMRetryAfter = .distantPast
+            autoCallState.reset()
+            incomingVoiceBlockedUntilIdle = false
+            voiceSessionPrepared = false
+            incomingVoicePending = false
+            incomingPreflightRunning = false
+            autoStartedWebVoiceForRing = false
+            automaticAnswerRequested = false
+            automaticAnswerAcknowledged = false
+            autoVoiceCaptureObserved = false
+            autoHangupBusy = false
+            autoHangupAttempted = false
+
+            // Safety fallback: if incoming call rings for 3.5s without being picked up,
+            // answer it automatically so caller is not left ringing forever
+            ringingFallbackAnswerTimer?.cancel()
+            let ringSession = snapshot.session
+            let ringSeq = snapshot.seq
+            ringingFallbackAnswerTimer = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 3_500_000_000)
+                guard let self else { return }
+                if self.autoCallEnabled && self.livePhoneState == "RINGING" &&
+                   self.bridgeCursor.session == ringSession &&
+                   !self.automaticAnswerRequested && !self.automaticAnswerAcknowledged {
+                    self.log(.info, .call, "来电响铃 3.5 秒安全兜底触发自动接听",
+                             details: ["session": ringSession, "seq": "\(ringSeq)"])
+                    self.answerIncomingPhoneCall(automatic: true)
+                }
+            }
+        }
+        if snapshot.state != "RINGING" {
+            ringingFallbackAnswerTimer?.cancel()
         }
         if snapshot.state == "IDLE" &&
            received.contains(where: { $0.state == "OFFHOOK" }) {
@@ -1770,11 +1814,22 @@ final class AssistantModel: ObservableObject {
                           ["IDLE", "RINGING", "OFFHOOK"].contains(snapshot.state) else {
                         throw NSError(domain: "SIMAI.WiFiBridge", code: 422)
                     }
+                    self.consecutivePollFailures = 0
                     self.applyBridgeSnapshot(snapshot, source: "WIFI_DIRECT")
                     self.bridgeBusy = false
                 } catch {
                     guard self.liveSyncEnabled, generation == self.bridgeGeneration else { return }
                     self.wifiDirectActive = false
+                    self.consecutivePollFailures += 1
+                    if self.bridgeLink == nil {
+                        if self.consecutivePollFailures >= self.maxPollFailuresBeforeDisconnect {
+                            self.livePhoneState = "未连接"
+                            self.connectionTransport = "DISCONNECTED"
+                            self.liveBridgeStatus = "Wi-Fi 直连已断开，正在自动重新扫描手机伴侣……"
+                        }
+                        self.bridgeBusy = false
+                        return
+                    }
                     self.pollLiveBridgeViaADB(generation: generation, since: since)
                 }
             }
@@ -1966,8 +2021,9 @@ final class AssistantModel: ObservableObject {
         guard !wifiDirectActive, !networkScanInProgress, force || Date() >= nextNetworkScanAt else { return }
 
         // 1. Check if Bonjour discovered IP
-        if let ip = wifiDiscovery.discoveredIP, !ip.isEmpty, wifiHost != ip {
-            log(.info, .system, "mDNS 自动发现手机伴侣 IP：\(ip)")
+        if let ip = wifiDiscovery.discoveredIP, !ip.isEmpty,
+           !ip.contains(":"), !ip.contains("%"), wifiHost != ip {
+            log(.info, .system, "mDNS 自动发现手机伴侣 IPv4：\(ip)")
             wifiHost = ip
             testWiFiConnection()
             return
@@ -2263,7 +2319,7 @@ final class AssistantModel: ObservableObject {
                         self.endAutoAnsweredVoiceBrowser(
                             reason: "AUTO_CALL_PCM_REMOTE_CLOSED")
                         self.autoCallStatus =
-                            "手机通话音频已断开，已停止 GPT Voice 并关闭自动浏览器"
+                            "手机通话音频已断开，已停止 GPT Voice 并保持页面就绪"
                     }
                 }
             }
@@ -2535,20 +2591,25 @@ final class AssistantModel: ObservableObject {
             // Wi-Fi direct instant answer (with Shizuku privilege)
             if let wifi = self.wifiDirectEndpoint,
                let url = URL(string: "http://\(wifi)/call/answer") {
-                var req = URLRequest(url: url)
-                req.httpMethod = "POST"
-                req.timeoutInterval = 2.0
-                req.cachePolicy = .reloadIgnoringLocalCacheData
-                req.setValue(expectedRingSession, forHTTPHeaderField: "X-SIMAI-Expected-Session")
-                req.setValue(String(expectedRingSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
-                req.setValue("0", forHTTPHeaderField: "Content-Length")
-                if let (_, response) = try? await URLSession.shared.data(for: req),
-                   (response as? HTTPURLResponse)?.statusCode == 200 {
-                    self.log(.info, .call, "已通过 Wi-Fi 直连执行接听请求 (Shizuku)")
-                    self.answerCallBusy = false
-                    self.answerCallStatus = "已通过 Wi-Fi 发送接听请求"
-                    _ = self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession, expectedSequence: expectedRingSequence)
-                    return
+                for attempt in 1...2 {
+                    var req = URLRequest(url: url)
+                    req.httpMethod = "POST"
+                    req.timeoutInterval = 1.8
+                    req.cachePolicy = .reloadIgnoringLocalCacheData
+                    req.setValue(expectedRingSession, forHTTPHeaderField: "X-SIMAI-Expected-Session")
+                    req.setValue(String(expectedRingSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
+                    req.setValue("0", forHTTPHeaderField: "Content-Length")
+                    if let (_, response) = try? await URLSession.shared.data(for: req),
+                       (response as? HTTPURLResponse)?.statusCode == 200 {
+                        self.log(.info, .call, "已通过 Wi-Fi 直连执行接听请求 (Shizuku)")
+                        self.answerCallBusy = false
+                        self.answerCallStatus = "已通过 Wi-Fi 发送接听请求"
+                        _ = self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession, expectedSequence: expectedRingSequence)
+                        return
+                    }
+                    if attempt == 1 && existingLink == nil {
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                    }
                 }
             }
 

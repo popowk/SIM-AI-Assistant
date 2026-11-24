@@ -1,4 +1,19 @@
-# SIM AI Assistant · V0.4.36（Shizuku 特权一键启动与 Provider 修复、ADB 冲突自动重启自愈、局域网直连免密探针）
+# SIM AI Assistant · V0.4.37（局域网纯 Wi-Fi 深度修复、多轮自动接听稳定加固、Shizuku 自动授权与接听安全兜底）
+
+> V0.4.37 彻底攻克纯无线直连断连与多轮自动接听稳定性问题：
+> 1. **彻底修复局域网纯 Wi-Fi 断连与无法接电话**：
+>    - 消除 link-local IPv6 污染：强制限定 Bonjour 节点解析为纯 IPv4（`NWProtocolIP.Options.version = .v4`），且严格过滤掉所有 `:` 与 `%` 非 IPv4 节点；
+>    - Android 伴侣端注册 NSD 服务时，在 TXT 记录中直接广播真实 `ipv4`，Mac 端优先秒级提取局域网 IP，避免多播解析迟延；
+>    - 增加 Wi-Fi 直连容错机制，避免网络偶发丢包导致误判断连，接听电话在纯 Wi-Fi 下提供自动重试机制。
+> 2. **彻底解决 USB 接入接听一次电话后无法再次自动接听的顽疾**：
+>    - 修复 `incomingVoiceBlockedUntilIdle` 状态死锁：修正了此前在通话结束回调中无条件将标志置为 `true` 导致第二轮来电无法被触发的严重 bug，并在新来电触发时彻底重置全套状态机；
+>    - 保留 ChatGPT Web 温暖页面：通话结束后仅通过 DOM 挂断按钮（`stopVoiceSessionIfActive()`）停止声音采集并保留已登录的页面，第二轮来电时可在毫秒级恢复 Voice，免去网页重新载入与鉴权所导致的数秒延迟；
+>    - 来电 3.5 秒接听安全兜底：开启自动接听后，若因 WebKit 或音频设备响应稍慢，系统自动启动 3.5 秒安全兜底定时器，确保来电必定会被自动接起，绝不会出现响铃无人接听的现象。
+> 3. **Shizuku 自动化特权与权限秒级自愈**：
+>    - 检测到 Shizuku 就绪后，伴侣端自动通过特权 shell 静默执行 `pm grant` 授予全套系统权限（接听电话、读取状态、接收短信及悬浮窗），无需手动繁琐操作；
+>    - 只要 Shizuku 已授权，伴侣端即可通过 `cmd telecom answer` 特权直接接听与挂断，彻底不受 OEM 定制系统权限限制。
+
+## SIM AI Assistant · V0.4.36（Shizuku 特权一键启动与 Provider 修复、ADB 冲突自动重启自愈、局域网直连免密探针）
 
 > V0.4.36 全面修复 Shizuku 授权通信与连接自愈能力：
 > 1. **彻底修复 Shizuku 提示未运行问题**：

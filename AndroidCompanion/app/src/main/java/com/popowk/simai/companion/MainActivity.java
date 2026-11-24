@@ -344,6 +344,10 @@ public final class MainActivity extends Activity {
 
         if (shizukuStatus != null) {
             if (ShizukuTelephonyBridge.isReady()) {
+                ShizukuTelephonyBridge.autoGrantAppPermissions(this);
+                if (!CallMonitorService.running && hasCorePermissions()) {
+                    startPhoneMonitorIfAllowed();
+                }
                 shizukuStatus.setText("🛡️ Shizuku 引擎: 已连接且已授权 (免 Root 特权控制 100% 成功)");
                 if (shizukuGrant != null) shizukuGrant.setVisibility(View.GONE);
             } else if (ShizukuTelephonyBridge.isShizukuAvailable()) {

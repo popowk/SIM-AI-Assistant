@@ -693,6 +693,42 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         onDiagnostic?("VOICE_PAGE_UNLOADED_IDLE")
     }
 
+    func resetStartAttemptThrottle() {
+        lastStartAttempt = .distantPast
+    }
+
+    /// Stops the active Voice UI in the official ChatGPT page while preserving
+    /// the loaded page DOM, WebKit process, and login state for subsequent calls.
+    func stopVoiceSessionIfActive() {
+        guard loaded && isOfficialPage else { return }
+        lastStartAttempt = .distantPast
+        let script = """
+        (() => {
+          if (location.protocol !== 'https:' || location.hostname !== 'chatgpt.com') return;
+          const options = Array.from(document.querySelectorAll('button,[role="button"]'));
+          for (const el of options) {
+            const label = [
+              el.getAttribute('aria-label') || '',
+              el.getAttribute('title') || '',
+              el.getAttribute('data-testid') || '',
+              (el.textContent || '').trim().slice(0, 70)
+            ].join(' ').trim();
+            if (/end|stop|leave|close|hang up|结束|停止|关闭|挂断/i.test(label)) {
+              el.click();
+              return 'VOICE_STOP_CLICKED';
+            }
+          }
+          return 'NO_STOP_BUTTON';
+        })()
+        """
+        webView.evaluateJavaScript(script) { [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.checkMicrophoneCapture()
+            }
+        }
+    }
+
     func setAutomaticVoiceButton(_ enabled: Bool) {
         automaticVoiceButtonEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "SIMAI_EMBEDDED_VOICE_AUTOCLICK")

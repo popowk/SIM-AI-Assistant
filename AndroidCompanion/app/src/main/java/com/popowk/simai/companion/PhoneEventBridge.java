@@ -309,7 +309,7 @@ final class PhoneEventBridge {
             long age = System.currentTimeMillis() - events.get(events.size() - 1).at;
             if (age < 0 || age > 35000) return "RING_EXPIRED";
             if (context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
-                    != PackageManager.PERMISSION_GRANTED) return "PERMISSION_REQUIRED";
+                    != PackageManager.PERMISSION_GRANTED && !ShizukuTelephonyBridge.isReady()) return "PERMISSION_REQUIRED";
             if (lastPrivateAnswerSequence == ringSequence &&
                     ("ANSWER_REQUESTED".equals(lastPrivateAnswerResult)
                     || "ANSWER_IN_PROGRESS".equals(lastPrivateAnswerResult)))
@@ -445,7 +445,7 @@ final class PhoneEventBridge {
                 return;
             }
             if (context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
-                    != PackageManager.PERMISSION_GRANTED) {
+                    != PackageManager.PERMISSION_GRANTED && !ShizukuTelephonyBridge.isReady()) {
                 reply(client, 403, "{\"error\":\"answer_permission_required\"}");
                 return;
             }

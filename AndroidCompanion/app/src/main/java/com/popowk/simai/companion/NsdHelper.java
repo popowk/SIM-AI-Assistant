@@ -42,6 +42,11 @@ public final class NsdHelper {
             serviceInfo.setServiceName(deviceName);
             serviceInfo.setServiceType(SERVICE_TYPE);
             serviceInfo.setPort(port);
+            String wifiIp = getWifiIpAddress(context);
+            if (wifiIp != null && !wifiIp.isEmpty() && !wifiIp.startsWith("127.")) {
+                serviceInfo.setAttribute("ipv4", wifiIp);
+                serviceInfo.setAttribute("port", String.valueOf(port));
+            }
 
             registrationListener = new NsdManager.RegistrationListener() {
                 @Override
@@ -89,5 +94,35 @@ public final class NsdHelper {
             } catch (Throwable ignored) {}
             multicastLock = null;
         }
+    }
+
+    public static String getWifiIpAddress(Context context) {
+        try {
+            WifiManager wm = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm != null) {
+                int ipInt = wm.getConnectionInfo().getIpAddress();
+                if (ipInt != 0) {
+                    return android.text.format.Formatter.formatIpAddress(ipInt);
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        try {
+            java.util.List<java.net.NetworkInterface> interfaces =
+                    java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces());
+            for (java.net.NetworkInterface intf : interfaces) {
+                if (!intf.isUp() || intf.isLoopback()) continue;
+                String name = intf.getName().toLowerCase();
+                if (name.contains("wlan") || name.contains("wifi") || name.contains("eth")) {
+                    for (java.net.InetAddress addr : java.util.Collections.list(intf.getInetAddresses())) {
+                        if (!addr.isLoopbackAddress() && addr instanceof java.net.Inet4Address) {
+                            String host = addr.getHostAddress();
+                            if (host != null && !host.startsWith("127.")) return host;
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return null;
     }
 }
