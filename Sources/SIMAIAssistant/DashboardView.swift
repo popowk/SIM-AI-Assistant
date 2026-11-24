@@ -411,11 +411,11 @@ struct DashboardView: View {
                     Text("Wi-Fi 局域网全自动发现与直连（免 USB 数据线 · 延迟 <5ms）")
                         .font(.subheadline.bold())
                     Spacer()
-                    if model.wifiDirectActive {
+                    if model.wifiDirectActive || model.connectionTransport == "WIFI_DIRECT" {
                         Text("● 局域网已直连")
                             .font(.caption.bold())
                             .foregroundColor(.green)
-                    } else if model.bridgeLink != nil {
+                    } else if model.connectionTransport.starts(with: "ADB") {
                         Text("● USB 数据线中")
                             .font(.caption.bold())
                             .foregroundColor(.blue)
