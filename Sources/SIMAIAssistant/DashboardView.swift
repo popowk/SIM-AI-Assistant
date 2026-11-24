@@ -381,6 +381,8 @@ struct DashboardView: View {
                      ? model.embeddedVoiceBrowser.microphoneSignalStatus
                      : "未接通电话或 PCM 未建立，网页麦克风静音属于预期；接通后再检测实际声音")
                     .font(.caption).foregroundStyle(.secondary)
+                Text("虚拟声卡真实输入：\\(model.blackHoleActualInputStatus)")
+                    .font(.caption).foregroundStyle(.secondary)
                 Label(model.embeddedVoiceBrowser.isolatedOutputReady
                         ? "网页独立音频已配置" : "网页独立音频待就绪",
                       systemImage: model.embeddedVoiceBrowser.isolatedOutputReady
@@ -687,6 +689,8 @@ struct DashboardView: View {
             }
             Text(model.chatGPTVoiceRouteStatus)
                 .font(.subheadline.weight(.medium))
+            Text("BlackHole 2ch 输入回环：\\(model.blackHoleActualInputStatus)")
+                .font(.caption).foregroundStyle(.secondary)
             Text("虚拟麦克风播放丢帧：\(model.chatGPTVoiceRouteDropped) 帧")
                 .font(.caption.monospaced()).foregroundStyle(.secondary)
             Text("操作：① 安装 BlackHole 2ch；② 保持 Mac 默认输出为耳机；③ 在浏览器打开官方 ChatGPT Voice，选择 BlackHole 2ch 作为输入；④ 在双方同意的通话中建立 PCM，再点击上方路由按钮。")
