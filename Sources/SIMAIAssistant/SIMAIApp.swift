@@ -42,15 +42,15 @@ private struct MenuBarCommands: View {
             model.setEmbeddedVoiceBrowserEnabled(true)
             model.showEmbeddedVoiceWindow(activate: true)
         }
-        Button("打开手机屏幕（ADB）") {
-            model.openPhoneScreenControl()
+        Button("挂断当前电话") {
+            model.hangupCurrentCall()
         }
         Divider()
         Button("恢复 Mac 原声音输出") {
             model.restoreAutomaticGPTOutput(forceInput: true, userRequested: true)
         }
         Divider()
-        Text("v0.4.32 · 全双工音频与系统路由修复")
+        Text("v0.4.33 · 电话控制与界面精简")
         Button("退出 SIM AI Assistant") {
             model.shutdownForAppExit()
             NSApp.terminate(nil)

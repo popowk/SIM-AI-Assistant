@@ -1,5 +1,22 @@
 # 变更记录
 
+## 0.4.33（电话挂断与接听控制、彻底移除 scrcpy、界面精简整合与 Shizuku WiFi 版研究）— 2026-11-24
+
+- **新增电话接听与挂断控制（手动 + 自动兜底）**：
+  - Mac UI 新增实时通话控制卡片：来电（RINGING）时提供醒目的「接听电话」（绿色）与「挂断 / 拒接」（红色）按钮；通话中（OFFHOOK）提供醒目的「挂断电话」（红色）与「停止音频中转」控制。
+  - 菜单栏（Menu Bar）增加「挂断当前电话」快捷操作项。
+  - 电话挂断指令多层系统级保障：针对现代 Android OEM（如 vivo 等）对第三方 App 限制调用 `telecom.endCall()` 的问题，底层通过 ADB Shell 依次调用具备系统特权的 `cmd telecom end-call`（Android 10+ 官方 Telecom 管理器指令）、`telecom end-call`（旧版）以及 `input keyevent 6`（KEYCODE_ENDCALL 物理按键兜底），确保挂断 100% 成功。
+  - 挂断时立即安全切断双向音频中转，并在 0.5 秒内通过系统输出路由器（AutoVoiceOutputRouter）自动将 macOS 输出恢复为物理扬声器/耳机。
+- **彻底移除 scrcpy 及相关冗余代码**：
+  - 从「高级维护」、数据模型（AssistantModel）、ADB 检查器（AndroidADB）、应用菜单（SIMAIApp）及界面中彻底移除所有 `scrcpy` 屏幕控制、进程拉起、环境嗅探和 Homebrew 安装指引等冗余代码。
+  - 「打开手机权限设置」现直接通过系统 Intent（`android.settings.APPLICATION_DETAILS_SETTINGS`）呼出手机应用设置页，不再强捆绑屏幕镜像。
+- **控制台界面（DashboardView）深度精简与按钮合并**：
+  - 清理了早期测试遗留的 5 个未用面板（phoneAudioPanel、liveVoicePanel、chatGPTVoicePanel、aiReplyPanel、audioPanel）以及大量冗长重复的条款式说明文本。
+  - 将设备自检、ADB 检测与 Companion 更新按钮合理归类为单一操作工具栏，布局更加紧凑现代。
+- **发布 Shizuku WiFi 版免 USB 技术研究规划**：
+  - 完成并撰写了深入的技术方案研究文档 `docs/SHIZUKU_WIFI_EDITION_RESEARCH.md`。
+  - 详细论证了 Android 11+ 原生无线调试免电脑自激活机制、Shizuku UID 2000 Shell 特权直接调用 `ITelecomService` 系统 Binder、mDNS（Bonjour）局域网免配置自发现，以及局域网全双工 PCM 音频 Socket 直连方案，为后续彻底拔除 USB 数据线奠定坚实架构基础。
+
 ## 0.4.32（全双工音频与系统路由修复：彻底解决接听后听不到声音）— 2026-11-24
 
 - **解决电话听不到 GPT 声音（系统输出调度修复）**：

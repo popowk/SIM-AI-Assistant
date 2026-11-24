@@ -19,9 +19,6 @@ final class AssistantModel: ObservableObject {
     @Published var lastADBScanAt: Date?
     @Published var adbInstalling = false
     @Published var apkInstallStatus = "尚未安装伴侣 APK"
-    @Published var screenControlStatus = "尚未打开手机屏幕（需要本机安装 scrcpy）"
-    @Published var screenControlStarting = false
-    @Published var screenControlRunning = false
     @Published var liveSyncEnabled = UserDefaults.standard.object(forKey: "SIMAI_LIVE_SYNC") as? Bool ?? true
     @Published var liveBridgeStatus = "正在检查 ADB 连接"
     @Published var livePhoneState = "未连接"
@@ -222,7 +219,6 @@ final class AssistantModel: ObservableObject {
     private var resumeAIForwardAfterVoicePause = false
     private var resumeAIForwardAfterIsolationRestored = false
     private var resumeAIForwardAfterMicrophoneRestored = false
-    private var screenControlProcess: Process?
     private var voiceSessionID = ""
     private var pendingBlackHoleInstallChannels: Int?
     private var bridgeTimer: Timer?
@@ -866,7 +862,7 @@ final class AssistantModel: ObservableObject {
 
     func shutdownForAppExit() {
         // Closing the app must stop forwarding caller audio before changing
-        // the global sound device. Also closes scrcpy as before.
+        // the global sound device.
         // ADB forwards survive Mac process exit in the adb server. Release
         // only our own dynamic port synchronously before termination.
         bridgeTimer?.invalidate()
@@ -883,7 +879,6 @@ final class AssistantModel: ObservableObject {
         embeddedVoiceBrowser.releaseForIdle()
         hideEmbeddedVoiceWindow()
         restoreAutomaticGPTOutput(forceInput: true, userRequested: true)
-        closePhoneScreenControl()
     }
 
     /// A brief WebKit capture interruption must not hang up a caller.
@@ -978,36 +973,30 @@ final class AssistantModel: ObservableObject {
                 let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
                 if status == 200 && json?["result"] as? String == "hangup_requested" {
                     result = "HANGUP_REQUESTED"
-                } else if status == 404 {
-                    // Existing v0.3.5 installations remain supported, with
-                    // an extra fresh, sequence-checked ADB snapshot guard.
-                    result = await Task.detached(priority: .userInitiated) {
-                        ADBInspector.guardedLegacyHangup(
-                            at: adb, expectedSession: expectedSession,
-                            expectedSequence: expectedSequence)
-                    }.value
                 } else {
-                    result = "HANGUP_HTTP_\(status)"
+                    result = await Task.detached(priority: .userInitiated) {
+                        ADBInspector.hangupCall(at: adb)
+                    }.value
                 }
             } catch {
-                // Do not send an unverified key event after an ambiguous
-                // timeout: Android may have already ended the call.
-                result = "HANGUP_HTTP_TIMEOUT_OR_DISCONNECTED"
+                result = await Task.detached(priority: .userInitiated) {
+                    ADBInspector.hangupCall(at: adb)
+                }.value
             }
-            self.log(result == "HANGUP_REQUESTED" ||
+            self.log(result.contains("SUCCESS") || result == "HANGUP_REQUESTED" ||
                      result == "ENDCALL_KEY_SENT_UNCONFIRMED" ? .info : .warn,
                      .call, "手机端 Voice 自动挂断结果",
                      details: ["result": result, "trigger": reason])
-            if result == "HANGUP_REQUESTED" ||
+            if result.contains("SUCCESS") || result == "HANGUP_REQUESTED" ||
                result == "ENDCALL_KEY_SENT_UNCONFIRMED" {
                 self.autoCallStatus = "已向手机发送挂断请求，等待 Android 确认 IDLE"
                 if self.liveVoiceActive || self.liveVoiceStarting {
                     self.stopLiveVoice()
-                } else {
-                    self.pollLiveBridge()
                 }
+                self.restoreAutomaticGPTOutput(forceInput: true, userRequested: false)
+                self.pollLiveBridge()
             } else {
-                self.autoCallStatus = "Voice 已结束，但自动挂断未成功；请在手机上手动挂断"
+                self.autoCallStatus = "Voice 已结束，但自动挂断未成功；请点击「挂断电话」或在手机上手动挂断"
             }
         }
     }
@@ -2457,9 +2446,9 @@ final class AssistantModel: ObservableObject {
                     case 409:
                         self.answerCallStatus = "手机当前并未响铃；不会接听其它通话"
                     case 503:
-                        self.answerCallStatus = "手机系统暂不允许外部接听，请使用 scrcpy 手动点击接听"
+                        self.answerCallStatus = "手机系统暂不允许外部接听，请在手机屏幕上手动点击接听"
                     default:
-                        self.answerCallStatus = "接听请求未成功；请使用手机屏幕控制检查通话状态"
+                        self.answerCallStatus = "接听请求未成功；请在手机上检查通话状态"
                     }
                     self.log(.warn, .system, "Android 拒绝接听请求",
                              details: ["reason": "MANUAL_ANSWER_REJECTED",
@@ -2741,117 +2730,63 @@ final class AssistantModel: ObservableObject {
         pollLiveBridge()
     }
 
-    /// User-controlled scrcpy mirroring; no OCR or automated taps are
-    /// performed. Permission dialogs are completed explicitly in the mirror.
-    func openPhoneScreenControl() {
-        guard !screenControlRunning, !screenControlStarting else {
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        screenControlStarting = true
-        screenControlStatus = "正在确认 scrcpy 与唯一已授权的 ADB 手机……"
-        let adb = selectedADBPath
-        Task.detached(priority: .userInitiated) { [weak self] in
-            let prepared = ADBInspector.prepareScreenControl(at: adb)
-            await MainActor.run {
-                guard let self else { return }
-                self.screenControlStarting = false
-                guard prepared.code == "SCREEN_READY",
-                      let scrcpy = prepared.scrcpy,
-                      let selectedADB = prepared.adb,
-                      let serial = prepared.serial else {
-                    let status: String
-                    switch prepared.code {
-                    case "SCREEN_SCRCPY_MISSING":
-                        status = "未检测到 scrcpy。请先在 Mac 运行 brew install scrcpy（不自动安装第三方工具）。"
-                    case "SCREEN_ADB_MISSING":
-                        status = "未找到 adb；请先在 ADB 管理区设置有效路径"
-                    case "SCREEN_ADB_UNAUTHORIZED":
-                        status = "手机尚未授权 USB 调试；首次配对需在手机上确认，之后才能远程控制"
-                    case "SCREEN_MULTIPLE_DEVICES":
-                        status = "检测到多台已授权手机，为避免误操作请只连接目标手机"
-                    case "SCREEN_DEVICE_NOT_READY":
-                        status = "尚未检测到已授权的在线手机，请确认 USB / 无线 ADB"
-                    case "SCREEN_ADB_TIMEOUT":
-                        status = "ADB 设备检测超时；解锁手机并检查连接后再试"
-                    default:
-                        status = "无法启动屏幕控制，请检查 ADB 和 scrcpy 是否正常"
-                    }
-                    self.screenControlStatus = status
-                    self.log(.warn, .system, "ADB 手机屏幕控制未能启动",
-                             details: ["reason": prepared.code])
-                    return
-                }
+    /// Hangs up the current active or ringing call.
+    /// Can be called manually from the UI or shortcuts, or automatically.
+    func hangupCurrentCall() {
+        log(.info, .call, "用户触发挂断电话")
+        autoCallStatus = "正在挂断当前电话……"
 
-                let process = Process()
-                process.executableURL = scrcpy
-                process.arguments = [
-                    "--serial", serial,
-                    "--no-audio", "--max-size=1024", "--max-fps=30",
-                    "--window-title=SIM AI 手机屏幕（用户手动操作）"
-                ]
-                var environment = ProcessInfo.processInfo.environment
-                // Honor the same ADB executable used for installation and
-                // never log the device serial or the spawned command line.
-                environment["ADB"] = selectedADB.path
-                environment["PATH"] = selectedADB.deletingLastPathComponent().path + ":" +
-                    (environment["PATH"] ?? "/usr/bin:/bin")
-                process.environment = environment
-                process.standardOutput = FileHandle.nullDevice
-                process.standardError = FileHandle.nullDevice
-                process.terminationHandler = { [weak self] finished in
-                    Task { @MainActor in
-                        guard let self, self.screenControlProcess === finished else { return }
-                        self.screenControlProcess = nil
-                        self.screenControlRunning = false
-                        self.screenControlStatus = finished.terminationStatus == 0
-                            ? "手机屏幕窗口已关闭"
-                            : "手机屏幕连接中断或被系统拒绝；请检查 USB 调试与 vivo 安全设置"
-                        self.log(.info, .system, "手机屏幕控制会话结束",
-                                 details: ["reason": "SCREEN_SESSION_ENDED"])
-                    }
-                }
-                do {
-                    try process.run()
-                    self.screenControlProcess = process
-                    self.screenControlRunning = true
-                    self.screenControlStatus = "已打开手机屏幕：使用 Mac 鼠标处理安装、权限及设置提示；不会自动点击授权"
-                    self.log(.info, .system, "用户主动打开手机屏幕控制",
-                             details: ["route": "SCRCPY_AUTHORIZED_SINGLE_DEVICE"])
-                } catch {
-                    self.screenControlStatus = "无法启动 scrcpy；检查是否已安装以及 Mac 执行权限"
-                    self.log(.warn, .system, "scrcpy 进程启动失败",
-                             details: ["reason": "SCREEN_PROCESS_LAUNCH_FAILED"])
-                }
+        // Immediately stop live voice and restore system audio
+        if liveVoiceActive || liveVoiceStarting {
+            stopLiveVoice()
+        }
+        restoreAutomaticGPTOutput(forceInput: true, userRequested: false)
+
+        let path = selectedADBPath
+        let existingLink = bridgeLink
+        let expectedSession = bridgeCursor.session
+        let expectedSequence = bridgeCursor.lastSequence
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            // 1. Try HTTP hangup if link is available
+            if let link = existingLink, let url = URL(string: "http://127.0.0.1:\(link.localPort)/call/hangup") {
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.timeoutInterval = 2
+                request.setValue(link.token, forHTTPHeaderField: "X-SIMAI-Token")
+                request.setValue(expectedSession, forHTTPHeaderField: "X-SIMAI-Expected-Session")
+                request.setValue(String(expectedSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
+                request.setValue("0", forHTTPHeaderField: "Content-Length")
+                _ = try? await URLSession.shared.data(for: request)
+            }
+
+            // 2. Perform ADB shell hangup (cmd telecom end-call / telecom end-call / keyevent 6)
+            let result = await Task.detached(priority: .userInitiated) {
+                ADBInspector.hangupCall(at: path)
+            }.value
+
+            await MainActor.run {
+                self.log(.info, .call, "已执行挂断电话指令", details: ["result": result])
+                self.autoCallStatus = "已向手机发送挂断指令（\(result)）"
+                self.pollLiveBridge()
             }
         }
     }
 
     func openPhonePermissionSettings() {
-        // Display scrcpy for the user's own approval. Never approve system
-        // dialogs by scripted taps or platform privilege escalation.
-        openPhoneScreenControl()
         let path = selectedADBPath
         Task.detached(priority: .utility) { [weak self] in
             let outcome = ADBInspector.openCompanionSettings(at: path)
             await MainActor.run {
                 guard let self else { return }
-                self.screenControlStatus = outcome.status
+                self.apkInstallStatus = outcome.status
                 self.log(outcome.succeeded ? .info : .warn, .system,
                          "用户要求打开手机应用系统权限页面",
                          details: ["success": "\(outcome.succeeded)"])
             }
         }
-    }
-
-    func closePhoneScreenControl() {
-        let process = screenControlProcess
-        screenControlProcess = nil
-        screenControlRunning = false
-        screenControlStatus = "已主动关闭手机屏幕控制"
-        if let process, process.isRunning { process.terminate() }
-        log(.info, .system, "用户关闭手机屏幕控制",
-            details: ["reason": "SCREEN_USER_STOPPED"])
     }
 
     func installAndroidCompanion() {
@@ -2904,9 +2839,8 @@ final class AssistantModel: ObservableObject {
             return
         }
         closeLiveBridge()
-        openPhoneScreenControl()
         adbInstalling = true
-        apkInstallStatus = "已确认清空旧版数据，正在重装；如有系统提示请在 Mac 手机窗口手动确认……"
+        apkInstallStatus = "已确认清空旧版数据，正在重装；如有系统提示请在手机上确认……"
         let adbPath = selectedADBPath
         Task.detached(priority: .userInitiated) { [weak self] in
             let outcome = ADBInspector.reinstallAfterSignatureChange(at: adbPath, apk: apk)

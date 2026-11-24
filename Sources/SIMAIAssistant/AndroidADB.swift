@@ -37,15 +37,6 @@ struct ADBAudioStreamResult {
 
 /// Only fixed status categories; credentials, phone serial, and request bytes
 /// must never appear in diagnostics or user-visible status text.
-/// ADB scrcpy preparation never exports a device identifier to diagnostics.
-/// The identifier is only passed in memory to the local scrcpy child process.
-struct ADBScreenControlPreparation {
-    let adb: URL?
-    let scrcpy: URL?
-    let serial: String?
-    let code: String
-}
-
 struct ADBFeishuConfigResult {
     let succeeded: Bool
     let code: String
@@ -106,45 +97,6 @@ enum ADBInspector {
             .split(separator: ":").map { String($0) + "/adb" }
         return paths.first(where: { manager.isExecutableFile(atPath: $0) })
             .map(URL.init(fileURLWithPath:))
-    }
-
-    /// Find a local scrcpy executable. Nothing is downloaded automatically;
-    /// users install the official tool themselves through Homebrew.
-    static func scrcpyExecutable() -> URL? {
-        let manager = FileManager.default
-        let candidates = [
-            "/opt/homebrew/bin/scrcpy", "/usr/local/bin/scrcpy",
-            "/opt/local/bin/scrcpy"
-        ] + (ProcessInfo.processInfo.environment["PATH"] ?? "")
-            .split(separator: ":").map { String($0) + "/scrcpy" }
-        return candidates.first(where: { manager.isExecutableFile(atPath: $0) })
-            .map { URL(fileURLWithPath: $0) }
-    }
-
-    /// The screen is intentionally NOT opened for unauthorized or ambiguous
-    /// devices. scrcpy never grants SMS/phone privileges itself; the user
-    /// must operate any system permission dialogs with their own clicks.
-    static func prepareScreenControl(at selected: String?) -> ADBScreenControlPreparation {
-        func fail(_ code: String) -> ADBScreenControlPreparation {
-            .init(adb: nil, scrcpy: nil, serial: nil, code: code)
-        }
-        guard let adb = executable(at: selected) else { return fail("SCREEN_ADB_MISSING") }
-        guard let scrcpy = scrcpyExecutable() else { return fail("SCREEN_SCRCPY_MISSING") }
-        let devices: [(serial: String, state: String)]
-        switch run(adb, args: ["devices"], timeout: 12) {
-        case .completed(0, let output): devices = parseDevices(output)
-        case .timedOut: return fail("SCREEN_ADB_TIMEOUT")
-        default: return fail("SCREEN_ADB_QUERY_FAILED")
-        }
-        let ready = devices.filter { $0.state == "device" }
-        if ready.count != 1 {
-            if ready.count > 1 { return fail("SCREEN_MULTIPLE_DEVICES") }
-            if devices.contains(where: { $0.state == "unauthorized" }) {
-                return fail("SCREEN_ADB_UNAUTHORIZED")
-            }
-            return fail("SCREEN_DEVICE_NOT_READY")
-        }
-        return .init(adb: adb, scrcpy: scrcpy, serial: ready[0].serial, code: "SCREEN_READY")
     }
 
     /// Open only the OS app details screen; no permission grants or security
@@ -934,6 +886,41 @@ enum ADBInspector {
         }
     }
 
+    /// Robust ADB call hangup. Tries `cmd telecom end-call` (Android 10+ Telecom Manager),
+    /// then legacy `telecom end-call`, and finally `input keyevent 6` (KEYCODE_ENDCALL).
+    static func hangupCall(at selected: String?) -> String {
+        guard let adb = executable(at: selected) else { return "HANGUP_NO_ADB" }
+        let devices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 6) {
+        case .completed(0, let text): devices = parseDevices(text)
+        default: return "HANGUP_DEVICE_UNAVAILABLE"
+        }
+        let authorized = devices.filter { $0.state == "device" }
+        guard authorized.count == 1 else { return "HANGUP_DEVICE_AMBIGUOUS" }
+        let serial = authorized[0].serial
+
+        // 1. Android 10+ Telecom Manager CLI (most reliable on Android 10-15+)
+        let cmdResult = run(adb, args: ["-s", serial, "shell", "cmd", "telecom", "end-call"], timeout: 4)
+        if case .completed(0, _) = cmdResult {
+            _ = run(adb, args: ["-s", serial, "shell", "input", "keyevent", "6"], timeout: 2)
+            return "HANGUP_SUCCESS"
+        }
+
+        // 2. Legacy telecom CLI (Android 9-)
+        let legacyResult = run(adb, args: ["-s", serial, "shell", "telecom", "end-call"], timeout: 4)
+        if case .completed(0, _) = legacyResult {
+            _ = run(adb, args: ["-s", serial, "shell", "input", "keyevent", "6"], timeout: 2)
+            return "HANGUP_SUCCESS"
+        }
+
+        // 3. Fallback to hardware end-call key event (KEYCODE_ENDCALL = 6)
+        switch run(adb, args: ["-s", serial, "shell", "input", "keyevent", "6"], timeout: 4) {
+        case .completed(0, _): return "ENDCALL_KEY_SENT_UNCONFIRMED"
+        case .timedOut: return "ENDCALL_KEY_TIMEOUT"
+        default: return "ENDCALL_KEY_REJECTED"
+        }
+    }
+
     /// Compatibility with an already installed Companion that predates the
     /// optional /call/hangup endpoint. Only the exact authenticated Android
     /// monitor session and OFFHOOK sequence may receive KEYCODE_ENDCALL (6).
@@ -956,22 +943,7 @@ enum ADBInspector {
                                maxAgeMilliseconds: 20_000) else {
             return "ENDCALL_CALL_CHANGED"
         }
-        guard let adb = executable(at: selected) else { return "ENDCALL_NO_ADB" }
-        let devices: [(serial: String, state: String)]
-        switch run(adb, args: ["devices"], timeout: 6) {
-        case .completed(0, let text): devices = parseDevices(text)
-        default: return "ENDCALL_DEVICE_UNAVAILABLE"
-        }
-        let authorized = devices.filter { $0.state == "device" }
-        guard authorized.count == 1 else { return "ENDCALL_DEVICE_AMBIGUOUS" }
-        // ADB authorized shell key event. This is a best-effort OEM fallback;
-        // zero exit status does not prove Telecom actually ended the call.
-        switch run(adb, args: ["-s", authorized[0].serial,
-                               "shell", "input", "keyevent", "6"], timeout: 6) {
-        case .completed(0, _): return "ENDCALL_KEY_SENT_UNCONFIRMED"
-        case .timedOut: return "ENDCALL_KEY_TIMEOUT"
-        default: return "ENDCALL_KEY_REJECTED"
-        }
+        return hangupCall(at: selected)
     }
 
     static func closeBridge(at selected: String?, link: ADBBridgeLink) {

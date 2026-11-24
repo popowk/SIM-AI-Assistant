@@ -1,9 +1,12 @@
-# SIM AI Assistant · V0.4.32（全双工音频与系统路由修复：彻底解决接听后听不到声音问题）
+# SIM AI Assistant · V0.4.33（电话挂断与接听控制、彻底移除 scrcpy、界面精简整合与 Shizuku WiFi 版研究）
 
-> V0.4.32 彻底解决接听电话后“听不到 GPT 说话、GPT 也听不到电话声音”的问题：
-> 1. **根因修复**：macOS WebKit 不支持 Web Audio API 的 `AudioContext.prototype.setSinkId`（在 macOS 上为 undefined）。之前强制开启的“视频隔离输出”导致 ChatGPT 网页音频无法流入 BlackHole 16ch，回传手机始终完全静音。新版采用稳定可靠的系统输出调度机制：通话期间自动安全切换系统默认输出至 BlackHole 16ch 并同步分流至真实耳机/扬声器监听，挂断后立刻自动恢复原扬声器；
-> 2. **消除误拦截与死锁**：修复通话交替对话中 WebKit 麦克风短暂处于 `.muted` 状态时触发的“麦克风未验证”误拦截，消除因异步时序导致的电话上行永久静音死锁；
-> 3. **麦克风分析仪唤醒**：修复 WebKit 页面内音频分析仪 AudioContext suspended 状态，在启动时自动调用 `resume()` 确保电话下行音频电平与 VAD 识别稳定生效。
+> V0.4.33 带来全新控制体验、界面精简与下一代免 USB 架构规划：
+> 1. **电话接听与挂断控制（手动 + 自动兜底）**：Mac UI 新增实时通话控制卡片，来电时提供醒目的「接听」与「挂断」按钮，通话中提供醒目的「挂断电话」红色按钮及菜单栏快捷项；底层通过 ADB Shell 调用系统级 `cmd telecom end-call` / `input keyevent 6`，彻底解决第三方应用挂断被 OEM 拦截的问题，挂断后自动恢复系统原有输出设备；
+> 2. **彻底移除 scrcpy 相关代码**：全面移除 scrcpy 屏幕镜像、进程管理与相关指引代码，手机权限设置直接通过系统 Intent 跳转，大幅降低应用体积与复杂度；
+> 3. **控制台界面精简与按钮合并**：清理早期测试遗留的冗余面板与冗长条款文本，合并自检、ADB 与 Companion 管理按钮，界面紧凑清晰；
+> 4. **发布 Shizuku WiFi 版免 USB 技术研究规划**：完成 `docs/SHIZUKU_WIFI_EDITION_RESEARCH.md` 架构方案，详细论述基于 Android 11+ 原生无线调试免电脑自激活、Shizuku UID 2000 Shell 特权调用 Telecom Binder、mDNS 局域网自发现与 Wi-Fi 全双工 PCM 音频直连方案，为后续彻底拔除 USB 数据线铺平道路。
+
+> V0.4.32 彻底解决接听电话后“听不到 GPT 说话、GPT 也听不到电话声音”的问题（系统输出调度修复、消除误拦截与死锁、麦克风分析仪唤醒）。
 
 > V0.4.31 增加了 BlackHole 2ch 虚拟麦克风 deviceId 精准绑定与 Web Audio 检查。
 
