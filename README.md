@@ -1,6 +1,8 @@
-# SIM AI Assistant · V0.4.30（系统级接听兜底与 WebRTC 麦克风收音恢复）
+# SIM AI Assistant · V0.4.31（精确绑定 BlackHole 2ch 虚拟麦克风与 Web Audio 全链路路由）
 
-> 修复 vivo 及 Android 锁屏下第三方 App 无法自动接听问题（增加 ADB 系统级 Telecom 接听兜底），并恢复 WebKit WebRTC 麦克风 AGC 自动增益与音量归一化，解决电话下行声音无法唤醒 ChatGPT Voice 的问题。
+> 修复 ChatGPT Voice 启动时因未精准绑定 deviceId 导致抓取系统硬件麦克风（USB 麦克风）而听不到电话下行声音的问题；并在声音隔离模式下补齐 Web Audio（AudioContext）的 setSinkId 路由与预设绑定，保证 GPT 回复音频能完整导向 BlackHole 16ch 传回手机。
+
+> V0.4.30 修复了 vivo 及 Android 锁屏下第三方 App 无法自动接听问题（增加 ADB 系统级 Telecom 接听兜底）。
 
 > 09:39 实机诊断确认 v0.4.27 回退仍不能接听。Companion v0.3.13 (18) 将电话回调与系统状态查询分离，统一权限与响铃序列守卫下的 HTTP/广播/文件接听，并直接回传手机接听结果；Mac v0.4.29 Build46 优先走带回执的独立广播（状态 HTTP 已失效时），保留独立 HTTP 通道。保留 v0.4.28 音频代码，需升级手机伴侣并再次实机验证。
 

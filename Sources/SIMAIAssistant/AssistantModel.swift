@@ -109,8 +109,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.30"
-    let buildNumber = "47"
+    let version = "0.4.31"
+    let buildNumber = "48"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -152,6 +152,7 @@ final class AssistantModel: ObservableObject {
             window.orderFront(nil)
         }
         embeddedVoiceBrowser.loadIfNeeded()
+        prepareAutomaticGPTInput()
     }
 
     func hideEmbeddedVoiceWindow(force: Bool = false) {

@@ -220,6 +220,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
           // 2ch was selected. Constrain the actual official page getUserMedia
           // request, and refuse to hand a wrong input stream to the website.
           window.__simaiMicRouteCode = 'WAITING_FOR_CAPTURE';
+          window.__simaiAudioContexts = window.__simaiAudioContexts || new Set();
           // Signals from iframes are sent to the host via the normal WebKit
           // message handler. We never read/ship audio, transcript, cookies,
           // media URLs or the site's DOM.
@@ -228,6 +229,34 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
               window.webkit.messageHandlers.simaiMicRoute.postMessage(code);
             } catch (_) {}
           };
+          const discoverDevices = async () => {
+            if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') return;
+            try {
+              const devs = await navigator.mediaDevices.enumerateDevices();
+              const bh2 = devs.find(d => d.kind === 'audioinput'
+                && (d.label || '').toLowerCase().includes('blackhole 2ch'));
+              if (bh2 && bh2.deviceId) window.__simaiBlackHole2DeviceId = bh2.deviceId;
+              const bh16 = devs.find(d => d.kind === 'audiooutput'
+                && (d.label || '').toLowerCase().includes('blackhole 16ch'));
+              if (bh16 && bh16.deviceId) {
+                window.__simaiAudioSinkID = bh16.deviceId;
+                for (const el of (window.__simaiAudioElements || [])) {
+                  if (typeof el.setSinkId === 'function' && el.sinkId !== bh16.deviceId) {
+                    try { Promise.resolve(el.setSinkId(bh16.deviceId)).catch(() => {}); } catch (_) {}
+                  }
+                }
+                for (const ctx of (window.__simaiAudioContexts || [])) {
+                  if (typeof ctx.setSinkId === 'function' && ctx.sinkId !== bh16.deviceId) {
+                    try { Promise.resolve(ctx.setSinkId(bh16.deviceId)).catch(() => {}); } catch (_) {}
+                  }
+                }
+              }
+            } catch (_) {}
+          };
+          discoverDevices();
+          if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener === 'function') {
+            navigator.mediaDevices.addEventListener('devicechange', discoverDevices);
+          }
           let micHeartbeat = 0;
           const observeVerifiedTracks = () => {
             if (micHeartbeat) return;
@@ -308,9 +337,23 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
             }
           };
 
+          const isBlackHoleTrack = track => {
+            if (!track || track.kind !== 'audio' || track.readyState !== 'live') return false;
+            const label = (track.label || '').toLowerCase();
+            const settings = track.getSettings ? track.getSettings() : {};
+            if (label.includes('blackhole 2ch')) return true;
+            if (window.__simaiBlackHole2DeviceId && settings.deviceId === window.__simaiBlackHole2DeviceId) return true;
+            return false;
+          };
+
           const attachVerifiedTrack = track => {
             if (!track || track.kind !== 'audio' ||
                 track.readyState !== 'live') return;
+            if (!isBlackHoleTrack(track)) {
+              window.__simaiMicRouteCode = 'WRONG_CAPTURE_DEVICE';
+              reportMic('WRONG_CAPTURE_DEVICE');
+              return;
+            }
             if (window.__simaiMicTracks.has(track)) return;
             window.__simaiMicTracks.add(track);
             monitorMicEnergy(track);
@@ -337,14 +380,11 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
             navigator.mediaDevices.getUserMedia = async function(request) {
               if (!request || !request.audio) return originalCapture(request);
               window.__simaiMicRouteCode = 'BLACKHOLE2_CHECKING';
-              // Do not await enumerateDevices() BEFORE the native capture:
-              // that can lose a real user gesture and make WebKit reject
-              // microphone access. The first call uses our prepared macOS
-              // BlackHole2 default input. Later calls use a cached exact ID.
+              if (!window.__simaiBlackHole2DeviceId) {
+                await discoverDevices();
+              }
               const audioConstraints = request.audio === true
                 ? {} : {...request.audio};
-              // ChatGPT may remember an old physical microphone deviceId.
-              // Replace that stale site choice with our verified virtual mic.
               delete audioConstraints.deviceId;
               if (window.__simaiBlackHole2DeviceId) {
                 audioConstraints.deviceId =
@@ -352,9 +392,8 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
               }
               let stream;
               try {
-                const immediateCapture = originalCapture(
+                stream = await originalCapture(
                   {...request, audio: audioConstraints});
-                stream = await immediateCapture;
               } catch (err) {
                 if (audioConstraints.deviceId) {
                   delete audioConstraints.deviceId;
@@ -372,26 +411,44 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
                   throw err;
                 }
               }
-              // WebKit reveals audio device labels after the site captures.
-              // Confirm the actual track before delivering it to ChatGPT.
               let updated = [];
               try { updated = await originalDevices(); } catch (_) {}
               const target = updated.find(d => d.kind === 'audioinput'
                 && (d.label || '').toLowerCase().includes('blackhole 2ch'));
-              const tracks = stream.getAudioTracks();
-              const matching = !!target && tracks.length > 0 &&
-                tracks.every(t => t.readyState === 'live' &&
-                  ((t.getSettings && t.getSettings().deviceId === target.deviceId)
-                    || (t.label || '').toLowerCase().includes('blackhole 2ch')));
               if (target && target.deviceId) {
                 window.__simaiBlackHole2DeviceId = target.deviceId;
               }
-              if (!matching) {
+              const tracks = stream.getAudioTracks();
+              let matching = !!target && tracks.length > 0 &&
+                tracks.every(t => t.readyState === 'live' &&
+                  ((t.getSettings && t.getSettings().deviceId === target.deviceId)
+                    || (t.label || '').toLowerCase().includes('blackhole 2ch')));
+              if (!matching && target && target.deviceId) {
+                try {
+                  const targetConstraints = {
+                    ...request,
+                    audio: request.audio === true ? {} : {...request.audio}
+                  };
+                  targetConstraints.audio.deviceId = {exact: target.deviceId};
+                  const targetStream = await originalCapture(targetConstraints);
+                  const targetTracks = targetStream.getAudioTracks();
+                  if (targetTracks.length > 0 && targetTracks.every(t => t.readyState === 'live')) {
+                    tracks.forEach(t => { try { t.stop(); } catch (_) {} });
+                    stream = targetStream;
+                    matching = true;
+                  }
+                } catch (_) {}
+              }
+              if (matching) {
+                const verifiedTracks = stream.getAudioTracks();
+                verifiedTracks.forEach(attachVerifiedTrack);
+                window.__simaiMicRouteCode = 'BLACKHOLE2_CAPTURE_VERIFIED';
+                reportMic('BLACKHOLE2_CAPTURE_VERIFIED');
+              } else {
                 window.__simaiMicRouteCode =
                   target ? 'WRONG_CAPTURE_DEVICE' : 'BLACKHOLE2_NOT_VISIBLE';
                 reportMic(window.__simaiMicRouteCode);
               }
-              tracks.forEach(attachVerifiedTrack);
               return stream;
             };
           } else {
@@ -483,6 +540,41 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
               }
               return result;
             };
+          }
+
+          // Also intercept AudioContext / webkitAudioContext playback so Web Audio
+          // API output is routed to BlackHole 16ch instead of physical speakers.
+          const routeAudioContext = ctx => {
+            const sink = window.__simaiAudioSinkID;
+            if (sink && typeof ctx.setSinkId === 'function' && ctx.sinkId !== sink) {
+              try { Promise.resolve(ctx.setSinkId(sink)).catch(() => {}); } catch (_) {}
+            }
+          };
+          const NativeAudioContext = window.AudioContext;
+          if (typeof NativeAudioContext === 'function') {
+            const WrappedAudioContext = function(...args) {
+              const ctx = new NativeAudioContext(...args);
+              if (window.__simaiAudioContexts.size < 50) {
+                window.__simaiAudioContexts.add(ctx);
+              }
+              routeAudioContext(ctx);
+              return ctx;
+            };
+            WrappedAudioContext.prototype = NativeAudioContext.prototype;
+            window.AudioContext = WrappedAudioContext;
+          }
+          const NativeWebKitAudioContext = window.webkitAudioContext;
+          if (typeof NativeWebKitAudioContext === 'function' && NativeWebKitAudioContext !== NativeAudioContext) {
+            const WrappedWebKitAudioContext = function(...args) {
+              const ctx = new NativeWebKitAudioContext(...args);
+              if (window.__simaiAudioContexts.size < 50) {
+                window.__simaiAudioContexts.add(ctx);
+              }
+              routeAudioContext(ctx);
+              return ctx;
+            };
+            WrappedWebKitAudioContext.prototype = NativeWebKitAudioContext.prototype;
+            window.webkitAudioContext = WrappedWebKitAudioContext;
           }
 
           // Preserve the site's real click user activation. The prior
@@ -728,15 +820,23 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         let count = 0, unsupported = 0, failed = 0;
         for (const node of set) {
           if (!(node instanceof HTMLMediaElement)) continue;
-          const tracks = node.srcObject && typeof node.srcObject.getAudioTracks === 'function'
-            ? node.srcObject.getAudioTracks() : [];
-          // Only a real audio stream/playing media can confirm Voice output.
-          if (!tracks.length && (node.paused || node.readyState === 0)) continue;
           if (typeof node.setSinkId !== 'function') { unsupported++; continue; }
           try {
             await node.setSinkId(target.deviceId);
             if (node.sinkId === target.deviceId) count++;
           } catch (_) { failed++; }
+        }
+        for (const ctx of (window.__simaiAudioContexts || [])) {
+          if (ctx.state === 'closed') {
+            window.__simaiAudioContexts.delete(ctx);
+            continue;
+          }
+          if (typeof ctx.setSinkId === 'function') {
+            try {
+              await ctx.setSinkId(target.deviceId);
+              if (ctx.sinkId === target.deviceId) count++;
+            } catch (_) { failed++; }
+          }
         }
         if (target && target.deviceId && failed === 0 && unsupported === 0) {
           return {code:'ISOLATED_WEB_MEDIA_ROUTED'};

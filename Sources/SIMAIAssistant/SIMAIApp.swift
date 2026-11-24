@@ -50,7 +50,7 @@ private struct MenuBarCommands: View {
             model.restoreAutomaticGPTOutput(forceInput: true, userRequested: true)
         }
         Divider()
-        Text("v0.4.30 · 系统级接听与收音恢复")
+        Text("v0.4.31 · 虚拟麦克风与声音路由修复")
         Button("退出 SIM AI Assistant") {
             model.shutdownForAppExit()
             NSApp.terminate(nil)

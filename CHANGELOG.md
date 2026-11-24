@@ -1,5 +1,17 @@
 # 变更记录
 
+## 0.4.31（精确绑定 BlackHole 2ch 虚拟麦克风与 Web Audio 全链路路由）— 2026-11-24
+
+- **解决 GPT 听不到电话声音（麦克风串台修复）**：
+  - 实机日志诊断证实，网页启动 Voice 时因尚未缓存 deviceId 抓取了系统硬件麦克风（如 USB 麦克风），导致触发 `WRONG_CAPTURE_DEVICE`；但旧代码将错误音轨透传给 ChatGPT 并虚假报告验证通过，致使 GPT 实际在收听环境杂音而听不到电话下行声音。
+  - 在 WebKit 注入脚本中增加设备自动预发现机制（监听 `devicechange`），在抓取前预置 BlackHole 2ch deviceId。
+  - 在 `getUserMedia` 阶段增加精确重定向保护：当初次抓取非 BlackHole 2ch 时，自动根据解锁的设备标签以 `deviceId: { exact: ... }` 重新向 WebKit 申请真正的 BlackHole 2ch 音轨并安全关闭旧硬件音轨，严格阻断错误硬件麦克风进入 ChatGPT。
+  - 打开内嵌 ChatGPT Voice 窗口时主动预设 macOS 默认输入为 BlackHole 2ch。
+- **解决电话听不到 GPT 声音（音频隔离模式路由补全）**：
+  - 在声音隔离模式下，补齐对 Web Audio API（`window.AudioContext` 及 `window.webkitAudioContext`）的创建拦截与 `setSinkId` 自动路由，防止网页通过 AudioContext 播放时直接走物理扬声器而漏过 BlackHole 16ch 回传通道。
+  - 移除对暂停状态媒体节点跳过 `setSinkId` 的不合理限制，确保所有媒体元素和 AudioContext 均在发声前完成对 BlackHole 16ch 的独立绑定。
+
+
 ## 0.4.30（系统级接听兜底与 WebRTC 麦克风收音恢复）— 2026-11-24
 
 - 针对 vivo 及 Android 10+ 第三方 App 调用 acceptRingingCall 被系统/锁屏机制拦截的问题，在会话与响铃安全校验通过后，增加 ADB 系统级接听兜底（cmd telecom answer / telecom answer / KEYCODE_CALL），具备 MODIFY_PHONE_STATE 权限，彻底解决无法自动接听。
