@@ -88,10 +88,10 @@ jobs:
             exit 1
           fi
           gradle -p AndroidCompanion :app:assembleDebug --no-daemon
-          cp AndroidCompanion/app/build/outputs/apk/debug/app-debug.apk dist/SIMAI-Companion-v0.3.19-debug.apk
-          test -s dist/SIMAI-Companion-v0.3.19-debug.apk
-          shasum -a 256 dist/SIMAI-Companion-v0.3.19-debug.apk > dist/SIMAI-Companion-v0.3.19-debug.apk.sha256
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose dist/SIMAI-Companion-v0.3.19-debug.apk
+          cp AndroidCompanion/app/build/outputs/apk/debug/app-debug.apk dist/SIMAI-Companion-v0.3.20-debug.apk
+          test -s dist/SIMAI-Companion-v0.3.20-debug.apk
+          shasum -a 256 dist/SIMAI-Companion-v0.3.20-debug.apk > dist/SIMAI-Companion-v0.3.20-debug.apk.sha256
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose dist/SIMAI-Companion-v0.3.20-debug.apk
 
 
       - name: Build Android 13 audio capability helper
@@ -100,7 +100,7 @@ jobs:
       - name: Run tests and build arm64 app
         env:
           TARGET_TRIPLE: arm64-apple-macosx13.0
-          ANDROID_COMPANION_APK_PATH: ${{ github.workspace }}/dist/SIMAI-Companion-v0.3.19-debug.apk
+          ANDROID_COMPANION_APK_PATH: ${{ github.workspace }}/dist/SIMAI-Companion-v0.3.20-debug.apk
           ANDROID_AUDIO_PROBE_JAR_PATH: ${{ github.workspace }}/dist/SIMAI-Audio-Probe.jar
           ANDROID_COMPANION_SIGNING_STATUS_PATH: ${{ github.workspace }}/dist/SIMAI-Android-Signing.txt
         run: bash Scripts/build-macos.sh

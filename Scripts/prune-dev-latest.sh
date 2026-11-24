@@ -19,9 +19,6 @@ names="$(printf '%s\n' "$assets" | cut -d ' ' -f2)"
 for required in \
   SIM-AI-Assistant-v0.4.41-macos-arm64.zip \
   SIM-AI-Assistant-v0.4.41-macos-arm64.zip.sha256 \
-for required in \
-  SIM-AI-Assistant-v0.4.41-macos-arm64.zip \
-  SIM-AI-Assistant-v0.4.41-macos-arm64.zip.sha256 \
   SIMAI-Companion-v0.3.20-debug.apk \
   SIMAI-Companion-v0.3.20-debug.apk.sha256 \
   SIMAI-Audio-Probe.jar \

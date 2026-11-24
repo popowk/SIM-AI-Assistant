@@ -89,7 +89,7 @@ public final class ShizukuTelephonyBridge {
                         exitCode = process.exitValue();
                         finished = true;
                         break;
-                    } catch (IllegalThreadStateException | IllegalArgumentException notYet) {
+                    } catch (IllegalArgumentException notYet) {
                         try {
                             Thread.sleep(50);
                         } catch (InterruptedException ie) {
