@@ -381,7 +381,7 @@ struct DashboardView: View {
                      ? model.embeddedVoiceBrowser.microphoneSignalStatus
                      : "未接通电话或 PCM 未建立，网页麦克风静音属于预期；接通后再检测实际声音")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("虚拟声卡真实输入：\\(model.blackHoleActualInputStatus)")
+                Text("虚拟声卡真实输入：\(model.blackHoleActualInputStatus)")
                     .font(.caption).foregroundStyle(.secondary)
                 Label(model.embeddedVoiceBrowser.isolatedOutputReady
                         ? "网页独立音频已配置" : "网页独立音频待就绪",
@@ -689,7 +689,7 @@ struct DashboardView: View {
             }
             Text(model.chatGPTVoiceRouteStatus)
                 .font(.subheadline.weight(.medium))
-            Text("BlackHole 2ch 输入回环：\\(model.blackHoleActualInputStatus)")
+            Text("BlackHole 2ch 输入回环：\(model.blackHoleActualInputStatus)")
                 .font(.caption).foregroundStyle(.secondary)
             Text("虚拟麦克风播放丢帧：\(model.chatGPTVoiceRouteDropped) 帧")
                 .font(.caption.monospaced()).foregroundStyle(.secondary)
