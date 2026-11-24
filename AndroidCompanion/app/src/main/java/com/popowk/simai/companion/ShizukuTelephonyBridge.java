@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.util.Log;
 import rikka.shizuku.Shizuku;
+import java.lang.reflect.Method;
 
 /**
  * Privileged telephony operations via Shizuku (UID 2000 shell).
@@ -23,7 +24,6 @@ public final class ShizukuTelephonyBridge {
     public static boolean hasPermission() {
         if (!isShizukuAvailable()) return false;
         try {
-            if (Shizuku.isPre_V11()) return false;
             return Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
         } catch (Throwable t) {
             return false;
@@ -43,39 +43,46 @@ public final class ShizukuTelephonyBridge {
         return isShizukuAvailable() && hasPermission();
     }
 
+    private static int exec(String[] command) {
+        try {
+            Method newProcessMethod = Shizuku.class.getDeclaredMethod(
+                    "newProcess", String[].class, String[].class, String.class);
+            newProcessMethod.setAccessible(true);
+            Process process = (Process) newProcessMethod.invoke(null, (Object) command, null, null);
+            if (process != null) {
+                return process.waitFor();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "exec failed: " + java.util.Arrays.toString(command), t);
+        }
+        return -1;
+    }
+
     /**
      * Executes privileged call answering via Shizuku shell process (UID 2000).
      */
     public static String answerCall(Context context) {
         if (!isReady()) return "SHIZUKU_NOT_READY";
         Log.i(TAG, "Attempting privileged answerCall via Shizuku...");
-        try {
-            // Android 10+ Telecom Manager CLI
-            Process process = Shizuku.newProcess(new String[]{"cmd", "telecom", "answer"}, null, null);
-            int exitCode = process.waitFor();
-            if (exitCode == 0) {
-                Log.i(TAG, "cmd telecom answer succeeded via Shizuku");
-                return "ANSWER_REQUESTED";
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "cmd telecom answer failed, trying legacy", t);
+
+        // 1. Android 10+ Telecom Manager CLI
+        if (exec(new String[]{"cmd", "telecom", "answer"}) == 0) {
+            Log.i(TAG, "cmd telecom answer succeeded via Shizuku");
+            return "ANSWER_REQUESTED";
         }
 
-        try {
-            // Legacy telecom answer CLI
-            Process process = Shizuku.newProcess(new String[]{"telecom", "answer"}, null, null);
-            if (process.waitFor() == 0) return "ANSWER_REQUESTED";
-        } catch (Throwable t) {
-            Log.w(TAG, "telecom answer failed", t);
+        // 2. Legacy telecom answer CLI
+        if (exec(new String[]{"telecom", "answer"}) == 0) {
+            Log.i(TAG, "telecom answer succeeded via Shizuku");
+            return "ANSWER_REQUESTED";
         }
 
-        try {
-            // Hardware KEYCODE_CALL fallback
-            Process process = Shizuku.newProcess(new String[]{"input", "keyevent", "5"}, null, null);
-            if (process.waitFor() == 0) return "ANSWER_REQUESTED";
-        } catch (Throwable t) {
-            Log.w(TAG, "keyevent 5 failed", t);
+        // 3. Hardware KEYCODE_CALL fallback
+        if (exec(new String[]{"input", "keyevent", "5"}) == 0) {
+            Log.i(TAG, "keyevent 5 succeeded via Shizuku");
+            return "ANSWER_REQUESTED";
         }
+
         return "SHIZUKU_ANSWER_FAILED";
     }
 
@@ -85,34 +92,26 @@ public final class ShizukuTelephonyBridge {
     public static String endCall(Context context) {
         if (!isReady()) return "SHIZUKU_NOT_READY";
         Log.i(TAG, "Attempting privileged endCall via Shizuku...");
-        try {
-            // Android 10+ Telecom Manager CLI
-            Process process = Shizuku.newProcess(new String[]{"cmd", "telecom", "end-call"}, null, null);
-            if (process.waitFor() == 0) {
-                try {
-                    Shizuku.newProcess(new String[]{"input", "keyevent", "6"}, null, null);
-                } catch (Throwable ignored) {}
-                return "HANGUP_SUCCESS";
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "cmd telecom end-call failed, trying legacy", t);
+
+        // 1. Android 10+ Telecom Manager CLI
+        if (exec(new String[]{"cmd", "telecom", "end-call"}) == 0) {
+            exec(new String[]{"input", "keyevent", "6"});
+            Log.i(TAG, "cmd telecom end-call succeeded via Shizuku");
+            return "HANGUP_SUCCESS";
         }
 
-        try {
-            // Legacy telecom end-call CLI
-            Process process = Shizuku.newProcess(new String[]{"telecom", "end-call"}, null, null);
-            if (process.waitFor() == 0) return "HANGUP_SUCCESS";
-        } catch (Throwable t) {
-            Log.w(TAG, "telecom end-call failed", t);
+        // 2. Legacy telecom end-call CLI
+        if (exec(new String[]{"telecom", "end-call"}) == 0) {
+            Log.i(TAG, "telecom end-call succeeded via Shizuku");
+            return "HANGUP_SUCCESS";
         }
 
-        try {
-            // Hardware KEYCODE_ENDCALL fallback
-            Process process = Shizuku.newProcess(new String[]{"input", "keyevent", "6"}, null, null);
-            if (process.waitFor() == 0) return "HANGUP_SUCCESS";
-        } catch (Throwable t) {
-            Log.w(TAG, "keyevent 6 failed", t);
+        // 3. Hardware KEYCODE_ENDCALL fallback
+        if (exec(new String[]{"input", "keyevent", "6"}) == 0) {
+            Log.i(TAG, "keyevent 6 succeeded via Shizuku");
+            return "HANGUP_SUCCESS";
         }
+
         return "SHIZUKU_HANGUP_FAILED";
     }
 }
