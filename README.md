@@ -1,4 +1,6 @@
-# SIM AI Assistant · V0.4.27（回归成功接听路径 + vivo 通话状态复核）
+# SIM AI Assistant · V0.4.28（ChatGPT Voice 麦克风收音检测及修复）
+
+> 09:12 用户实机日志已确认 v0.4.27 的自动接听、OFFHOOK、电话 PCM（1425 帧、RMS 0.11746）和 BlackHole2 输出回调（1423 帧）都正常，但 GPT 仍无回复。v0.4.28 **不更改手机 Companion v0.3.12、ADB 接听、PCM helper**，修复内嵌 WebKit 麦克风 Web Audio 电平图，并增加 BlackHole2 实际输入回环 RMS、WebKit 轨道静音事件、可用时的 WebRTC 实际发声诊断。若通话依然无 GPT 回答，新诊断可明确故障断在驱动回环、网页麦克风或 WebRTC。Mac v0.4.28 Build45；仍需 vivo 实机复验。
 
 > 依据 v0.4.26 Build43 01:09 的真实日志，权限已授权，自动接听卡在先尝试私有文件 NO_ACK 后 HTTP 超时，电话未接通所以 GPT 虚拟麦克风保持静音。v0.4.27 恢复 v0.4.21 实际接通成功的“新建独立 ADB 转发 → POST /call/answer → OFFHOOK → PCM”路径，备用 Shell 广播与文件仅在失败后尝试；不增加只用于拨号的 CALL_PHONE。Android Companion v0.3.12 的前台服务主动核对 TelephonyManager 通话状态，处理 vivo 锁屏迟到的 OFFHOOK 事件，手动接通同一通已跟踪来电后可继续音频 PCM。必须在目标 vivo 真实电话中再次验证自动接听与声音，Mac 编译成功不代表电话自动接通，也不能保证 ChatGPT 官方 Voice 实际识别讲话。
 
