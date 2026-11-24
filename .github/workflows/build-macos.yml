@@ -10,7 +10,7 @@ on:
 
 # Only the newest main build should publish the easy-download test release.
 concurrency:
-  group: simai-phone-bh2-webaudio-v0431-${{ github.ref }}
+  group: simai-build-v0435-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -19,7 +19,7 @@ permissions:
 jobs:
   build:
     name: Build Apple Silicon App
-    runs-on: macos-15
+    runs-on: macos-14
     timeout-minutes: 30
     steps:
       - name: Checkout source
