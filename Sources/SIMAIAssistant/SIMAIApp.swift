@@ -52,7 +52,7 @@ private struct MenuBarCommands: View {
             model.restoreAutomaticGPTOutput(forceInput: true, userRequested: true)
         }
         Divider()
-        Text("v0.4.41 · ADB offline 自愈、伴侣死锁根除、Shizuku 特权修复")
+        Text(model.localReceptionEnabled ? "v0.4.41 · 本地离线电话接待" : "v0.4.41 · ADB offline 自愈、伴侣死锁根除、Shizuku 特权修复")
         Button("退出 SIM AI Assistant") {
             model.shutdownForAppExit()
             NSApp.terminate(nil)
