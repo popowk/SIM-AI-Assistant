@@ -367,7 +367,7 @@ struct DashboardView: View {
             }
 
             SecureField("飞书机器人签名密钥（可选，未设置加签留空）",
-                        text: $model.feishuSecretDraft)
+                        text: $model.feishuSigningSecretDraft)
                 .textFieldStyle(.roundedBorder)
 
             Toggle("自动转发手机新短信（含验证码）", isOn: $model.feishuForwardEnabled)
