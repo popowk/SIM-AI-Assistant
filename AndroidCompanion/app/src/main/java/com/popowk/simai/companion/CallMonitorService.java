@@ -34,6 +34,7 @@ public final class CallMonitorService extends Service {
     private static final long WAKELOCK_RENEWAL = 15L * 60 * 1000;
     private final Handler wakeHandler = new Handler(Looper.getMainLooper());
     private PowerManager.WakeLock lock;
+    private android.net.wifi.WifiManager.WifiLock wifiLock;
     private final Runnable renewLock = new Runnable() {
         @Override public void run() {
             if (!running || !getSharedPreferences(PREFS, MODE_PRIVATE)
@@ -146,6 +147,23 @@ public final class CallMonitorService extends Service {
             note("锁屏运行增强不可用：" + failed.getClass().getSimpleName());
             releaseWakeLock();
         }
+        try {
+            if (wifiLock == null) {
+                android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+                if (wm != null) {
+                    int mode = Build.VERSION.SDK_INT >= 29
+                        ? android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                        : android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+                    wifiLock = wm.createWifiLock(mode, "SIMAI:CompanionWiFiLock");
+                    wifiLock.setReferenceCounted(false);
+                }
+            }
+            if (wifiLock != null && !wifiLock.isHeld()) {
+                wifiLock.acquire();
+            }
+        } catch (Exception e) {
+            note("Wi-Fi 后台常驻锁异常：" + e.getClass().getSimpleName());
+        }
     }
 
     private void releaseWakeLock() {
@@ -153,6 +171,12 @@ public final class CallMonitorService extends Service {
         if (lock != null) {
             if (lock.isHeld()) lock.release();
             lock = null;
+        }
+        if (wifiLock != null) {
+            try {
+                if (wifiLock.isHeld()) wifiLock.release();
+            } catch (Exception ignored) {}
+            wifiLock = null;
         }
     }
 

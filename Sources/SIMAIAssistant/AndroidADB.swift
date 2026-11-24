@@ -780,7 +780,15 @@ enum ADBInspector {
         case .completed(0, let output): devices = parseDevices(output)
         default: return fail("ADB_UNAVAILABLE")
         }
-        let authorized = devices.filter { $0.state == "device" }
+        var authorized = devices.filter { $0.state == "device" }
+        if authorized.isEmpty,
+           let saved = UserDefaults.standard.string(forKey: "SIMAI_LAST_AUTHORIZED_WIFI_ADB"),
+           BridgeRetryPolicy.validWirelessEndpoint(saved) {
+            _ = run(adb, args: ["connect", saved], timeout: 8)
+            if case .completed(0, let refreshed) = run(adb, args: ["devices"], timeout: 10) {
+                authorized = parseDevices(refreshed).filter { $0.state == "device" }
+            }
+        }
         guard authorized.count == 1 else { return fail("ADB_DEVICE_COUNT") }
         let serial = authorized[0].serial
         let remote = "/data/local/tmp/simai-audio-probe.jar"

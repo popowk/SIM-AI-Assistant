@@ -1,7 +1,14 @@
 # 变更记录
 
-## 0.4.40（毫秒级 ADB 直连重试、根治设备重连卡顿与自愈机制）— 2026-11-24
+## 0.4.40（自动接听全双工音频竞态修复、Wi-Fi 后台常驻硬件锁、毫秒级 ADB 直连重试）— 2026-11-24
 
+- **彻底根治“自动接了电话，GPT 听不到声音”（Voice 预检与 OFFHOOK 竞态条件修复）**：
+  - **排查根因**：来电由自动接听拉起时，手机在数百毫秒内迅速进入 `OFFHOOK` 状态。由于内嵌 WebKit Voice 页面与虚拟声卡预检尚需约 1 秒完成，此前 `reactToAutomaticCallState` 与 `checkEmbeddedVoiceHealth` 中的旧逻辑误将预检尚未完成的 `OFFHOOK` 状态判定为“未匹配本次响铃（RINGING_LOST）”，强行将 `incomingVoiceBlockedUntilIdle` 设为 `true` 并释放了本次通话的音频建立，导致 ChatGPT 监听完全处于静音通道。
+  - **链路放行与就绪即连**：修正 `reactToAutomaticCallState`、`checkEmbeddedVoiceHealth` 与 `onEmbeddedVoiceCapture`，显式放行由本应用发起的自动接听（`automaticAnswerRequested || automaticAnswerAcknowledged`）；当 Voice 预检在 `OFFHOOK` 期间就绪后，立即触发 `.openCallAudio`，无缝拉起全双工双向 PCM 音频流与 BlackHole 虚拟麦克风路由。
+  - **无线音频通道自动回退**：在 `prepareAudioStream` 中增加无线 ADB 自动连接机制，确保无线调试下音频助手也能正常转发连接。
+- **彻底根治“Wi-Fi 只有软件前台才能稳定接电话，后台不稳定”**：
+  - **伴侣端引入 `WifiManager.WifiLock` 硬件锁**：此前伴侣端仅持有 CPU WakeLock，手机切入后台或锁屏后，Android Wi-Fi 芯片进入低功耗省电休眠模式，导致局域网 18764 端口通信严重延迟或超时丢包。现于 `CallMonitorService` 中引入 `WIFI_MODE_FULL_LOW_LATENCY` / `WIFI_MODE_FULL_HIGH_PERF` 高性能 Wi-Fi 锁，确保后台及锁屏状态下局域网 TCP 直连通道不休眠。
+  - **系统级 Doze Mode 电池优化自动豁免**：在 Shizuku 自动授权阶段加入 `dumpsys deviceidle whitelist +com.popowk.simai.companion`，从系统底层彻底解除后台网络休眠限制；伴侣端界面提供一键“电池无限制/自启动”快捷配置入口。
 - **彻底根治“ADB 连接好一会都没连上”（毫秒级 ADB 重连自愈机制）**：
   - **排查根因**：
     1. 此前在未连接状态下，ADB 设备扫描间隔使用了 `BridgeRetryPolicy.adbScanInterval`，默认退避到 12~45 秒，导致插上数据线或重启 ADB 后，Mac 需等待 12 秒以上才会执行 `adb devices`；

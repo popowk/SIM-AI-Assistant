@@ -128,9 +128,18 @@ public final class MainActivity extends Activity {
         row1.addView(stop);
 
         Button batterySettings = new Button(this);
-        batterySettings.setText("系统权限/自启动");
+        batterySettings.setText("电池无限制/自启动");
         batterySettings.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
         batterySettings.setOnClickListener(v -> {
+            try {
+                PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+                if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+                    Intent ignore = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            Uri.parse("package:" + getPackageName()));
+                    startActivity(ignore);
+                    return;
+                }
+            } catch (Throwable ignored) {}
             Intent settings = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                     Uri.parse("package:" + getPackageName()));
             startActivity(settings);
@@ -139,7 +148,7 @@ public final class MainActivity extends Activity {
         column.addView(row1);
 
         CheckBox stayAwake = new CheckBox(this);
-        stayAwake.setText("锁屏常驻增强（保持 CPU 唤醒锁）");
+        stayAwake.setText("锁屏常驻增强（保持 CPU 与 Wi-Fi 后台唤醒）");
         stayAwake.setChecked(getSharedPreferences(CallMonitorService.PREFS, MODE_PRIVATE)
                 .getBoolean(CallMonitorService.KEEP_AWAKE, true));
         stayAwake.setOnCheckedChangeListener((buttonView, enabled) -> {

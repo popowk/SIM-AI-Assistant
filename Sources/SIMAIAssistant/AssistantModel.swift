@@ -577,7 +577,7 @@ final class AssistantModel: ObservableObject {
                (!isolatedChatGPTOutputEnabled ||
                 embeddedVoiceBrowser.isolatedOutputReady) &&
                (livePhoneState == "RINGING" ||
-                (livePhoneState == "OFFHOOK" && manualPickupFromTrackedRing)) &&
+                (livePhoneState == "OFFHOOK" && (manualPickupFromTrackedRing || automaticAnswerRequested || automaticAnswerAcknowledged))) &&
                !incomingVoiceBlockedUntilIdle {
                 setVoiceSessionPrepared(true)
                 if voiceSessionPrepared {
@@ -653,7 +653,7 @@ final class AssistantModel: ObservableObject {
             return
         }
         if livePhoneState != "RINGING" &&
-           !(livePhoneState == "OFFHOOK" && manualPickupFromTrackedRing) {
+           !(livePhoneState == "OFFHOOK" && (manualPickupFromTrackedRing || automaticAnswerRequested || automaticAnswerAcknowledged)) {
             // ADB may disconnect during a ringing session. Do not leave
             // a live browser or virtual audio route running indefinitely.
             incomingVoicePending = false
@@ -1218,7 +1218,8 @@ final class AssistantModel: ObservableObject {
         // Do not cancel an in-progress Voice startup just because the user
         // answered that same ring before the browser was ready.
         if state == "OFFHOOK" && incomingVoicePending && !voiceSessionPrepared &&
-           !manualPickupFromTrackedRing {
+           !manualPickupFromTrackedRing &&
+           !automaticAnswerRequested && !automaticAnswerAcknowledged {
             incomingVoicePending = false
             incomingVoiceBlockedUntilIdle = true
             incomingVoiceDeadline = nil
@@ -1235,7 +1236,7 @@ final class AssistantModel: ObservableObject {
         )
         let armed = autoCallEnabled && voiceSessionPrepared && browserReady &&
             automaticVoiceReadinessIssues().isEmpty && !adbInstalling &&
-            !audioProbeBusy && (state != "OFFHOOK" || automaticAnswerAcknowledged)
+            !audioProbeBusy && (state != "OFFHOOK" || automaticAnswerAcknowledged || automaticAnswerRequested)
         let action = autoCallState.update(state: state, armed: armed)
         switch action {
         case .answerIncoming:

@@ -57,6 +57,7 @@ public final class ShizukuTelephonyBridge {
                 exec(new String[]{"pm", "grant", pkg, "android.permission.READ_PHONE_STATE"});
                 exec(new String[]{"pm", "grant", pkg, "android.permission.RECEIVE_SMS"});
                 exec(new String[]{"appops", "set", pkg, "SYSTEM_ALERT_WINDOW", "allow"});
+                exec(new String[]{"dumpsys", "deviceidle", "whitelist", "+" + pkg});
                 Log.i(TAG, "autoGrantAppPermissions executed asynchronously via Shizuku for: " + pkg);
             } catch (Throwable t) {
                 Log.w(TAG, "autoGrantAppPermissions async failed", t);
