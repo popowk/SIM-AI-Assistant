@@ -60,6 +60,7 @@ final class AssistantModel: ObservableObject {
     private var localRingSession = ""
     private var localRingSequence = 0
     private var localCallAudioRequested = false
+    private var localAudioAttemptedForRing = false
     @Published var voiceSessionPrepared = false
     @Published var useEmbeddedVoiceBrowser =
         UserDefaults.standard.object(forKey: "SIMAI_EMBEDDED_VOICE_MODE") as? Bool ?? true
@@ -1063,6 +1064,7 @@ final class AssistantModel: ObservableObject {
             localReceptionStatus = "本地引擎已停止"
             localCallAudioRequested = false
             localRingSession = ""; localRingSequence = 0
+            localAudioAttemptedForRing = false
             setEmbeddedVoiceBrowserEnabled(true)
         }
     }
@@ -1116,6 +1118,7 @@ final class AssistantModel: ObservableObject {
             automaticAnswerRequested = false; automaticAnswerAcknowledged = false
             automaticAnswerSession = ""; automaticOffhookSequence = 0
             localRingSession = ""; localRingSequence = 0
+            localAudioAttemptedForRing = false
             autoCallState.reset()
             if localReceptionReady {
                 autoCallStatus = autoCallEnabled ? "离线接待空闲待命" : "自动接听已关闭"
@@ -1136,6 +1139,7 @@ final class AssistantModel: ObservableObject {
                   FileManager.default.fileExists(atPath: jar.path) else { return }
             localRingSession = bridgeCursor.session
             localRingSequence = bridgeCursor.lastSequence
+            localAudioAttemptedForRing = false
             localReceptionText.removeAll()
             autoCallStatus = "本地引擎就绪，正在请求接听"
             answerIncomingPhoneCall(automatic: true)
@@ -1144,10 +1148,11 @@ final class AssistantModel: ObservableObject {
                   localRingSequence > 0,
                   bridgeCursor.lastSequence == localRingSequence + 1,
                   automaticAnswerRequested || automaticAnswerAcknowledged,
-                  !localCallAudioRequested, !liveVoiceActive, !liveVoiceStarting {
+                  !localAudioAttemptedForRing, !localCallAudioRequested, !liveVoiceActive, !liveVoiceStarting {
             if automaticAnswerAcknowledged && automaticAnswerSession == bridgeCursor.session {
                 automaticOffhookSequence = bridgeCursor.lastSequence
             }
+            localAudioAttemptedForRing = true
             localCallAudioRequested = true
             autoCallStatus = "已接通，正在建立本地电话 PCM"
             startLiveVoice()
@@ -2663,6 +2668,9 @@ final class AssistantModel: ObservableObject {
     }
 
     func stopLiveVoice() {
+        if localReceptionEnabled && (livePhoneState == "RINGING" || livePhoneState == "OFFHOOK") {
+            localAudioAttemptedForRing = true
+        }
         guard liveVoiceStarting || liveVoiceActive else {
             restoreAutomaticGPTOutput()
             return
