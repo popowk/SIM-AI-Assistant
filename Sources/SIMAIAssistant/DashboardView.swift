@@ -365,8 +365,8 @@ struct DashboardView: View {
             ))
             .font(.headline)
             Text(model.isolatedChatGPTOutputEnabled
-                ? "默认开启。视频和其他软件保持原有声音输出；ChatGPT 网页单独连接 BlackHole 16ch。只有网页确认独立输出后才自动接听，无法验证就不接听。"
-                : "传统模式会修改 Mac 总输出，播放中的视频也可能进入电话通道；仅用于设备兼容性测试。")
+                ? "实验性隔离模式（如网页不支持独立输出将安全回退系统调度）。"
+                : "推荐模式：通话时自动调度系统输出至 BlackHole 16ch 并同步监听耳机，挂断后自动恢复，保证 GPT 声音完整送达电话。")
                 .font(.caption).foregroundStyle(.secondary)
             if model.isolatedChatGPTOutputEnabled {
                 Label(model.embeddedVoiceBrowser.isolatedMicrophoneReady

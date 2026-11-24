@@ -310,6 +310,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
                   return;
                 }
                 if (ctx.state !== 'running') {
+                  Promise.resolve(ctx.resume()).catch(() => {});
                   if (previous !== 'unavailable') {
                     previous = 'unavailable';
                     reportMic('BLACKHOLE2_SIGNAL_METER_UNAVAILABLE');
@@ -722,12 +723,12 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         onDiagnostic?(active ? "VOICE_WEBKIT_CAPTURE_ACTIVE" : "VOICE_WEBKIT_CAPTURE_INACTIVE")
         if active {
             checkActualMicrophoneRouting(force: true)
-        } else {
+        } else if captureState == .none {
             updateIsolatedMicrophoneReady(false)
         }
         if active && isolatedAudioOutputEnabled {
             routeCurrentVoiceAudioIfNeeded(force: true)
-        } else if !active {
+        } else if captureState == .none {
             updateIsolatedOutputReady(false)
         }
         onMicrophoneChange?(active)

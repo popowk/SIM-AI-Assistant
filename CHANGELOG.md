@@ -1,5 +1,15 @@
 # 变更记录
 
+## 0.4.32（全双工音频与系统路由修复：彻底解决接听后听不到声音）— 2026-11-24
+
+- **解决电话听不到 GPT 声音（系统输出调度修复）**：
+  - 根因分析：macOS WebKit 未实现 Web Audio API 的 `AudioContext.prototype.setSinkId`（在 macOS WebKit 中为 undefined）。旧版本默认开启的“视频隔离输出”假定网页可通过 setSinkId 将声音单独送入 BlackHole 16ch，导致实际跳过了系统默认输出切换；ChatGPT 的 Web Audio 声音全部流向 Mac 物理喇叭，BlackHole 16ch 完全静音，回传给手机的通话音频为 0。
+  - 架构修复：切换为可靠的系统输出调度机制（AutoVoiceOutputRouter）。通话接通时自动安全将 macOS 默认输出切换至 BlackHole 16ch，并通过 CoreAudio 本地监听分流至用户保存的物理耳机/扬声器（保证 Mac 前端仍可正常听到），挂断时立即自动恢复 Mac 原有输出设备。
+  - 修复异步时序死锁：通话交替对话中 WebKit 麦克风短暂变更为 `.muted` 状态时，旧代码触发了 `setAIReplyToPhone(false)` 且因异步验证状态不一致导致上行被永久静音。现已修复状态机判定：在通话进行中不因暂态变更掐断通话上行，并解除互锁死锁。
+- **解决 GPT 听不到电话声音（分析仪与输入通道激活）**：
+  - 修复 WebKit 页面内音频分析仪 AudioContext suspended 状态，在启动时自动调用 `resume()` 确保分析仪及 VAD 识别稳定生效。
+  - 应用启动时主动请求并检查 macOS 麦克风系统权限，避免 CoreAudio 输入端因权限静默丢弃采样帧。
+
 ## 0.4.31（精确绑定 BlackHole 2ch 虚拟麦克风与 Web Audio 全链路路由）— 2026-11-24
 
 - **解决 GPT 听不到电话声音（麦克风串台修复）**：

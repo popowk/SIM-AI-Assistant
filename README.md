@@ -1,6 +1,11 @@
-# SIM AI Assistant · V0.4.31（精确绑定 BlackHole 2ch 虚拟麦克风与 Web Audio 全链路路由）
+# SIM AI Assistant · V0.4.32（全双工音频与系统路由修复：彻底解决接听后听不到声音问题）
 
-> 修复 ChatGPT Voice 启动时因未精准绑定 deviceId 导致抓取系统硬件麦克风（USB 麦克风）而听不到电话下行声音的问题；并在声音隔离模式下补齐 Web Audio（AudioContext）的 setSinkId 路由与预设绑定，保证 GPT 回复音频能完整导向 BlackHole 16ch 传回手机。
+> V0.4.32 彻底解决接听电话后“听不到 GPT 说话、GPT 也听不到电话声音”的问题：
+> 1. **根因修复**：macOS WebKit 不支持 Web Audio API 的 `AudioContext.prototype.setSinkId`（在 macOS 上为 undefined）。之前强制开启的“视频隔离输出”导致 ChatGPT 网页音频无法流入 BlackHole 16ch，回传手机始终完全静音。新版采用稳定可靠的系统输出调度机制：通话期间自动安全切换系统默认输出至 BlackHole 16ch 并同步分流至真实耳机/扬声器监听，挂断后立刻自动恢复原扬声器；
+> 2. **消除误拦截与死锁**：修复通话交替对话中 WebKit 麦克风短暂处于 `.muted` 状态时触发的“麦克风未验证”误拦截，消除因异步时序导致的电话上行永久静音死锁；
+> 3. **麦克风分析仪唤醒**：修复 WebKit 页面内音频分析仪 AudioContext suspended 状态，在启动时自动调用 `resume()` 确保电话下行音频电平与 VAD 识别稳定生效。
+
+> V0.4.31 增加了 BlackHole 2ch 虚拟麦克风 deviceId 精准绑定与 Web Audio 检查。
 
 > V0.4.30 修复了 vivo 及 Android 锁屏下第三方 App 无法自动接听问题（增加 ADB 系统级 Telecom 接听兜底）。
 
