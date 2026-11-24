@@ -23,14 +23,14 @@ struct DashboardView: View {
                 statusBar
                 callControlPanel
                 quickSetupPanel
+                adbPanel
                 DisclosureGroup("飞书短信配置", isExpanded: $showFeishuSettings) {
                     feishuPanel
                         .padding(.top, 8)
                 }
                 .font(.subheadline)
-                DisclosureGroup("高级维护与诊断日志", isExpanded: $showAdvancedTools) {
+                DisclosureGroup("诊断中心与日志导出", isExpanded: $showAdvancedTools) {
                     VStack(alignment: .leading, spacing: 14) {
-                        adbPanel
                         diagnosticPanel
                     }
                     .padding(.top, 8)
@@ -77,7 +77,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("AI 电话自动值守 · 全双工音频 · v0.4.38")
+                Text("AI 电话自动值守 · 全双工音频 · v0.4.39")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -556,7 +556,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.38 (Build 55)").font(.caption.monospaced())
+            Text("v0.4.39 (Build 56)").font(.caption.monospaced())
         }
     }
 

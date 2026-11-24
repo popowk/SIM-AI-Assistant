@@ -1788,14 +1788,13 @@ final class AssistantModel: ObservableObject {
         guard !liveVoiceStarting, !liveVoiceActive,
               liveSyncEnabled, !adbInstalling, !bridgeBusy,
               !initialPhoneMonitorWarmup,
-              !(adbChecking && !adbWasAuthorized && bridgeLink == nil && wifiDirectEndpoint == nil),
               Date() >= bridgeRetryAfter else { return }
         bridgeBusy = true
         let generation = bridgeGeneration
         let since = bridgeCursor.lastSequence
 
-        // Tier 1: Try Wi-Fi direct first if configured
-        if let wifi = wifiDirectEndpoint {
+        // Tier 1: Try Wi-Fi direct first ONLY if actively connected and verified
+        if let wifi = wifiDirectEndpoint, wifiDirectActive {
             Task { [weak self] in
                 guard let self else { return }
                 guard let url = URL(string: "http://\(wifi)/events?since=\(since)") else {
@@ -1825,29 +1824,15 @@ final class AssistantModel: ObservableObject {
                 } catch {
                     guard self.liveSyncEnabled, generation == self.bridgeGeneration else { return }
                     self.consecutivePollFailures += 1
-                    if self.consecutivePollFailures >= self.maxPollFailuresBeforeDisconnect {
-                        self.wifiDirectActive = false
-                        if self.bridgeLink == nil {
-                            if self.livePhoneState != "RINGING" && self.livePhoneState != "OFFHOOK" {
-                                self.livePhoneState = "未连接"
-                                self.connectionTransport = "DISCONNECTED"
-                                self.liveBridgeStatus = "Wi-Fi 直连已断开，正在自动重新扫描手机伴侣……"
-                            }
-                            self.bridgeBusy = false
-                            return
-                        }
-                    }
-                    if self.bridgeLink != nil {
-                        self.pollLiveBridgeViaADB(generation: generation, since: since)
-                    } else {
-                        self.bridgeBusy = false
-                    }
+                    self.wifiDirectActive = false
+                    // Wi-Fi poll failed: immediately fall back to USB ADB so USB is NEVER blocked!
+                    self.pollLiveBridgeViaADB(generation: generation, since: since)
                 }
             }
             return
         }
 
-        // Tier 2: No Wi-Fi endpoint configured -> poll via USB ADB
+        // Tier 2: Poll via USB ADB (always attempts USB connection when Wi-Fi is inactive/unconfigured)
         pollLiveBridgeViaADB(generation: generation, since: since)
     }
 

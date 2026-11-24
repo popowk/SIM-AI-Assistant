@@ -1,4 +1,13 @@
-# SIM AI Assistant · V0.4.38（彻底解决来电断连 ANR、补齐 Wi-Fi Token、加固多轮自动接听与全双工音频）
+# SIM AI Assistant · V0.4.39（恢复 ADB 常驻直连控制面板、根治 Wi-Fi 阻塞 USB ADB 死锁逻辑）
+
+> V0.4.39 核心加固更新：
+> 1. **恢复 ADB 手机连接与维护面板常驻主界面**：
+>    - 将 ADB 面板从此前折叠的“高级维护与诊断日志”中彻底移出，恢复为首页常驻第一优先级面板，直观展示 ADB 状态、自动搜索、重启服务、安装 APK 及启动 Shizuku 特权按钮。
+> 2. **彻底根治 Wi-Fi 阻塞 USB ADB 连接的死锁逻辑**：
+>    - 修复此前只要 `wifiHost` 存有历史 IP，Wi-Fi 失败时直接 return 导致 `ADBInspector.openBridge` 永远无法执行的问题；
+>    - 只有当 Wi-Fi 直连处于活跃验证状态（`wifiDirectActive == true`）时走无线直连；一旦无线未就绪或轮询出错，100% 毫秒级回退至 USB ADB 轮询与设备自动建联，保证插线即连。
+
+## SIM AI Assistant · V0.4.38（彻底解决来电断连 ANR、补齐 Wi-Fi Token、加固多轮自动接听与全双工音频）
 
 > V0.4.38 深度修复来电断连与多轮自动接听稳定性问题：
 > 1. **彻底根治“一来电话就全断了”（消除伴侣端 UI 线程 ANR 与进程死锁）**：

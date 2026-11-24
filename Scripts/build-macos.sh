@@ -109,7 +109,7 @@ codesign --verify --verbose "$APP"
 echo "[5/5] 生成发行 ZIP..."
 ARCH="${TARGET_TRIPLE%%-*}"
 if [[ -z "${TARGET_TRIPLE:-}" ]]; then ARCH="$(uname -m)"; fi
-VERSION="$(defaults read "$APP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "0.4.38")"
+VERSION="$(defaults read "$APP/Contents/Info.plist" CFBundleShortVersionString 2>/dev/null || echo "0.4.39")"
 ARCHIVE="$DIST/SIM-AI-Assistant-v${VERSION}-macos-$ARCH.zip"
 rm -f "$ARCHIVE"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ARCHIVE"

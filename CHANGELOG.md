@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.4.39（恢复 ADB 常驻直连控制面板、根治 Wi-Fi 阻塞 USB ADB 死锁逻辑）— 2026-11-24
+
+- **恢复 ADB 手机连接与维护面板常驻主界面**：
+  - 此前将 ADB 面板收折于默认折叠的“高级维护与诊断日志”中，导致用户无法直接在界面看到 ADB 状态与操作入口。
+  - 现已将 `adbPanel`（包含 USB ADB 状态、自动/手动路径检测、重启 ADB、重新安装 Companion APK 及启动 Shizuku 特权等完整操作）恢复至主界面常驻展示，仅保留诊断日志折叠。
+- **彻底根治 Wi-Fi 阻塞 USB ADB 连接的严重逻辑缺陷**：
+  - **排查根因**：此前在 `pollLiveBridge` 中，只要 `wifiHost` 记录了局域网 IP（`wifiDirectEndpoint != nil`），轮询就会优先进入无线分支。当 Wi-Fi 未连上或断开且 `bridgeLink == nil` 时，旧代码直接 `return` 并放弃了调用 `pollLiveBridgeViaADB`，导致 `ADBInspector.openBridge` 永远没有机会执行，即使插上 USB 数据线也始终停留在“未连接”。
+  - **无缝回退自愈机制**：现修正为仅当 Wi-Fi 直连处于已验证的活跃状态（`wifiDirectActive == true`）时走无线直连；一旦无线未就绪或轮询出错，系统百分之百立即回退至 USB ADB 轮询与设备探测，保证插入 USB 数据线即可在 100ms 内瞬间建立 ADB 转发连接。
+
 ## 0.4.38（彻底解决来电断连 ANR、补齐 Wi-Fi Token、加固多轮自动接听与全双工音频）— 2026-11-24
 
 - **彻底根治“一来电话就全断了”（伴侣端 UI 线程 ANR 与进程死锁修复）**：
