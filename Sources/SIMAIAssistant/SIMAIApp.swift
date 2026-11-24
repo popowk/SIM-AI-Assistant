@@ -50,7 +50,7 @@ private struct MenuBarCommands: View {
             model.restoreAutomaticGPTOutput(forceInput: true, userRequested: true)
         }
         Divider()
-        Text("v0.4.39 · 恢复 ADB 常驻直连面板与双通道无缝轮询")
+        Text("v0.4.40 · 毫秒级 ADB 直连重试、根治设备重连卡顿与自愈机制")
         Button("退出 SIM AI Assistant") {
             model.shutdownForAppExit()
             NSApp.terminate(nil)

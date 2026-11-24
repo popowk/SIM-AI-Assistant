@@ -110,8 +110,8 @@ jobs:
         with:
           name: SIM-AI-Assistant-macOS-arm64
           path: |
-            dist/SIM-AI-Assistant-v0.4.39-macos-arm64.zip
-            dist/SIM-AI-Assistant-v0.4.39-macos-arm64.zip.sha256
+            dist/SIM-AI-Assistant-v0.4.40-macos-arm64.zip
+            dist/SIM-AI-Assistant-v0.4.40-macos-arm64.zip.sha256
             dist/SIMAI-Audio-Probe.jar
             dist/SIMAI-Android-Signing.txt
             dist/SIMAI-Companion-v0.3.18-debug.apk
@@ -135,11 +135,11 @@ jobs:
           if ! gh release view dev-latest >/dev/null 2>&1; then
             gh release create dev-latest --target "$(git rev-parse HEAD)" \
               --title "SIM AI Assistant · 最新测试版" --prerelease \
-              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.39 彻底恢复 ADB 常驻直连与控制面板，修复 Wi-Fi 阻塞 USB ADB 发现逻辑。"
+              --notes "Apple Silicon arm64 测试包；未经 Apple Developer ID 签名与公证。V0.4.40 毫秒级 ADB 直连重试、根治设备重连卡顿与自愈机制。"
           fi
           gh release upload dev-latest \
-            dist/SIM-AI-Assistant-v0.4.39-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.39-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.40-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.40-macos-arm64.zip.sha256 \
             dist/SIMAI-Audio-Probe.jar \
             dist/SIMAI-Android-Signing.txt \
             dist/SIMAI-Companion-v0.3.18-debug.apk \
@@ -159,8 +159,8 @@ jobs:
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            dist/SIM-AI-Assistant-v0.4.39-macos-arm64.zip \
-            dist/SIM-AI-Assistant-v0.4.39-macos-arm64.zip.sha256 \
+            dist/SIM-AI-Assistant-v0.4.40-macos-arm64.zip \
+            dist/SIM-AI-Assistant-v0.4.40-macos-arm64.zip.sha256 \
             dist/SIMAI-Companion-v0.3.18-debug.apk \
             dist/SIMAI-Companion-v0.3.18-debug.apk.sha256 \
             dist/SIMAI-Android-Signing.txt \

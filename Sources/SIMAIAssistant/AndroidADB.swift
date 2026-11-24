@@ -448,18 +448,30 @@ enum ADBInspector {
             // automatic ADB reconnection after Mac app restarts.
             UserDefaults.standard.set(serial, forKey: "SIMAI_LAST_AUTHORIZED_WIFI_ADB")
         }
-        let token: String
-        switch run(adb, args: ["-s", serial, "shell", "run-as",
-                               "com.popowk.simai.companion", "cat", "files/bridge-token"], timeout: 8) {
-        case .completed(0, let output):
-            let value = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard value.count == 64, value.unicodeScalars.allSatisfy({
-                ("0"..."9").contains(String($0)) || ("a"..."f").contains(String($0))
-            }) else {
-                return .init(link: nil, message: "手机端通信凭证无效，请启动伴侣电话监听")
+        var token: String = ""
+        let tokenCheck = run(adb, args: ["-s", serial, "shell", "run-as",
+                                         "com.popowk.simai.companion", "cat", "files/bridge-token"], timeout: 6)
+        var tokenRaw: String?
+        if case .completed(0, let output) = tokenCheck {
+            tokenRaw = output
+        } else {
+            // Dormant companion service: wake once and re-check before returning failure
+            _ = wakePhoneMonitorIfDesired(at: selected)
+            Thread.sleep(forTimeInterval: 0.5)
+            if case .completed(0, let retryOutput) = run(adb, args: ["-s", serial, "shell", "run-as",
+                                                                     "com.popowk.simai.companion", "cat", "files/bridge-token"], timeout: 6) {
+                tokenRaw = retryOutput
             }
-            token = value
-        default:
+        }
+        if let raw = tokenRaw {
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.count == 64, value.unicodeScalars.allSatisfy({
+                ("0"..."9").contains(String($0)) || ("a"..."f").contains(String($0))
+            }) {
+                token = value
+            }
+        }
+        guard !token.isEmpty else {
             return .init(link: nil, message: "手机监听服务未启动或 ADB 无法读取凭证；将继续自动尝试")
         }
         switch run(adb, args: ["-s", serial, "forward", "tcp:0", "tcp:18764"], timeout: 8) {

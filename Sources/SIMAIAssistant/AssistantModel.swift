@@ -1330,8 +1330,8 @@ final class AssistantModel: ObservableObject {
         adbChecking = true
         let path = selectedADBPath
         let scanGeneration = adbScanGeneration
-        nextADBScanAt = Date().addingTimeInterval(12)
-        Task.detached(priority: .utility) { [weak self] in
+        nextADBScanAt = Date().addingTimeInterval(bridgeLink == nil ? 2.5 : 12)
+        Task.detached(priority: .userInitiated) { [weak self] in
             let found = ADBInspector.inspect(at: path)
             let description = ADBInspector.discoveryLabel(at: path)
             await MainActor.run {
@@ -1344,6 +1344,7 @@ final class AssistantModel: ObservableObject {
                 self.lastADBScanAt = Date()
                 let connected = found.authorized == 1
                 self.nextADBScanAt = Date().addingTimeInterval(
+                    self.bridgeLink == nil ? 2.5 :
                     BridgeRetryPolicy.adbScanInterval(
                         authorizedDevices: found.authorized,
                         recentlySynced: self.liveBridgeLastSync.map {
@@ -1367,11 +1368,10 @@ final class AssistantModel: ObservableObject {
                 else { self.adbTransientMissingScans += 1 }
                 let stableConnected = connected ||
                     (self.adbWasAuthorized && self.adbTransientMissingScans < 3)
-                let reconnected = !self.adbWasAuthorized && stableConnected
                 self.adbWasAuthorized = stableConnected
-                if reconnected && self.liveSyncEnabled && self.bridgeLink == nil {
+                if stableConnected && self.liveSyncEnabled && self.bridgeLink == nil {
                     self.resetBridgeRetry()
-                    self.beginInitialPhoneMonitorWarmup()
+                    self.pollLiveBridge()
                 } else if !stableConnected && self.liveSyncEnabled {
                     self.liveBridgeStatus = "ADB 暂时不可用，保留已有连接并自动重试"
                 }
@@ -1389,7 +1389,7 @@ final class AssistantModel: ObservableObject {
         liveBridgeStatus = "检测到已授权手机，正在恢复电话监听服务……"
         let adb = selectedADBPath
         let generation = bridgeGeneration
-        Task.detached(priority: .utility) { [weak self] in
+        Task.detached(priority: .userInitiated) { [weak self] in
             let code = ADBInspector.wakePhoneMonitorIfDesired(at: adb)
             if ["PHONE_MONITOR_WAKE_REQUESTED",
                 "PHONE_MONITOR_ACTIVITY_WAKE_REQUESTED"].contains(code) {
@@ -1402,7 +1402,7 @@ final class AssistantModel: ObservableObject {
                 self.initialPhoneMonitorWarmup = false
                 guard generation == self.bridgeGeneration,
                       self.liveSyncEnabled else { return }
-                self.nextPhoneMonitorWakeAt = Date().addingTimeInterval(90)
+                self.nextPhoneMonitorWakeAt = Date().addingTimeInterval(30)
                 let requested = ["PHONE_MONITOR_WAKE_REQUESTED",
                                  "PHONE_MONITOR_ACTIVITY_WAKE_REQUESTED"].contains(code)
                 self.log(requested ? .info : .warn,
@@ -1517,6 +1517,8 @@ final class AssistantModel: ObservableObject {
     func reconnectLiveBridge() {
         resetBridgeRetry()
         closeLiveBridge()
+        nextADBScanAt = .distantPast
+        nextBridgeForwardAttempt = .distantPast
         liveBridgeStatus = "正在重连……"
         if liveSyncEnabled { pollLiveBridge() }
     }
@@ -1604,7 +1606,15 @@ final class AssistantModel: ObservableObject {
 
     private func noteBridgeFailure(code: String, domain: String) {
         bridgeConsecutiveFailures += 1
-        let delay = consecutivePollFailures < maxPollFailuresBeforeDisconnect ? 1 : Int(BridgeRetryPolicy.delay(after: bridgeConsecutiveFailures))
+        let delay: Int
+        if bridgeLink == nil {
+            // Fast retry while disconnected so USB plug-in or background wake reconnects quickly
+            delay = 2
+        } else if consecutivePollFailures < maxPollFailuresBeforeDisconnect {
+            delay = 1
+        } else {
+            delay = Int(BridgeRetryPolicy.delay(after: bridgeConsecutiveFailures))
+        }
         bridgeRetryAfter = Date().addingTimeInterval(TimeInterval(delay))
         let isStartup = Date() < startupBridgeGraceUntil &&
             bridgeConsecutiveFailures <= 5
@@ -1905,10 +1915,10 @@ final class AssistantModel: ObservableObject {
                 bridgeBusy = false
                 return
             }
-            nextBridgeForwardAttempt = Date().addingTimeInterval(3)
+            nextBridgeForwardAttempt = Date().addingTimeInterval(2)
             let path = selectedADBPath
             Task { [weak self] in
-                let result = await Task.detached(priority: .utility) {
+                let result = await Task.detached(priority: .userInitiated) {
                     ADBInspector.openBridge(at: path)
                 }.value
                 guard let self else { return }
@@ -2093,10 +2103,20 @@ final class AssistantModel: ObservableObject {
     func restartADB() {
         log(.info, .system, "正在重启 ADB 守护进程以清理冲突……")
         let path = selectedADBPath
+        resetBridgeRetry()
+        adbWasAuthorized = false
+        adbTransientMissingScans = 0
+        nextADBScanAt = .distantPast
+        liveBridgeStatus = "正在重启 ADB 并重新扫描已授权设备……"
         Task.detached(priority: .userInitiated) { [weak self] in
             _ = ADBInspector.restartADBServer(at: path)
+            // Allow adb server and USB device enumeration 1.2 seconds to settle
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
             await MainActor.run {
-                self?.inspectADB()
+                guard let self else { return }
+                self.resetBridgeRetry()
+                self.nextADBScanAt = .distantPast
+                self.inspectADB()
             }
         }
     }
@@ -2919,6 +2939,7 @@ final class AssistantModel: ObservableObject {
                 self.adbWasAuthorized = result.authorized == 1
                 self.adbScanSignature = "\(result.installed)/\(result.authorized)/\(result.unauthorized)/\(result.offline)/\(description)"
                 self.nextADBScanAt = Date().addingTimeInterval(
+                    self.bridgeLink == nil ? 2.5 :
                     BridgeRetryPolicy.adbScanInterval(authorizedDevices: result.authorized,
                                                        recentlySynced: false))
                 if result.authorized == 1 && self.liveSyncEnabled && self.bridgeLink == nil {
