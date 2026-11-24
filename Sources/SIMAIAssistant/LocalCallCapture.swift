@@ -8,6 +8,7 @@ import SIMAICore
 final class LocalCallCapture {
     let recordAudio: Bool
     private let webhook: FeishuWebhookSettings?
+    var requestsForwarding: Bool { webhook != nil }
     private let gate = NSLock()
     private let began = Date()
     private let identifier = UUID().uuidString

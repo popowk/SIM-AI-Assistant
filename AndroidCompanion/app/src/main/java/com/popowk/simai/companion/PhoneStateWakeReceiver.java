@@ -29,7 +29,10 @@ public final class PhoneStateWakeReceiver extends BroadcastReceiver {
         // Only request a restart of the user's existing foreground service.
         // Android/OEM policy may deny background startup; never bypass it.
         try {
-            context.startForegroundService(new Intent(context, CallMonitorService.class));
+            Intent start = new Intent(context, CallMonitorService.class);
+            start.putExtra("system_phone_state", value);
+            start.putExtra("system_phone_state_elapsed", android.os.SystemClock.elapsedRealtime());
+            context.startForegroundService(start);
             CallMonitorService.note("系统电话广播请求恢复前台监听");
         } catch (Exception denied) {
             CallMonitorService.note("系统电话广播恢复被系统拒绝：" + denied.getClass().getSimpleName());

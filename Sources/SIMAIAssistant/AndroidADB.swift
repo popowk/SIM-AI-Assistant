@@ -902,7 +902,7 @@ enum ADBInspector {
                   decoded.schema == 1, decoded.running,
                   decoded.events.count <= 64,
                   ["IDLE", "RINGING", "OFFHOOK"].contains(decoded.state),
-                  decoded.isFresh(referenceMilliseconds: Int64(Date().timeIntervalSince1970 * 1000))
+                  decoded.isFresh(referenceMilliseconds: Int64(Date().timeIntervalSince1970 * 1000), maxAgeMilliseconds: 20_000, maxFutureSkewMilliseconds: 5_000)
             else { return failure("SNAPSHOT_INVALID_OR_STALE") }
             return .init(snapshot: decoded, reason: "ADB_FILE_OK")
         case .completed: return failure("SNAPSHOT_UNAVAILABLE")

@@ -36,8 +36,10 @@ public struct PhoneBridgeSnapshot: Codable, Equatable {
 
     /// Private-file transport uses a periodically refreshed timestamp; this
     /// prevents a killed Android service's last snapshot appearing online.
-    public func isFresh(referenceMilliseconds now: Int64, maxAgeMilliseconds: Int64 = 90_000) -> Bool {
-        guard let updatedAt, updatedAt > 0, now >= updatedAt else { return false }
+    public func isFresh(referenceMilliseconds now: Int64, maxAgeMilliseconds: Int64 = 90_000,
+                        maxFutureSkewMilliseconds: Int64 = 0) -> Bool {
+        guard let updatedAt, updatedAt > 0, now > 0 else { return false }
+        if updatedAt > now { return updatedAt - now <= maxFutureSkewMilliseconds }
         return now - updatedAt <= maxAgeMilliseconds
     }
 

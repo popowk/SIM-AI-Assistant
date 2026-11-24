@@ -6,6 +6,9 @@ final class LocalCaptureConsentTests: XCTestCase {
         XCTAssertFalse(LocalCaptureConsent.accepts("不同意"))
         XCTAssertFalse(LocalCaptureConsent.accepts("可以，但是不要转发"))
         XCTAssertFalse(LocalCaptureConsent.accepts("你好"))
+        XCTAssertFalse(LocalCaptureConsent.accepts("同意录音", recording: true, forwarding: true))
+        XCTAssertTrue(LocalCaptureConsent.accepts("同意录音", recording: true, forwarding: false))
+        XCTAssertFalse(LocalCaptureConsent.accepts("同意录音", recording: false, forwarding: true))
         XCTAssertTrue(LocalCaptureConsent.revokes("请停止录音"))
     }
 }

@@ -1822,6 +1822,7 @@ final class AssistantModel: ObservableObject {
     /// Existing phone-event decoder is shared by HTTP and shell-file paths,
     /// so there is exactly one state cursor across transport switches.
     private func applyBridgeSnapshot(_ snapshot: PhoneBridgeSnapshot, source: String) {
+        guard snapshot.session != bridgeCursor.session || snapshot.seq >= bridgeCursor.lastSequence else { return }
         consecutivePollFailures = 0
         let priorSession = bridgeCursor.session
         let received = bridgeCursor.consume(snapshot)
@@ -1992,7 +1993,7 @@ final class AssistantModel: ObservableObject {
                     let snapshot = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: data)
                     guard snapshot.schema == 1, snapshot.running,
                           ["IDLE", "RINGING", "OFFHOOK"].contains(snapshot.state),
-                          snapshot.isFresh(referenceMilliseconds: Int64(Date().timeIntervalSince1970 * 1000)) else {
+                          snapshot.isFresh(referenceMilliseconds: Int64(Date().timeIntervalSince1970 * 1000), maxAgeMilliseconds: 20_000, maxFutureSkewMilliseconds: 5_000) else {
                         throw NSError(domain: "SIMAI.WiFiBridge", code: 422)
                     }
                     self.consecutivePollFailures = 0
@@ -2040,7 +2041,7 @@ final class AssistantModel: ObservableObject {
                     let snapshot = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: data)
                     guard snapshot.schema == 1, snapshot.running,
                           ["IDLE", "RINGING", "OFFHOOK"].contains(snapshot.state),
-                          snapshot.isFresh(referenceMilliseconds: Int64(Date().timeIntervalSince1970 * 1000)) else {
+                          snapshot.isFresh(referenceMilliseconds: Int64(Date().timeIntervalSince1970 * 1000), maxAgeMilliseconds: 20_000, maxFutureSkewMilliseconds: 5_000) else {
                         throw NSError(domain: "SIMAI.ADBBridge", code: 422)
                     }
                     self.applyBridgeSnapshot(snapshot, source: "ADB_HTTP")
@@ -2483,7 +2484,7 @@ final class AssistantModel: ObservableObject {
                                 let result = await capture.finish()
                                 guard let self else { return }
                                 if self.voiceSessionID == id { self.localCaptureStatus = result }
-                                self.log(.info, .audio, "本地接待存档与推送流程结束", details: ["stage": "LOCAL_CAPTURE_FINISHED"])
+                                self.log(.info, .audio, "本地接待存档与推送流程结束", details: ["stage": "LOCAL_CAPTURE_FINISHED", "result": result])
                             }
                         }
                     }

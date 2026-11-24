@@ -100,7 +100,22 @@ public final class CallMonitorService extends Service {
                 telephonyManager = (TelephonyManager) getSystemService(TELEPHONY_SERVICE);
                 if (telephonyManager == null) throw new IllegalStateException("TelephonyManager unavailable");
                 lastState = "UNKNOWN";
-                handleState(telephonyManager.getCallState());
+                int initialState = telephonyManager.getCallState();
+                // A protected PHONE_STATE wake can arrive before the vendor's
+                // aggregate getCallState() cache catches up. Only consume a
+                // very recent broadcast, never an old sticky restart intent.
+                if (intent != null) {
+                    long eventAt = intent.getLongExtra("system_phone_state_elapsed", -1);
+                    long age = android.os.SystemClock.elapsedRealtime() - eventAt;
+                    int fromBroadcast = intent.getIntExtra("system_phone_state", -1);
+                    if (eventAt >= 0 && age >= 0 && age <= 5000 &&
+                        (fromBroadcast == TelephonyManager.CALL_STATE_RINGING ||
+                         fromBroadcast == TelephonyManager.CALL_STATE_OFFHOOK ||
+                         fromBroadcast == TelephonyManager.CALL_STATE_IDLE)) {
+                        initialState = fromBroadcast;
+                    }
+                }
+                handleState(initialState);
                 if (Build.VERSION.SDK_INT >= 31) {
                     StateCallback callback = new StateCallback();
                     telephonyCallback = callback;

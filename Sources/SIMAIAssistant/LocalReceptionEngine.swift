@@ -104,8 +104,8 @@ final class LocalReceptionEngine {
                 let reply: LocalReceptionPolicy.Reply
                 if consentPending {
                     consentPending = false
-                    if LocalCaptureConsent.accepts(text) {
-                        capture?.authorize()
+                    if let capture, LocalCaptureConsent.accepts(text, recording: capture.recordAudio, forwarding: capture.requestsForwarding) {
+                        capture.authorize()
                         reply = .consentAccepted
                     } else {
                         capture?.revoke()

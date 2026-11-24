@@ -331,6 +331,8 @@ final class SIMAICoreTests: XCTestCase {
         XCTAssertTrue(snapshot.isFresh(referenceMilliseconds: 1_090_000))
         XCTAssertFalse(snapshot.isFresh(referenceMilliseconds: 1_090_001))
         XCTAssertFalse(snapshot.isFresh(referenceMilliseconds: 999_999))
+        XCTAssertTrue(snapshot.isFresh(referenceMilliseconds: 999_999, maxAgeMilliseconds: 20_000, maxFutureSkewMilliseconds: 5_000))
+        XCTAssertFalse(snapshot.isFresh(referenceMilliseconds: 994_999, maxAgeMilliseconds: 20_000, maxFutureSkewMilliseconds: 5_000))
         let legacy = """
         {"schema":1,"session":"old","running":true,"state":"IDLE","seq":0,"events":[]}
         """
