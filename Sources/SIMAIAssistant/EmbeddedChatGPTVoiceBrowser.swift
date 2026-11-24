@@ -23,7 +23,9 @@ private final class SIMAIMicRouteSignalHandler: NSObject, WKScriptMessageHandler
                "WRONG_CAPTURE_DEVICE", "BLACKHOLE2_NOT_VISIBLE",
                "BLACKHOLE2_CAPTURE_FAILED",
                "BLACKHOLE2_SIGNAL_PRESENT", "BLACKHOLE2_SIGNAL_SILENT",
-               "BLACKHOLE2_SIGNAL_METER_UNAVAILABLE"].contains(code) else { return }
+               "BLACKHOLE2_SIGNAL_METER_UNAVAILABLE",
+               "BLACKHOLE2_TRACK_MUTED", "BLACKHOLE2_TRACK_UNMUTED",
+               "BLACKHOLE2_RTP_AUDIO_PRESENT", "BLACKHOLE2_RTP_AUDIO_SILENT"].contains(code) else { return }
         let target = browser
         Task { @MainActor [weak target] in
             target?.receiveMicrophoneFrameSignal(code)
@@ -67,6 +69,23 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     /// audio samples or page content are sent to the host process.
     func receiveMicrophoneFrameSignal(_ code: String) {
         guard loaded, microphoneActive, isOfficialPage else { return }
+        if code == "BLACKHOLE2_TRACK_MUTED" {
+            microphoneSignalStatus = "WebKit 实际录音音轨被系统静音，GPT 无法收到此段声音"
+            onDiagnostic?(code)
+            return
+        }
+        if code == "BLACKHOLE2_TRACK_UNMUTED" {
+            microphoneSignalStatus = "WebKit 录音音轨已解除系统静音，继续检测声音"
+            onDiagnostic?(code)
+            return
+        }
+        if code.hasPrefix("BLACKHOLE2_RTP_") {
+            microphoneSignalStatus = code == "BLACKHOLE2_RTP_AUDIO_PRESENT"
+                ? "网页 WebRTC 已发送非静音音频，可进一步确认 GPT 是否响应"
+                : "网页 WebRTC 音频持续无能量，需核对输入音轨"
+            onDiagnostic?(code)
+            return
+        }
         if code.hasPrefix("BLACKHOLE2_SIGNAL_") {
             let description: String
             switch code {
@@ -234,13 +253,30 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
               const analyser = ctx.createAnalyser();
               analyser.fftSize = 1024;
               source.connect(analyser);
+              // WebKit may not process an analyser-only graph consistently.
+              // Connect it to an explicitly ZERO-gain destination so the
+              // analyser is pulled without replaying the caller to speakers
+              // or leaking audio into the GPT return device.
+              const silentOutput = ctx.createGain();
+              silentOutput.gain.value = 0;
+              analyser.connect(silentOutput);
+              silentOutput.connect(ctx.destination);
+              Promise.resolve(ctx.resume()).catch(() => {});
               const samples = new Float32Array(analyser.fftSize);
               let quiet = 0, previous = '';
               const check = setInterval(() => {
                 if (track.readyState !== 'live') {
                   clearInterval(check);
                   source.disconnect();
+                  try { analyser.disconnect(); silentOutput.disconnect(); } catch (_) {}
                   Promise.resolve(ctx.close()).catch(() => {});
+                  return;
+                }
+                if (track.muted) {
+                  if (previous !== 'muted') {
+                    previous = 'muted';
+                    reportMic('BLACKHOLE2_TRACK_MUTED');
+                  }
                   return;
                 }
                 if (ctx.state !== 'running') {
@@ -255,7 +291,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
                 for (let i = 0; i < samples.length; i++)
                   power += samples[i] * samples[i];
                 const rms = Math.sqrt(power / samples.length);
-                if (rms >= 0.003) {
+                if (rms >= 0.0015) {
                   quiet = 0;
                   if (previous !== 'present') {
                     previous = 'present';
@@ -277,6 +313,8 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
             if (window.__simaiMicTracks.has(track)) return;
             window.__simaiMicTracks.add(track);
             monitorMicEnergy(track);
+            track.addEventListener('mute', () => reportMic('BLACKHOLE2_TRACK_MUTED'));
+            track.addEventListener('unmute', () => reportMic('BLACKHOLE2_TRACK_UNMUTED'));
             track.addEventListener('ended', () => {
               window.__simaiMicTracks.delete(track);
               if (![...window.__simaiMicTracks].some(t => t.readyState === 'live')) {
@@ -379,6 +417,44 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
               reportMic(window.__simaiMicRouteCode);
             }
           };
+          // Verify whether microphone samples reach the actual WebRTC sender.
+          // Only fixed presence/silence codes cross to Swift; no packets,
+          // media bytes, identifiers, transcript or remote session data.
+          const observeSenderEnergy = sender => {
+            if (!sender || typeof sender.getStats !== 'function' ||
+                sender.__simaiEnergyObserved) return;
+            sender.__simaiEnergyObserved = true;
+            let previousEnergy = null, previousPackets = null, last = '';
+            const check = setInterval(async () => {
+              if (!sender.track || sender.track.readyState !== 'live') {
+                clearInterval(check);
+                return;
+              }
+              try {
+                const stats = await sender.getStats();
+                let energy = null, packets = null;
+                stats.forEach(report => {
+                  if (report.type === 'outbound-rtp' &&
+                      (report.kind === 'audio' || report.mediaType === 'audio') &&
+                      typeof report.totalAudioEnergy === 'number') {
+                    energy = report.totalAudioEnergy;
+                    packets = typeof report.packetsSent === 'number'
+                      ? report.packetsSent : null;
+                  }
+                });
+                if (energy !== null && previousEnergy !== null &&
+                    (packets === null || previousPackets === null ||
+                     packets > previousPackets)) {
+                  const code = energy > previousEnergy + 0.00001
+                    ? 'BLACKHOLE2_RTP_AUDIO_PRESENT'
+                    : 'BLACKHOLE2_RTP_AUDIO_SILENT';
+                  if (code !== last) { last = code; reportMic(code); }
+                }
+                previousEnergy = energy;
+                previousPackets = packets;
+              } catch (_) {}
+            }, 3000);
+          };
           if (typeof RTCPeerConnection === 'function' &&
               typeof RTCPeerConnection.prototype.addTrack === 'function') {
             const originalAddTrack = RTCPeerConnection.prototype.addTrack;
@@ -387,6 +463,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
               if (track && track.kind === 'audio') {
                 Promise.resolve().then(() => verifyOutgoingTrack(track))
                   .catch(() => {});
+                observeSenderEnergy(sender);
               }
               return sender;
             };
