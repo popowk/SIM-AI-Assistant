@@ -1,5 +1,14 @@
 # 变更记录
 
+## 0.4.30（系统级接听兜底与 WebRTC 麦克风收音恢复）— 2026-11-24
+
+- 针对 vivo 及 Android 10+ 第三方 App 调用 acceptRingingCall 被系统/锁屏机制拦截的问题，在会话与响铃安全校验通过后，增加 ADB 系统级接听兜底（cmd telecom answer / telecom answer / KEYCODE_CALL），具备 MODIFY_PHONE_STATE 权限，彻底解决无法自动接听。
+- 修复来电响铃时因状态处于 ADB_FILE 导致的 HTTP 3 秒无效超时等待，优先进入本地受控 Shell 快速接听通道。
+- 移除 WebKit 中对 getUserMedia 强制指定的 echoCancellation/noiseSuppression/autoGainControl = false，恢复 WebRTC 自动增益控制（AGC）与音量归一化，解决电话下行弱音频低于 ChatGPT VAD 唤醒门槛、导致 GPT 听不到声音的问题。
+- 移除 WebKit 设备校验未就绪时强制执行 tracks.forEach(stop) 的自杀式音轨终止逻辑，增加 deviceId 失败重试保护。
+- 修复声音隔离模式下因通话接通前无活动媒体导致 isolatedOutputReady 死锁无法触发接听的问题；修复 AutoVoiceInputRouter 中因残留状态导致默认麦克风未能切至 BlackHole 2ch 的问题。
+
+
 ## 0.4.29（独立电话状态线程与手机接听明确回执）— 2026-11-24
 
 - v0.4.27 回退实机日志 09:38:03 RINGING seq9，09:38:05 Voice 就绪并发送 HTTP，09:38:14 HTTP 超时/备用 NO_ACK，09:38:41 IDLE seq10，未收到 OFFHOOK。旧查询值 IDLE 与 RINGING 回调持续不一致。

@@ -1,4 +1,6 @@
-# SIM AI Assistant · V0.4.29（Android 接听通道与状态回执修复）
+# SIM AI Assistant · V0.4.30（系统级接听兜底与 WebRTC 麦克风收音恢复）
+
+> 修复 vivo 及 Android 锁屏下第三方 App 无法自动接听问题（增加 ADB 系统级 Telecom 接听兜底），并恢复 WebKit WebRTC 麦克风 AGC 自动增益与音量归一化，解决电话下行声音无法唤醒 ChatGPT Voice 的问题。
 
 > 09:39 实机诊断确认 v0.4.27 回退仍不能接听。Companion v0.3.13 (18) 将电话回调与系统状态查询分离，统一权限与响铃序列守卫下的 HTTP/广播/文件接听，并直接回传手机接听结果；Mac v0.4.29 Build46 优先走带回执的独立广播（状态 HTTP 已失效时），保留独立 HTTP 通道。保留 v0.4.28 音频代码，需升级手机伴侣并再次实机验证。
 
