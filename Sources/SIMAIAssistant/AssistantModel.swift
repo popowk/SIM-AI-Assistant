@@ -32,6 +32,8 @@ final class AssistantModel: ObservableObject {
     @Published var isShizukuReady = false
     @Published var wifiPingStatus = ""
     @Published var wifiPingTesting = false
+    @Published var shizukuLaunching = false
+    @Published var shizukuStatusMessage = ""
     let wifiDiscovery = BonjourWiFiScanner()
     private var consecutivePollFailures: Int = 0
     private let maxPollFailuresBeforeDisconnect: Int = 3
@@ -1878,6 +1880,7 @@ final class AssistantModel: ObservableObject {
                     }
                     let serial = link.serial
                     Task.detached(priority: .utility) { [weak self] in
+                        _ = ADBInspector.launchShizuku(at: path, serial: serial)
                         if let ip = ADBInspector.fetchDeviceWiFiIP(at: path, serial: serial) {
                             await MainActor.run {
                                 guard let self else { return }
@@ -2013,6 +2016,37 @@ final class AssistantModel: ObservableObject {
         }
     }
 
+    func launchShizukuOnPhone() {
+        guard let link = bridgeLink else {
+            shizukuStatusMessage = "需通过 USB 数据线连接手机"
+            return
+        }
+        shizukuLaunching = true
+        shizukuStatusMessage = "正在通过 ADB 启动 Shizuku……"
+        let path = selectedADBPath
+        let serial = link.serial
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let res = ADBInspector.launchShizuku(at: path, serial: serial)
+            await MainActor.run {
+                guard let self else { return }
+                self.shizukuLaunching = false
+                self.shizukuStatusMessage = (res.success ? "✅ " : "⚠️ ") + res.message
+                self.log(.info, .system, self.shizukuStatusMessage)
+                self.pollLiveBridge()
+            }
+        }
+    }
+
+    func restartADB() {
+        log(.info, .system, "正在重启 ADB 守护进程以清理冲突……")
+        let path = selectedADBPath
+        Task.detached(priority: .userInitiated) { [weak self] in
+            _ = ADBInspector.restartADBServer(at: path)
+            await MainActor.run {
+                self?.inspectADB()
+            }
+        }
+    }
 
     var embeddedAudioProbeAvailable: Bool {
         guard let resources = Bundle.main.resourceURL else { return false }

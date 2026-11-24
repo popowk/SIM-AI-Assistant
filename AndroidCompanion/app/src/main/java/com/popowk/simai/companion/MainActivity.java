@@ -99,7 +99,18 @@ public final class MainActivity extends Activity {
 
         shizukuGrant = new Button(this);
         shizukuGrant.setText("授权 Shizuku 特权（免 Root 极速接听／挂断）");
-        shizukuGrant.setOnClickListener(v -> ShizukuTelephonyBridge.requestPermission(1030));
+        shizukuGrant.setOnClickListener(v -> {
+            if (ShizukuTelephonyBridge.isShizukuAvailable()) {
+                ShizukuTelephonyBridge.requestPermission(1030);
+            } else {
+                Intent launch = getPackageManager().getLaunchIntentForPackage("moe.shizuku.privileged.api");
+                if (launch != null) {
+                    startActivity(launch);
+                } else {
+                    android.widget.Toast.makeText(this, "手机尚未安装 Shizuku 应用", android.widget.Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
         column.addView(shizukuGrant);
 
         LinearLayout row1 = new LinearLayout(this);
@@ -342,8 +353,11 @@ public final class MainActivity extends Activity {
                     shizukuGrant.setText("授权 Shizuku 特权");
                 }
             } else {
-                shizukuStatus.setText("🛡️ Shizuku 引擎: 未运行 (可选，启动后可获得免 Root 极速接听)");
-                if (shizukuGrant != null) shizukuGrant.setVisibility(View.GONE);
+                shizukuStatus.setText("🛡️ Shizuku 引擎: 未运行 (点击下方按钮打开应用，或在 Mac 端一键启动)");
+                if (shizukuGrant != null) {
+                    shizukuGrant.setVisibility(View.VISIBLE);
+                    shizukuGrant.setText("打开 Shizuku 应用启动服务");
+                }
             }
         }
 

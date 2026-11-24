@@ -77,7 +77,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text("AI 电话自动值守 · 全双工音频 · v0.4.35")
+                Text("AI 电话自动值守 · 全双工音频 · v0.4.36")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -458,7 +458,7 @@ struct DashboardView: View {
                     }
                 }
 
-                Text("提示：系统已开启三重全自动探测（USB 快速协商、局域网 mDNS 广播、ARP 自动寻址），手机开机即自动连接，无需手动输入 IP。")
+                Text("提示：系统已开启三重全自动探测（USB 快速协商、局域网 mDNS 广播、ARP 自动寻址），手机开机即自动连接，无需手动输入 IP。\n注意：若手机开启了梯子/VPN (如 v2rayNG)，请在 VPN 设置中开启「绕过局域网地址」或排除 Companion，否则局域网直连流量会被 VPN 拦截；USB 模式不受 VPN 影响。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -473,6 +473,7 @@ struct DashboardView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Spacer()
+                Button("重启 ADB 服务") { model.restartADB() }
                 Button("选择 adb") { model.selectADB() }
                 if !model.selectedADBPath.isEmpty {
                     Button("恢复自动") { model.resetADBSelection() }
@@ -494,16 +495,27 @@ struct DashboardView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            HStack {
+            HStack(spacing: 8) {
                 Button("重新安装 Companion APK") {
                     confirmAPKReset = true
                 }
                 .buttonStyle(.bordered)
                 .disabled(model.adbInstalling || !model.embeddedAPKAvailable)
 
+                Button(model.shizukuLaunching ? "正在启动 Shizuku…" : "启动手机 Shizuku 特权") {
+                    model.launchShizukuOnPhone()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.shizukuLaunching)
+
                 Spacer()
-                Text(model.apkInstallStatus)
-                    .font(.caption).foregroundStyle(.secondary)
+                if !model.shizukuStatusMessage.isEmpty {
+                    Text(model.shizukuStatusMessage)
+                        .font(.caption)
+                } else {
+                    Text(model.apkInstallStatus)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -544,7 +556,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.35 (Build 52)").font(.caption.monospaced())
+            Text("v0.4.36 (Build 53)").font(.caption.monospaced())
         }
     }
 

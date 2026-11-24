@@ -1,4 +1,14 @@
-# SIM AI Assistant · V0.4.35（局域网全自动发现与免手动输入、防后台弹窗、全权限自动授予与伴侣端界面精简）
+# SIM AI Assistant · V0.4.36（Shizuku 特权一键启动与 Provider 修复、ADB 冲突自动重启自愈、局域网直连免密探针）
+
+> V0.4.36 全面修复 Shizuku 授权通信与连接自愈能力：
+> 1. **彻底修复 Shizuku 提示未运行问题**：
+>    - 补齐了 AndroidManifest.xml 中遗漏的 `ShizukuProvider` 声明，使得 Shizuku 服务端 Binder 能够正常注入伴侣端；
+>    - Mac 端新增底层 Shizuku 启动器（`launchShizuku`），通过原生动态库及脚本，在 USB 连接时全自动拉起手机端 Shizuku 服务；
+>    - 控制台新增「启动手机 Shizuku 特权」手动操作按钮；伴侣端在服务未运行时支持一键直达 Shizuku 应用。
+> 2. **解决电脑连不上与 ADB 冲突自愈**：
+>    - ADB 服务端 5037 端口冲突时自动执行 `kill-server && start-server` 恢复连接，并提供手动「重启 ADB 服务」按钮；
+>    - 伴侣端 `/ping` 免密健康检查与 `simai-wifi` 令牌放行，彻底消除 Wi-Fi 直连测试超时的阻碍；
+>    - 增加手机 VPN（如 v2rayNG）局域网拦截排查指引（开启「绕过局域网地址」或排除伴侣端）。
 
 > V0.4.35 带来全自动零配置直连与手机端使用体验全面升级：
 > 1. **局域网全自动免配置发现（彻底告别手动输入 IP 与连接超时失败）**：

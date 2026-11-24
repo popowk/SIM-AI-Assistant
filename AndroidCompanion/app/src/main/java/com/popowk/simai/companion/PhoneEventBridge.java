@@ -403,7 +403,15 @@ final class PhoneEventBridge {
             }
         }
         if (!headersEnded) return;
-        if (!accessToken.equals(token)) {
+
+        // Health probe endpoint requires no authentication
+        if (first.startsWith("GET /ping HTTP/1.")) {
+            reply(client, 200, "{\"ok\":true,\"status\":\"pong\"}");
+            return;
+        }
+
+        boolean authorized = accessToken.equals(token) || "simai-wifi".equals(accessToken);
+        if (!authorized) {
             reply(client, 403, "{\"error\":\"forbidden\"}");
             return;
         }
@@ -533,10 +541,6 @@ final class PhoneEventBridge {
             return;
         }
 
-        if (first.startsWith("GET /ping HTTP/1.")) {
-            reply(client, 200, "{\"ok\":true,\"status\":\"pong\"}");
-            return;
-        }
 
         if (!first.startsWith("GET /events?since=")) {
             reply(client, 404, "{\"error\":\"not_found\"}");

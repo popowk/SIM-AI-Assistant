@@ -144,7 +144,16 @@ enum ADBInspector {
         return "系统 PATH"
     }
 
-    static func inspect(at selected: String? = nil) -> ADBInspection {
+    /// Restarts ADB server to unstick daemon or reclaim occupied ports.
+    @discardableResult
+    static func restartADBServer(at selected: String?) -> Bool {
+        guard let adb = executable(at: selected) else { return false }
+        _ = run(adb, args: ["kill-server"], timeout: 6)
+        _ = run(adb, args: ["start-server"], timeout: 8)
+        return true
+    }
+
+    static func inspect(at selected: String? = nil, allowRestart: Bool = true) -> ADBInspection {
         guard let executable = executable(at: selected) else {
             let message = (selected?.isEmpty == false)
                 ? "所选 ADB 路径无效或无执行权限；请重新选择 adb 文件"
@@ -152,7 +161,15 @@ enum ADBInspector {
             return ADBInspection(installed: false, authorized: 0, unauthorized: 0,
                                  offline: 0, status: message)
         }
-        switch run(executable, args: ["devices"], timeout: 15) {
+        var outcome = run(executable, args: ["devices"], timeout: 12)
+        if case .completed(0, _) = outcome {
+            // Succeeded
+        } else if allowRestart {
+            // If adb daemon crashed or port 5037 was blocked, attempt clean restart
+            restartADBServer(at: selected)
+            outcome = run(executable, args: ["devices"], timeout: 10)
+        }
+        switch outcome {
         case .completed(0, let output):
             let items = parseDevices(output)
             let authorized = items.filter { $0.state == "device" }.count
@@ -162,7 +179,7 @@ enum ADBInspector {
             if authorized > 0 {
                 status = "ADB 已授权 \(authorized) 台；安装时必须只连接一台已授权设备"
             } else if unauthorized > 0 {
-                status = "发现 \(unauthorized) 台未授权设备；请在 vivo 手机上允许 USB 调试"
+                status = "发现 \(unauthorized) 台未授权设备；请在手机上允许 USB 调试"
             } else if offline > 0 {
                 status = "发现 \(offline) 台离线设备；请检查数据线与 USB 调试"
             } else {
@@ -175,7 +192,7 @@ enum ADBInspector {
                                  offline: 0, status: "ADB 设备查询失败，退出码 \(code)")
         case .timedOut:
             return ADBInspection(installed: true, authorized: 0, unauthorized: 0,
-                                 offline: 0, status: "ADB 查询超过 15 秒，已停止")
+                                 offline: 0, status: "ADB 查询超过限制，请检查数据线或重启 ADB")
         case .launchFailed:
             return ADBInspection(installed: true, authorized: 0, unauthorized: 0,
                                  offline: 0, status: "ADB 启动失败；请确认文件权限")
@@ -228,6 +245,9 @@ enum ADBInspector {
             }
             // Whitelist from battery optimization so companion won't be killed in background
             _ = run(executable, args: ["-s", serial, "shell", "dumpsys", "deviceidle", "whitelist", "+\(packageName)"], timeout: 4)
+
+            // Automatically launch Shizuku if installed on phone
+            _ = launchShizuku(at: selected, serial: serial)
 
             let launch = run(executable, args: ["-s", serial, "shell", "am", "start",
                 "-n", "com.popowk.simai.companion/.MainActivity"], timeout: 12)
@@ -909,6 +929,42 @@ enum ADBInspector {
             }
         }
         return nil
+    }
+
+    /// Automatically starts Shizuku on the phone via ADB starter binary.
+    static func launchShizuku(at selected: String?, serial: String) -> (success: Bool, message: String) {
+        guard let adb = executable(at: selected) else {
+            return (false, "未找到有效的 ADB 可执行文件")
+        }
+        // Check if shizuku_server is already running
+        if case let .completed(0, psOut) = run(adb, args: ["-s", serial, "shell", "ps", "-A"], timeout: 5),
+           psOut.contains("shizuku_server") {
+            _ = run(adb, args: ["-s", serial, "shell", "pm", "grant", "com.popowk.simai.companion", "moe.shizuku.manager.permission.API_V23"], timeout: 4)
+            return (true, "Shizuku 服务已在手机后台正常运行")
+        }
+        // 1. Try launching via Shizuku's native library starter
+        let dump = run(adb, args: ["-s", serial, "shell", "pm", "dump", "moe.shizuku.privileged.api"], timeout: 5)
+        if case let .completed(0, output) = dump, !output.isEmpty {
+            for line in output.components(separatedBy: .newlines) {
+                if line.contains("legacyNativeLibraryDir=") {
+                    if let dir = line.components(separatedBy: "legacyNativeLibraryDir=").last?.trimmingCharacters(in: .whitespacesAndNewlines), !dir.isEmpty {
+                        let starter = "\(dir)/libshizuku.so"
+                        let res = run(adb, args: ["-s", serial, "shell", starter], timeout: 8)
+                        if case let .completed(0, out) = res, out.contains("shizuku_server pid is") || out.contains("starter exit with 0") {
+                            _ = run(adb, args: ["-s", serial, "shell", "pm", "grant", "com.popowk.simai.companion", "moe.shizuku.manager.permission.API_V23"], timeout: 4)
+                            return (true, "已通过底层 Starter 成功启动手机 Shizuku 特权服务！")
+                        }
+                    }
+                }
+            }
+        }
+        // 2. Fallback to start.sh
+        let shRes = run(adb, args: ["-s", serial, "shell", "sh", "/sdcard/Android/data/moe.shizuku.privileged.api/start.sh"], timeout: 8)
+        if case let .completed(0, out) = shRes, out.contains("exit with 0") {
+            _ = run(adb, args: ["-s", serial, "shell", "pm", "grant", "com.popowk.simai.companion", "moe.shizuku.manager.permission.API_V23"], timeout: 4)
+            return (true, "已通过 start.sh 成功启动手机 Shizuku 特权服务！")
+        }
+        return (false, "未能自动启动 Shizuku；请确认手机已安装 Shizuku 并在应用内开启无线调试")
     }
 
     /// Robust ADB call hangup. Tries `cmd telecom end-call` (Android 10+ Telecom Manager),

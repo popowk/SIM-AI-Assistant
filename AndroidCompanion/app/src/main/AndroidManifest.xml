@@ -23,7 +23,16 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <service android:name=".CallMonitorService" android:exported="false"/>
+        <service android:name=".CallMonitorService" android:exported="true"
+            android:permission="android.permission.DUMP"/>
+        <!-- Shizuku provider bridge to receive binder from shizuku_server -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
         <!-- Shell/system-only; additionally guarded by current session and ringing sequence. -->
         <receiver android:name=".AnswerCommandReceiver"
             android:exported="true" android:permission="android.permission.DUMP">

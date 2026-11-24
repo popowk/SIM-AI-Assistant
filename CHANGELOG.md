@@ -1,5 +1,18 @@
 # 变更记录
 
+## 0.4.36（Shizuku 特权一键启动与 Provider 修复、ADB 冲突自动重启自愈、局域网直连免密探针）— 2026-11-24
+
+- **彻底修复 Shizuku 提示未运行问题（Provider 桥接与底层一键启动）**：
+  - **修复 ShizukuProvider 声明缺失**：伴侣端补全了 `<provider android:name="rikka.shizuku.ShizukuProvider" android:authorities="${applicationId}.shizuku" .../>` 声明。此前由于缺少该 Provider，导致 Shizuku 服务端向伴侣端注入 Binder 失败（报错 `provider is null com.popowk.simai.companion.shizuku`），伴侣端始终无法获得特权 Binder。
+  - **Mac 端一键启动手机 Shizuku 服务**：Mac 端新增底层 Shizuku 启动器（`launchShizuku`），通过 Shizuku 原生动态库 `libshizuku.so` 及 `start.sh`，在 USB 连接时全自动拉起手机端的 Shizuku 服务并授权；控制台同步新增「启动手机 Shizuku 特权」手动按钮。
+  - **伴侣端引导跳转**：伴侣端在 Shizuku 未启动时提供快捷点击打开 Shizuku 应用，一键授权更直观。
+- **解决电脑连不上与 ADB 冲突自愈**：
+  - **ADB 服务端端口冲突自动重置**：针对 5037 端口被孤立进程残留导致 `cannot connect to daemon` / `Address already in use` 故障，Mac 端在设备检测异常时自动执行 `adb kill-server && adb start-server` 恢复连接，并提供手动「重启 ADB 服务」按钮。
+  - **修复 HTTP 探针 `/ping` 免密健康检查**：调整伴侣端路由顺序，让 `/ping` 探针在 Token 鉴权前即刻响应 200 `pong`，彻底解决局域网扫描握手超时问题。
+  - **支持 Wi-Fi 直连内置 Token**：放行 `simai-wifi` 令牌，修复无线直连轮询时被误判为 403 Forbidden 的问题。
+  - **后台服务权限放行**：`CallMonitorService` 声明 `android:exported="true" android:permission="android.permission.DUMP"`，允许系统 ADB 静默拉起后台服务而无需前台界面。
+  - **VPN / 代理排查指引**：在界面明确增加手机 VPN（如 v2rayNG）局域网拦截排查提示，指引用户在 VPN 中开启「绕过局域网地址」或排除伴侣端。
+
 ## 0.4.35（局域网全自动发现与免手动输入、防后台弹窗、全权限自动授予与伴侣端界面精简）— 2026-11-24
 
 - **Wi-Fi 局域网全自动免配置发现（彻底告别手动输入 IP 与连接超时失败）**：
