@@ -161,8 +161,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.44"
-    let buildNumber = "61"
+    let version = "0.4.45"
+    let buildNumber = "62"
     @Published private(set) var phoneDiagnosticsCollecting = false
     @Published private(set) var phoneDiagnosticsStatus = "导出时自动读取手机日志"
     @Published private(set) var phoneDiagnosticsPreview = ""
@@ -394,10 +394,10 @@ final class AssistantModel: ObservableObject {
                     self.embeddedVoiceBrowser.isolatedOutputReady) {
                     self.onEmbeddedVoiceCapture(true)
                 }
-            } else if !self.liveVoiceActive && self.isolatedChatGPTOutputEnabled &&
+            } else if self.liveVoiceActive && self.isolatedChatGPTOutputEnabled &&
                       self.aiReplyToPhoneEnabled {
-                self.resumeAIForwardAfterMicrophoneRestored = true
                 self.setAIReplyToPhone(false)
+                self.resumeAIForwardAfterIsolationRestored = self.autoCallAudioRequested && self.automaticAnswerAcknowledged
                 self.log(.warn, .audio, "ChatGPT 麦克风路由未验证，暂停电话 AI 回传",
                          details: ["reason": "GPT_INPUT_DEVICE_NOT_VERIFIED"])
             }
@@ -418,10 +418,10 @@ final class AssistantModel: ObservableObject {
                     self.resumeAIForwardAfterMicrophoneRestored = false
                     self.setAIReplyToPhone(true)
                 }
-            } else if !self.liveVoiceActive && self.isolatedChatGPTOutputEnabled {
+            } else if self.isolatedChatGPTOutputEnabled {
                 if self.aiReplyToPhoneEnabled {
-                    self.resumeAIForwardAfterIsolationRestored = true
                     self.setAIReplyToPhone(false)
+                    self.resumeAIForwardAfterIsolationRestored = self.autoCallAudioRequested && self.automaticAnswerAcknowledged
                     self.log(.warn, .audio,
                         "网页隔离音频路由丢失，已暂停 GPT 电话回传",
                         details: ["reason": "ISOLATED_ROUTE_LOST"])
@@ -655,8 +655,8 @@ final class AssistantModel: ObservableObject {
                 // capturing, so unrelated desktop audio cannot leak during
                 // the grace period. Restore only if the same Voice resumes.
                 if aiReplyToPhoneEnabled {
-                    resumeAIForwardAfterVoicePause = true
                     setAIReplyToPhone(false)
+                    resumeAIForwardAfterVoicePause = true
                 }
                 // A 4-second grace period avoids treating a temporary mute,
                 // capture pause or WebKit hiccup as an ended Voice session.
@@ -687,11 +687,30 @@ final class AssistantModel: ObservableObject {
     private func checkIsolatedReturnSafety() {
         guard useEmbeddedVoiceBrowser && isolatedChatGPTOutputEnabled &&
               (liveVoiceActive || liveVoiceStarting) else { return }
-        if !isSystemOutputSafeForIsolatedReturn() && aiReplyToPhoneEnabled {
-            resumeAIForwardAfterIsolationRestored = false
+        if aiReplyToPhoneEnabled &&
+           (!isSystemOutputSafeForIsolatedReturn() ||
+            !embeddedVoiceBrowser.isolatedOutputReady ||
+            !embeddedVoiceBrowser.isolatedMicrophoneReady) {
+            // Mute before touching devices. Never reopen a user-muted route.
+            let outputSafe = isSystemOutputSafeForIsolatedReturn()
+            let wasAutomatic = autoCallAudioRequested && automaticAnswerAcknowledged
             setAIReplyToPhone(false)
-            log(.warn, .audio, "系统默认输出变为虚拟/聚合设备，已暂停电话 GPT 回传",
-                details: ["reason": "VIDEO_AUDIO_LEAK_GUARD"])
+            resumeAIForwardAfterIsolationRestored = wasAutomatic
+            if !outputSafe { _ = voiceOutputRouter.restore() }
+            log(.warn, .audio, "独立 GPT 输出或输入未满足安全条件，已暂停电话回传",
+                details: ["reason": outputSafe ? "ISOLATED_ROUTE_NOT_READY" : "VIDEO_AUDIO_LEAK_GUARD"])
+        }
+        if resumeAIForwardAfterIsolationRestored && autoCallAudioRequested &&
+           automaticAnswerAcknowledged && liveVoiceActive && livePhoneState == "OFFHOOK" &&
+           aiReplyMonitorEnabled && chatGPTVoiceRouteEnabled &&
+           embeddedVoiceBrowser.microphoneActive && embeddedVoiceBrowser.isolatedMicrophoneReady &&
+           embeddedVoiceBrowser.isolatedOutputReady && isSystemOutputSafeForIsolatedReturn() {
+            setAIReplyToPhone(true)
+            if aiReplyToPhoneEnabled {
+                resumeAIForwardAfterIsolationRestored = false
+                log(.info, .audio, "GPT 独立输入输出重新核验通过，恢复本次自动通话回传",
+                    details: ["reason": "ISOLATED_RETURN_RECOVERED"])
+            }
         }
     }
 
@@ -906,12 +925,23 @@ final class AssistantModel: ObservableObject {
             return true
         }
         guard prepareAutomaticGPTInput() else { return false }
-        if useEmbeddedVoiceBrowser && isolatedChatGPTOutputEnabled && embeddedVoiceBrowser.isolatedOutputReady {
+        if useEmbeddedVoiceBrowser && isolatedChatGPTOutputEnabled {
+            // In isolated mode, never fall through to global output routing.
+            // Before Voice starts, only prepare the input and physical output.
+            // If a legacy app-owned route remains, restore it rather than
+            // feeding unrelated system sound into the PSTN.
+            _ = voiceOutputRouter.restore()
             refresh()
-            if isSystemOutputSafeForIsolatedReturn() && AudioInspector.isUsableMonitorOutput(selectedVoiceMonitorOutputID) {
-                automaticGPTOutputStatus = "GPT 独立输出已准备；视频保留原声卡"
-                return true
+            guard isSystemOutputSafeForIsolatedReturn(),
+                  AudioInspector.isUsableMonitorOutput(selectedVoiceMonitorOutputID) else {
+                automaticGPTOutputStatus = "独立模式需要正常物理扬声器；不会全局切换输出"
+                if !voiceSessionPrepared { _ = voiceInputRouter.restore() }
+                return false
             }
+            automaticGPTOutputStatus = embeddedVoiceBrowser.isolatedOutputReady
+                ? "GPT 独立输出已核验；保留系统扬声器"
+                : "物理输出已保留，等待 GPT 网页独立输出就绪"
+            return true
         }
         let code = voiceOutputRouter.activate(physicalMonitorID: selectedVoiceMonitorOutputID)
         switch code {
@@ -1254,7 +1284,8 @@ final class AssistantModel: ObservableObject {
 
     func setVoiceSessionPrepared(_ prepared: Bool) {
         if prepared && useEmbeddedVoiceBrowser &&
-           (!embeddedVoiceBrowser.microphoneActive ||
+           ((isolatedChatGPTOutputEnabled && (!embeddedVoiceBrowser.isolatedOutputReady || !isSystemOutputSafeForIsolatedReturn())) ||
+            !embeddedVoiceBrowser.microphoneActive ||
             !embeddedVoiceBrowser.isolatedMicrophoneReady ||
             !incomingPreflightPassed ||
             !(livePhoneState == "RINGING" ||
@@ -2680,6 +2711,22 @@ final class AssistantModel: ObservableObject {
     /// enter the PSTN. Disabling restores silence rather than re-enabling mic.
     func setAIReplyToPhone(_ enabled: Bool) {
         guard liveVoiceActive, let voiceStream else { return }
+        if !enabled {
+            resumeAIForwardAfterIsolationRestored = false
+            resumeAIForwardAfterMicrophoneRestored = false
+            resumeAIForwardAfterVoicePause = false
+        }
+        if enabled && useEmbeddedVoiceBrowser && isolatedChatGPTOutputEnabled &&
+           !VoiceAudioIsolationPolicy.canForwardIsolated(
+                physicalDefaultOutput: isSystemOutputSafeForIsolatedReturn(),
+                microphoneCapturing: embeddedVoiceBrowser.microphoneActive,
+                microphoneVerified: embeddedVoiceBrowser.isolatedMicrophoneReady,
+                mediaRouted: embeddedVoiceBrowser.isolatedOutputReady) {
+            try? voiceStream.setAIReplyToPhone(false)
+            aiReplyToPhoneEnabled = false
+            aiReplyReturnStatus = "独立输出尚未核验，保持电话回传静音"
+            return
+        }
         do {
             try voiceStream.setAIReplyToPhone(enabled)
             aiReplyToPhoneEnabled = enabled
@@ -2742,6 +2789,9 @@ final class AssistantModel: ObservableObject {
     }
 
     func stopGPTTwoWayPhoneBridge() {
+        resumeAIForwardAfterIsolationRestored = false
+        resumeAIForwardAfterMicrophoneRestored = false
+        resumeAIForwardAfterVoicePause = false
         if localReceptionEnabled && (liveVoiceActive || liveVoiceStarting) {
             stopLiveVoice()
             return
@@ -2756,6 +2806,9 @@ final class AssistantModel: ObservableObject {
     }
 
     func stopLiveVoice() {
+        resumeAIForwardAfterIsolationRestored = false
+        resumeAIForwardAfterMicrophoneRestored = false
+        resumeAIForwardAfterVoicePause = false
         if localReceptionEnabled && (livePhoneState == "RINGING" || livePhoneState == "OFFHOOK") {
             localAudioAttemptedForRing = true
         }
@@ -2845,7 +2898,7 @@ final class AssistantModel: ObservableObject {
                    localRingSession == bridgeCursor.session && localRingSequence == bridgeCursor.lastSequence)
                 : (voiceSessionPrepared && incomingPreflightPassed && useEmbeddedVoiceBrowser &&
                    embeddedVoiceBrowser.microphoneActive && embeddedVoiceBrowser.isolatedMicrophoneReady &&
-                   (!isolatedChatGPTOutputEnabled || embeddedVoiceBrowser.isolatedOutputReady))
+                   (!isolatedChatGPTOutputEnabled || (embeddedVoiceBrowser.isolatedOutputReady && isSystemOutputSafeForIsolatedReturn())))
             guard engineReady, adbWasAuthorized else {
                 autoCallStatus = "语音引擎或 ADB 未就绪，不自动接听"
                 return

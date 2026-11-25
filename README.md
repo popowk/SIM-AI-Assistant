@@ -1,4 +1,4 @@
-# SIM AI Assistant · V0.4.44（手机日志查看与全部清理）
+# SIM AI Assistant · V0.4.45（GPT 独立音频输出修复）
 
 > 新版 APK 0.3.23 持久化电源、屏幕、电话监听和进程退出诊断。Mac 可读取、导出 android-diagnostics.json，默认清空全部本应用日志（含当天）并尝试清理手机端；不删除录音或系统日志。
 

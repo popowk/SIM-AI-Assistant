@@ -4,6 +4,13 @@ import Foundation
 /// selection may auto-answer in video-safe mode. This ensures that desktop
 /// video/audio cannot be silently used as the phone's GPT return path.
 public enum VoiceAudioIsolationPolicy {
+    public static func canForwardIsolated(
+        physicalDefaultOutput: Bool, microphoneCapturing: Bool,
+        microphoneVerified: Bool, mediaRouted: Bool
+    ) -> Bool {
+        physicalDefaultOutput && microphoneCapturing && microphoneVerified && mediaRouted
+    }
+
     public static func browserReady(
         embedded: Bool,
         microphoneCapturing: Bool,

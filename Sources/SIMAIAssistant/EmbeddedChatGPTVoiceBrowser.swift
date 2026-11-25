@@ -875,7 +875,9 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
             } catch (_) { failed++; }
           }
         }
-        if (target && target.deviceId && failed === 0 && unsupported === 0) {
+        // Enumerating BlackHole alone is not verification. At least one
+        // actual media element/context must confirm its sink selection.
+        if (count > 0 && failed === 0 && unsupported === 0) {
           return {code:'ISOLATED_WEB_MEDIA_ROUTED'};
         }
         if (failed || unsupported) return {code:'OUTPUT_SELECTION_REJECTED'};
