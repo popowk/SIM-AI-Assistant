@@ -146,6 +146,11 @@ final class AssistantModel: ObservableObject {
     @Published var aiReplyUplinkUnderflow = 0
     @Published var aiReplyPeakRMS = 0.0
     private var warnedSilentGPTReturn = false
+    private var recentCallerSignalAt = Date.distantPast
+    private var recentReplySignalAt = Date.distantPast
+    private var voiceRecovery = VoiceRecoveryPolicy()
+    private var voiceRecoveryDeadline: Date?
+    private var voiceRecoveryStartedAt = Date.distantPast
     private var ranBlackHoleInputProbe = false
     @Published var blackHoleActualInputStatus = "尚未验证 BlackHole 2ch 输入回环"
     @Published var liveVoiceRxFrames = 0
@@ -395,6 +400,7 @@ final class AssistantModel: ObservableObject {
                 if (self.resumeAIForwardAfterMicrophoneRestored || self.resumeAIForwardAfterIsolationRestored) &&
                    self.liveVoiceActive && self.livePhoneState == "OFFHOOK" &&
                    self.automaticAnswerAcknowledged &&
+                   self.voiceRecoveryDeadline == nil &&
                    self.aiReplyMonitorEnabled {
                     self.resumeAIForwardAfterMicrophoneRestored = false
                     self.resumeAIForwardAfterIsolationRestored = false
@@ -424,6 +430,7 @@ final class AssistantModel: ObservableObject {
                 }
                 if (self.resumeAIForwardAfterIsolationRestored || self.resumeAIForwardAfterMicrophoneRestored) &&
                    self.liveVoiceActive && self.livePhoneState == "OFFHOOK" &&
+                   self.automaticAnswerAcknowledged && self.voiceRecoveryDeadline == nil &&
                    self.aiReplyMonitorEnabled {
                     self.resumeAIForwardAfterIsolationRestored = false
                     self.resumeAIForwardAfterMicrophoneRestored = false
@@ -632,7 +639,7 @@ final class AssistantModel: ObservableObject {
         if active {
             voiceStopCheckGeneration += 1
             if automaticAnswerAcknowledged { autoVoiceCaptureObserved = true }
-            if resumeAIForwardAfterVoicePause &&
+            if voiceRecoveryDeadline == nil && resumeAIForwardAfterVoicePause &&
                automaticAnswerAcknowledged && livePhoneState == "OFFHOOK" &&
                liveVoiceActive && aiReplyMonitorEnabled &&
                embeddedVoiceBrowser.isolatedMicrophoneReady &&
@@ -672,7 +679,9 @@ final class AssistantModel: ObservableObject {
                 // A 4-second grace period avoids treating a temporary mute,
                 // capture pause or WebKit hiccup as an ended Voice session.
                 voiceSessionPrepared = false
-                if embeddedVoiceBrowser.voiceSessionActuallyEnded {
+                if voiceRecoveryDeadline != nil {
+                    embeddedVoiceStatus = "正在恢复本次电话 Voice，暂不触发网页结束挂机"
+                } else if embeddedVoiceBrowser.voiceSessionActuallyEnded {
                     scheduleAutomaticHangupAfterVoiceEnds()
                     embeddedVoiceStatus = "Voice 已结束，确认 4 秒后请求手机挂断"
                 } else {
@@ -711,7 +720,7 @@ final class AssistantModel: ObservableObject {
             log(.warn, .audio, "独立 GPT 输出或输入未满足安全条件，已暂停电话回传",
                 details: ["reason": outputSafe ? "ISOLATED_ROUTE_NOT_READY" : "VIDEO_AUDIO_LEAK_GUARD"])
         }
-        if resumeAIForwardAfterIsolationRestored && autoCallAudioRequested &&
+        if voiceRecoveryDeadline == nil && resumeAIForwardAfterIsolationRestored && autoCallAudioRequested &&
            automaticAnswerAcknowledged && liveVoiceActive && livePhoneState == "OFFHOOK" &&
            aiReplyMonitorEnabled && chatGPTVoiceRouteEnabled &&
            embeddedVoiceBrowser.microphoneActive && embeddedVoiceBrowser.isolatedMicrophoneReady &&
@@ -723,6 +732,55 @@ final class AssistantModel: ObservableObject {
                     details: ["reason": "ISOLATED_RETURN_RECOVERED"])
             }
         }
+    }
+
+    /// At most one restart per auto-answered call. Keep the Android PCM stream
+    /// and the call identity; never recover a manually answered or muted call.
+    private func checkGPTRecovery() {
+        guard useEmbeddedVoiceBrowser, isolatedChatGPTOutputEnabled,
+              autoCallAudioRequested, automaticAnswerAcknowledged,
+              livePhoneState == "OFFHOOK", liveVoiceActive,
+              embeddedVoiceBrowser.automaticVoiceButtonEnabled,
+              !autoHangupAttempted else { return }
+        let now = Date()
+        let ready = embeddedVoiceBrowser.microphoneActive &&
+            embeddedVoiceBrowser.isolatedMicrophoneReady && embeddedVoiceBrowser.isolatedOutputReady &&
+            isSystemOutputSafeForIsolatedReturn()
+        if let deadline = voiceRecoveryDeadline {
+            if now >= deadline {
+                voiceRecoveryDeadline = nil
+                log(.warn, .audio, "GPT 音频自动恢复超时", details: ["reason": "GPT_RECOVERY_TIMEOUT"])
+                requestAutomaticHangup(reason: "GPT_RECOVERY_TIMEOUT")
+                return
+            }
+            if ready && now.timeIntervalSince(voiceRecoveryStartedAt) >= 2 {
+                if !chatGPTVoiceRouteEnabled || !aiReplyMonitorEnabled { enableGPTTwoWayPhoneBridge() }
+                else if !aiReplyToPhoneEnabled { setAIReplyToPhone(true) }
+                if aiReplyToPhoneEnabled && recentReplySignalAt > voiceRecoveryStartedAt {
+                    voiceRecoveryDeadline = nil
+                    voiceRecovery.resetObservation()
+                    log(.info, .audio, "GPT 恢复后已检测到实际返回声音", details: ["stage": "GPT_RECOVERY_AUDIO_PRESENT"])
+                }
+            } else {
+                embeddedVoiceBrowser.healthCheck { [weak self] in
+                    guard let self else { return false }
+                    return self.voiceRecoveryDeadline != nil && self.prepareAutomaticGPTOutput()
+                }
+            }
+            return
+        }
+        guard aiReplyMonitorEnabled || chatGPTVoiceRouteEnabled || voiceRecovery.hasAttempted == false else { return }
+        let speakingRecently = now.timeIntervalSince(recentCallerSignalAt) <= 2
+        let replyingRecently = now.timeIntervalSince(recentReplySignalAt) <= 3
+        guard voiceRecovery.observe(routeReady: ready, callerRecentlyAudible: speakingRecently,
+                                    replyRecentlyAudible: replyingRecently, now: now) else { return }
+        if aiReplyToPhoneEnabled { setAIReplyToPhone(false) }
+        voiceStopCheckGeneration += 1
+        voiceRecoveryStartedAt = now
+        voiceRecoveryDeadline = now.addingTimeInterval(25)
+        autoCallStatus = "检测到 GPT 音频异常，正在自动重建 Voice（仅一次）"
+        log(.warn, .audio, "自动重建当前 GPT Voice 会话", details: ["reason": "GPT_RECOVERY_RESTART"])
+        embeddedVoiceBrowser.restartVoiceForRecovery()
     }
 
     private func checkEmbeddedVoiceHealth() {
@@ -739,6 +797,7 @@ final class AssistantModel: ObservableObject {
                 if isolatedChatGPTOutputEnabled {
                     embeddedVoiceBrowser.routeCurrentVoiceAudioIfNeeded()
                 }
+                checkGPTRecovery()
             }
             return
         }
@@ -1028,7 +1087,7 @@ final class AssistantModel: ObservableObject {
         guard automaticAnswerAcknowledged && autoVoiceCaptureObserved &&
               livePhoneState == "OFFHOOK" &&
               embeddedVoiceBrowser.voiceSessionActuallyEnded &&
-              !autoHangupAttempted else { return }
+              !autoHangupAttempted, voiceRecoveryDeadline == nil else { return }
         voiceStopCheckGeneration += 1
         let generation = voiceStopCheckGeneration
         autoCallStatus = "Voice 已停止采集；正在确认是否结束电话（4 秒保护）"
@@ -1037,7 +1096,7 @@ final class AssistantModel: ObservableObject {
             guard let self else { return }
             guard self.voiceStopCheckGeneration == generation,
                   self.automaticAnswerAcknowledged,
-                  self.livePhoneState == "OFFHOOK" else { return }
+                  self.livePhoneState == "OFFHOOK", self.voiceRecoveryDeadline == nil else { return }
             // Synchronize once; Voice could have resumed during this pause.
             self.embeddedVoiceBrowser.checkMicrophoneCapture()
             guard self.voiceStopCheckGeneration == generation,
@@ -2447,6 +2506,11 @@ final class AssistantModel: ObservableObject {
         aiReplyUplinkUnderflow = 0
         aiReplyPeakRMS = 0
         warnedSilentGPTReturn = false
+        voiceRecovery = VoiceRecoveryPolicy()
+        voiceRecoveryDeadline = nil
+        voiceRecoveryStartedAt = .distantPast
+        recentCallerSignalAt = .distantPast
+        recentReplySignalAt = .distantPast
         ranBlackHoleInputProbe = false
         blackHoleActualInputStatus = "正在等待实际电话下行 PCM"
         liveVoiceRxFrames = 0
@@ -2519,8 +2583,11 @@ final class AssistantModel: ObservableObject {
                     if self.automaticAnswerAcknowledged && self.livePhoneState == "OFFHOOK" {
                         self.requestAutomaticHangup(reason: "CALLER_PCM_SILENCE")
                     }
-                case .downlinkSignal(let peakRMS):
+                case .downlinkSignal(let peakRMS, let recentRMS):
                     self.liveDownlinkPeakRMS = peakRMS
+                    if recentRMS >= 0.012 { self.recentCallerSignalAt = Date() }
+                case .replyWindowSignal(let recentRMS):
+                    if recentRMS >= 0.002 { self.recentReplySignalAt = Date() }
                 case .aiReturnMetrics(let captured, let monitorDropped, let uplinkUnderflow, let peakRMS):
                     self.aiReplyReceivedFrames = captured
                     self.aiReplyMonitorDropped = monitorDropped
@@ -2570,6 +2637,7 @@ final class AssistantModel: ObservableObject {
                         }
                     }
                 case .finished(let reason):
+                    self.voiceRecoveryDeadline = nil
                     // The Android PCM helper independently watches the real
                     // cellular AudioManager call mode. In the 21:53 report it
                     // closed while the Companion snapshot still said OFFHOOK;
@@ -2851,6 +2919,7 @@ final class AssistantModel: ObservableObject {
     }
 
     func stopLiveVoice() {
+        voiceRecoveryDeadline = nil
         resumeAIForwardAfterIsolationRestored = false
         resumeAIForwardAfterMicrophoneRestored = false
         resumeAIForwardAfterVoicePause = false

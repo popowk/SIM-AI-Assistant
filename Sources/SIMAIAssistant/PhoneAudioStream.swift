@@ -14,7 +14,8 @@ enum LiveAudioEvent {
     case handshakeAttempts(Int)
     case metrics(received: Int, sent: Int, dropped: Int, micUnderflows: Int, micOverflows: Int, txLate: Int, micBufferedMs: Int, voiceRouteDropped: Int, monitorRendered: Int, virtualRendered: Int)
     case aiReturnMetrics(captured: Int, monitorDropped: Int, uplinkUnderflow: Int, peakRMS: Double)
-    case downlinkSignal(peakRMS: Double)
+    case downlinkSignal(peakRMS: Double, recentRMS: Double)
+    case replyWindowSignal(recentRMS: Double)
     case callerSilenceLimit
     case finished(String)
 }
@@ -326,6 +327,7 @@ private final class LiveAIReplyCapture {
     private var stopped = false
     private var capturedSamples = 0
     private var peakRMS = 0.0
+    private var windowPeakRMS = 0.0
 
     init(virtualInput: AudioDeviceID, physicalOutput: AudioDeviceID) throws {
         self.monitor = try LiveMacSpeaker(deviceID: physicalOutput)
@@ -437,6 +439,7 @@ private final class LiveAIReplyCapture {
             self.lock.lock()
             self.capturedSamples += count
             self.peakRMS = max(self.peakRMS, rms)
+            self.windowPeakRMS = max(self.windowPeakRMS, rms)
             self.lock.unlock()
         }
         do {
@@ -476,12 +479,14 @@ private final class LiveAIReplyCapture {
     }
     func nextPhoneFrame() -> [UInt8] { phoneQueue.nextFrame() }
 
-    func statistics() -> (captured: Int, monitorDropped: Int, uplinkUnderflow: Int, peakRMS: Double) {
+    func statistics() -> (captured: Int, monitorDropped: Int, uplinkUnderflow: Int, peakRMS: Double, recentRMS: Double) {
         lock.lock()
         let samples = capturedSamples
         let peak = peakRMS
+        let recent = windowPeakRMS
+        windowPeakRMS = 0
         lock.unlock()
-        return (samples / 320, monitor.droppedFrames(), phoneQueue.statistics().underflowFrames, peak)
+        return (samples / 320, monitor.droppedFrames(), phoneQueue.statistics().underflowFrames, peak, recent)
     }
 
     func stop() {
@@ -889,6 +894,7 @@ final class PhoneAudioStream {
         }
         var received = 0
         var downlinkPeakRMS = 0.0
+        var downlinkWindowRMS = 0.0
         var quietFrames = 0
         var audibleFrames = 0
         while !isClosed && Date().timeIntervalSince(started) < maxDuration {
@@ -906,6 +912,7 @@ final class PhoneAudioStream {
             }
             let rms = sqrt(power / 320.0)
             downlinkPeakRMS = max(downlinkPeakRMS, rms)
+            downlinkWindowRMS = max(downlinkWindowRMS, rms)
             // PCM level heuristic (not semantic VAD). Count received 20ms frames,
             // not network downtime, and require consecutive audible frames to reset.
             if silenceSeconds > 0 {
@@ -928,11 +935,12 @@ final class PhoneAudioStream {
             }
             received += 1
             if received % 50 == 0 {
-                report(.downlinkSignal(peakRMS: downlinkPeakRMS))
+                report(.downlinkSignal(peakRMS: downlinkPeakRMS, recentRMS: downlinkWindowRMS))
+                downlinkWindowRMS = 0
                 reportMetrics(received: received, speaker: speaker)
             }
         }
-        report(.downlinkSignal(peakRMS: downlinkPeakRMS))
+        report(.downlinkSignal(peakRMS: downlinkPeakRMS, recentRMS: downlinkWindowRMS))
         reportMetrics(received: received, speaker: speaker)
         if isClosed { reason = "USER_STOPPED" }
         else if Date().timeIntervalSince(started) >= maxDuration { reason = "SESSION_LIMIT_180S" }
@@ -960,6 +968,7 @@ final class PhoneAudioStream {
                                     monitorDropped: stats.monitorDropped,
                                     uplinkUnderflow: stats.uplinkUnderflow,
                                     peakRMS: stats.peakRMS))
+            report(.replyWindowSignal(recentRMS: stats.recentRMS))
         }
         report(.metrics(received: received, sent: sending.sent,
                         dropped: speaker?.droppedFrames() ?? 0,
