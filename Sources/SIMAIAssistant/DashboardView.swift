@@ -101,7 +101,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.45" : "AI 电话自动值守 · 全双工音频 · v0.4.45")
+                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.46" : "AI 电话自动值守 · 全双工音频 · v0.4.46")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -186,13 +186,61 @@ struct DashboardView: View {
                     set: { model.setLocalReceptionEnabled($0) }
                 ))
                 .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                HStack {
+                    Button(model.localModelDownloading ? "正在下载模型…" : "下载 / 校验本地模型") {
+                        model.downloadLocalModel()
+                    }.disabled(model.localModelDownloading || model.localReceptionPreparing || model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                    Text(model.localModelStatus).font(.caption)
+                }
+                Stepper(value: $model.silenceHangupSeconds, in: 0...60, step: 5) {
+                    Text(model.silenceHangupSeconds == 0 ? "静默挂机：关闭" : "静默挂机：\(model.silenceHangupSeconds) 秒")
+                }.disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                Text("按来电 PCM 电平判断静默（实验功能），仅自动接听的通话生效。")
+                    .font(.caption).foregroundStyle(.secondary)
+                if !model.localReceptionEnabled {
+                    DisclosureGroup("GPT 接待话术") {
+                        TextEditor(text: $model.gptReceptionPrompt).frame(minHeight: 90)
+                        Button("复制话术至剪贴板") { model.copyGPTReceptionPrompt() }
+                        Text("本地保存；首次设置或修改后，请粘贴到官方 ChatGPT 的个性化设置或接待对话。程序不保证网页自动加载提示词。").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Toggle("GPT 失败时使用本地备用接待", isOn: Binding(
+                        get: { model.localFallbackEnabled }, set: { model.setLocalFallbackEnabled($0) }))
+                        .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                    Toggle("GPT 通话使用本地录音 / 来电者转写", isOn: Binding(
+                        get: { model.gptCaptureEnabled }, set: { model.setGPTCaptureEnabled($0) }))
+                        .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                    if model.localFallbackEnabled || model.gptCaptureEnabled {
+                        Text(model.localReceptionStatus).font(.caption)
+                        Button("准备 / 重新自检备用模型") { model.prepareLocalReception() }
+                            .disabled(model.localReceptionPreparing || model.localModelDownloading || model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                    }
+                    if model.localFallbackEnabled || model.gptCaptureEnabled {
+                        Toggle("保存本地双向录音", isOn: $model.localRecordAudio)
+                            .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                        Toggle("挂断后推送来电者识别文字", isOn: $model.localSendTranscript)
+                            .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                        Toggle("告知后自动开始，无需逐次回答同意", isOn: $model.localNoticeOnly)
+                            .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                        Text("仅在适用规则允许时启用告知模式。拒绝或撤回则停止保存和推送；GPT 模式识别来电者文字，双向声音可保存在本机。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button("打开录音目录") { model.openLocalRecordings() }
+                            Text(model.localCaptureStatus).font(.caption)
+                        }
+                    }
+                }
                 if model.localReceptionEnabled {
                     Text(model.localReceptionStatus).font(.caption)
+                    TextField("本地接待开场话术", text: $model.localGreeting)
+                    TextField("本地接待结束话术", text: $model.localGoodbye)
+                    Text("修改后点击准备 / 重新自检生效；录音与转发确认话术不受影响。").font(.caption).foregroundStyle(.secondary)
                     Toggle("保存本地双向录音和识别文字", isOn: $model.localRecordAudio)
                         .disabled(model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK" || model.liveVoiceActive || model.liveVoiceStarting)
                     Toggle("挂断后通过已配置的飞书 Webhook 推送文字", isOn: $model.localSendTranscript)
                         .disabled(model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK" || model.liveVoiceActive || model.liveVoiceStarting)
-                    Text("开启后，接通时先询问来电者是否同意。仅在明确同意后保存或转发；拒绝或撤回即停止。录音保存在 Mac，不随诊断包上传。")
+                    Toggle("告知后自动开始，无需逐次回答同意", isOn: $model.localNoticeOnly)
+                        .disabled(model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK" || model.liveVoiceActive || model.liveVoiceStarting)
+                    Text("仅在适用规则允许时启用告知模式；接通先播报录音 / 文字转达告知，拒绝或撤回即清除记录。录音仅保存在 Mac，不随诊断包上传。")
                         .font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Button("打开录音目录") { model.openLocalRecordings() }
@@ -618,7 +666,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.45 (Build 62)").font(.caption.monospaced())
+            Text("v0.4.46 (Build 63)").font(.caption.monospaced())
         }
     }
 

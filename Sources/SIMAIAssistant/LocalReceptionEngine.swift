@@ -13,6 +13,7 @@ final class LocalReceptionEngine {
     private let writeQueue = DispatchQueue(label: "simai.local.asr.write")
     private let prepareQueue = DispatchQueue(label: "simai.local.prepare", qos: .userInitiated)
     private let onEvent: (Event) -> Void
+    private let customPhrases: [LocalReceptionPolicy.Reply: String]
     private var process: Process?
     private var input: Pipe?
     private var output: Pipe?
@@ -30,7 +31,39 @@ final class LocalReceptionEngine {
     private var ignoreAfterGoodbye = false
     private var capture: LocalCallCapture?
     private var consentPending = false
-    init(onEvent: @escaping (Event) -> Void) { self.onEvent = onEvent }
+    private var noticePending = false
+    private var transcriptOnly = false
+    private var passThroughStarted = false
+    var readyForGPT: Bool {
+        gate.lock(); defer { gate.unlock() }
+        guard active, ready, !disposed, transcriptOnly else { return false }
+        if !consentPending && !noticePending && cursor >= speaking.count && Date() >= quietUntil {
+            passThroughStarted = true
+        }
+        return passThroughStarted
+    }
+    /// Promote the same call's recognizer without resetting its capture authorization.
+    func promoteToLocalReception() -> Bool {
+        gate.lock()
+        guard active, ready, !disposed, transcriptOnly, passThroughStarted,
+              let greeting = replyPCM[.greeting], !greeting.isEmpty else { gate.unlock(); return false }
+        transcriptOnly = false; passThroughStarted = false
+        policy = LocalReceptionPolicy(); ignoreAfterGoodbye = false
+        speaking = greeting; cursor = 0; quietUntil = .distantPast
+        gate.unlock()
+        onEvent(.status("GPT 音频不可用，已由本地接待接管"))
+        return true
+    }
+    func skipPendingConsentForGPT() {
+        gate.lock(); defer { gate.unlock() }
+        guard active, transcriptOnly, consentPending, !passThroughStarted else { return }
+        capture?.revoke(); consentPending = false
+        speaking.removeAll(); cursor = 0; quietUntil = .distantPast
+    }
+    init(customPhrases: [LocalReceptionPolicy.Reply: String] = [:], onEvent: @escaping (Event) -> Void) {
+        self.customPhrases = customPhrases
+        self.onEvent = onEvent
+    }
     var isReady: Bool { gate.lock(); defer { gate.unlock() }; return ready && !disposed }
     func prepare() {
         prepareQueue.async { [weak self] in self?.load() }
@@ -40,19 +73,21 @@ final class LocalReceptionEngine {
               FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("simai-local-asr").path) else {
             fail("LOCAL_ASR_NOT_BUNDLED"); return
         }
+        guard LocalModelStore.validate() else { fail("LOCAL_MODEL_MISSING_OR_INVALID"); return }
         onEvent(.status("正在准备系统中文语音及本地识别模型…"))
         var rendered: [LocalReceptionPolicy.Reply: [UInt8]] = [:]
         for phrase in LocalReceptionPolicy.Reply.allCases {
             gate.lock(); let canceled = disposed; gate.unlock()
             if canceled { return }
-            guard let bytes = Self.renderFixedPhrase(phrase.text) else {
+            let text = customPhrases[phrase]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard let bytes = Self.renderFixedPhrase(text.isEmpty ? phrase.text : String(text.prefix(100))) else {
                 fail("LOCAL_CHINESE_VOICE_UNAVAILABLE"); return
             }
             rendered[phrase] = bytes
         }
         let child = Process(), stdin = Pipe(), stdout = Pipe()
         child.executableURL = root.appendingPathComponent("simai-local-asr")
-        child.arguments = [root.appendingPathComponent("models").path]
+        child.arguments = [LocalModelStore.directory.path]
         child.standardInput = stdin; child.standardOutput = stdout
         child.standardError = FileHandle.nullDevice
         // Do not let a dead helper send SIGPIPE to the host app.
@@ -101,6 +136,13 @@ final class LocalReceptionEngine {
                 gate.lock()
                 guard active, !disposed, !ignoreAfterGoodbye,
                       cursor >= speaking.count, Date() >= quietUntil else { gate.unlock(); continue }
+                if transcriptOnly && passThroughStarted {
+                    if LocalCaptureConsent.revokes(text) { capture?.revoke() }
+                    else { capture?.addCallerText(text) }
+                    gate.unlock()
+                    onEvent(.heard(text))
+                    continue
+                }
                 let reply: LocalReceptionPolicy.Reply
                 if consentPending {
                     consentPending = false
@@ -116,7 +158,7 @@ final class LocalReceptionEngine {
                     reply = .consentDeclined
                 } else {
                     reply = policy.reply(to: text)
-                    capture?.addTurn(text, reply: reply)
+                    capture?.addTurn(text, reply: reply, spokenText: customPhrases[reply])
                 }
                 speaking = replyPCM[reply] ?? []
                 cursor = 0
@@ -129,11 +171,14 @@ final class LocalReceptionEngine {
     }
 
     /// Invoked only after the Android PCM handshake. No desktop audio output.
-    func beginCall(capture: LocalCallCapture? = nil) -> Bool {
+    func beginCall(capture: LocalCallCapture? = nil, transcriptOnly: Bool = false) -> Bool {
         gate.lock()
         guard ready, !disposed, !active, let greeting = replyPCM[capture?.greeting ?? .greeting], !greeting.isEmpty else { gate.unlock(); return false }
         self.capture = capture
-        consentPending = capture != nil
+        self.transcriptOnly = transcriptOnly
+        passThroughStarted = false
+        consentPending = capture != nil && capture?.noticeOnly != true
+        noticePending = capture?.noticeOnly == true
         generation += 1; let epoch = generation
         active = true; policy = LocalReceptionPolicy(); ignoreAfterGoodbye = false
         speaking = greeting; cursor = 0; quietUntil = .distantPast
@@ -146,7 +191,8 @@ final class LocalReceptionEngine {
         gate.lock()
         if !active { gate.unlock(); return }
         active = false; generation += 1; let epoch = generation
-        capture = nil; consentPending = false
+        capture = nil; consentPending = false; noticePending = false
+        transcriptOnly = false; passThroughStarted = false
         speaking.removeAll(); cursor = 0
         gate.unlock()
         enqueueReset(epoch)
@@ -194,7 +240,10 @@ final class LocalReceptionEngine {
         let n = min(640, speaking.count - cursor)
         bytes.replaceSubrange(0..<n, with: speaking[cursor..<(cursor+n)])
         cursor += n
-        if cursor == speaking.count { quietUntil = Date().addingTimeInterval(0.25) }
+        if cursor == speaking.count {
+            quietUntil = Date().addingTimeInterval(0.25)
+            if noticePending { noticePending = false; capture?.authorize() }
+        }
         return bytes
     }
     func stop() { dispose(error: nil) }

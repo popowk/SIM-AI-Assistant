@@ -17,8 +17,8 @@ assets="$(gh api --paginate "repos/$repo/releases/$release_id/assets?per_page=10
   --jq '.[] | [.id, .name] | join(" ")')"
 names="$(printf '%s\n' "$assets" | cut -d ' ' -f2)"
 for required in \
-  SIM-AI-Assistant-v0.4.45-macos-arm64.zip \
-  SIM-AI-Assistant-v0.4.45-macos-arm64.zip.sha256 \
+  SIM-AI-Assistant-v0.4.46-macos-arm64.zip \
+  SIM-AI-Assistant-v0.4.46-macos-arm64.zip.sha256 \
   SIMAI-Companion-v0.3.23-debug.apk \
   SIMAI-Companion-v0.3.23-debug.apk.sha256 \
   SIMAI-Audio-Probe.jar \
@@ -34,8 +34,8 @@ kept=0
 while read -r asset_id asset_name; do
   [[ -n "$asset_id" && -n "$asset_name" ]] || continue
   case "$asset_name" in
-    SIM-AI-Assistant-v0.4.45-macos-arm64.zip|\
-    SIM-AI-Assistant-v0.4.45-macos-arm64.zip.sha256|\
+    SIM-AI-Assistant-v0.4.46-macos-arm64.zip|\
+    SIM-AI-Assistant-v0.4.46-macos-arm64.zip.sha256|\
     SIM-AI-Assistant-v0.4.44-macos-arm64.zip|\
     SIM-AI-Assistant-v0.4.44-macos-arm64.zip.sha256|\
     SIMAI-Companion-v0.3.23-debug.apk|\

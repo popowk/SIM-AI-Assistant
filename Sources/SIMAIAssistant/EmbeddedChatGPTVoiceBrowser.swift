@@ -57,6 +57,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     @Published private(set) var isolatedOutputStatus = "等待 Voice 网页创建独立声音通道"
     var onIsolatedOutputChange: ((Bool) -> Void)?
     private var isolateCheckBusy = false
+    private var routeGeneration = 0
     private var lastIsolationCheck = Date.distantPast
 
     func setIsolatedAudioOutputEnabled(_ enabled: Bool) {
@@ -645,6 +646,19 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         status = "正在载入已保存的 ChatGPT 页面；首次使用请自行登录"
     }
 
+    func restartVoiceForRecovery() {
+        guard loaded, isOfficialPage else { return }
+        routeGeneration += 1
+        isolateCheckBusy = false
+        lastStartAttempt = .distantPast
+        lastIsolationCheck = .distantPast
+        lastMicrophoneRouteCheck = .distantPast
+        lastVerifiedMicrophoneFrameAt = .distantPast
+        updateIsolatedOutputReady(false)
+        updateIsolatedMicrophoneReady(false)
+        webView.reload()
+    }
+
     func reload() {
         if loaded { webView.reload() }
         else { loadIfNeeded() }
@@ -671,6 +685,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
     func releaseForIdle() {
         guard loaded else { return }
         loaded = false
+        routeGeneration += 1
         lastStartAttempt = .distantPast
         lastIsolationCheck = .distantPast
         lastMicrophoneRouteCheck = .distantPast
@@ -777,6 +792,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         guard loaded, isOfficialPage, microphoneActive,
               force || Date().timeIntervalSince(lastMicrophoneRouteCheck) >= 2 else { return }
         lastMicrophoneRouteCheck = Date()
+        let generation = routeGeneration
         let script = #"""
         (() => {
           const code = window.__simaiMicRouteCode || 'MIC_HOOK_MISSING';
@@ -788,7 +804,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         """#
         webView.evaluateJavaScript(script) { [weak self] value, error in
             Task { @MainActor [weak self] in
-                guard let self, self.loaded else { return }
+                guard let self, self.loaded, self.routeGeneration == generation, self.microphoneActive else { return }
                 let code = error == nil ? (value as? String ?? "MIC_CHECK_FAILED")
                                         : "MIC_CHECK_FAILED"
                 let frameAge: TimeInterval? =
@@ -830,6 +846,7 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
               force || Date().timeIntervalSince(lastIsolationCheck) >= 2 else { return }
         isolateCheckBusy = true
         lastIsolationCheck = Date()
+        let generation = routeGeneration
         let functionBody = #"""
         if (location.protocol !== 'https:' || location.hostname !== 'chatgpt.com') {
           return {code:'ORIGIN_NOT_ALLOWED'};
@@ -886,9 +903,9 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         webView.callAsyncJavaScript(functionBody, arguments: [:], in: nil,
                                     in: .page) { [weak self] result in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.routeGeneration == generation else { return }
                 self.isolateCheckBusy = false
-                guard self.loaded && self.isolatedAudioOutputEnabled else { return }
+                guard self.loaded && self.isolatedAudioOutputEnabled && self.microphoneActive else { return }
                 let code: String
                 switch result {
                 case .success(let value):
@@ -1027,6 +1044,11 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
         // Helps distinguish an actual ChatGPT navigation from a programmatic
         // release/timeout. Do not log URLs, cookies, or page content.
         guard loaded else { return }
+        routeGeneration += 1
+        isolateCheckBusy = false
+        lastVerifiedMicrophoneFrameAt = .distantPast
+        updateIsolatedOutputReady(false)
+        updateIsolatedMicrophoneReady(false)
         onDiagnostic?("VOICE_WEBVIEW_NAVIGATION_STARTED")
     }
 

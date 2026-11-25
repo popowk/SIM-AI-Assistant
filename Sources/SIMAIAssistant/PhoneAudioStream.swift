@@ -14,7 +14,10 @@ enum LiveAudioEvent {
     case handshakeAttempts(Int)
     case metrics(received: Int, sent: Int, dropped: Int, micUnderflows: Int, micOverflows: Int, txLate: Int, micBufferedMs: Int, voiceRouteDropped: Int, monitorRendered: Int, virtualRendered: Int)
     case aiReturnMetrics(captured: Int, monitorDropped: Int, uplinkUnderflow: Int, peakRMS: Double)
-    case downlinkSignal(peakRMS: Double)
+    case downlinkSignal(peakRMS: Double, recentRMS: Double)
+    case replyWindowSignal(recentRMS: Double)
+    case callerSilenceLimit
+    case gptCapturePreludeFinished
     case finished(String)
 }
 
@@ -325,6 +328,7 @@ private final class LiveAIReplyCapture {
     private var stopped = false
     private var capturedSamples = 0
     private var peakRMS = 0.0
+    private var windowPeakRMS = 0.0
 
     init(virtualInput: AudioDeviceID, physicalOutput: AudioDeviceID) throws {
         self.monitor = try LiveMacSpeaker(deviceID: physicalOutput)
@@ -436,6 +440,7 @@ private final class LiveAIReplyCapture {
             self.lock.lock()
             self.capturedSamples += count
             self.peakRMS = max(self.peakRMS, rms)
+            self.windowPeakRMS = max(self.windowPeakRMS, rms)
             self.lock.unlock()
         }
         do {
@@ -475,12 +480,14 @@ private final class LiveAIReplyCapture {
     }
     func nextPhoneFrame() -> [UInt8] { phoneQueue.nextFrame() }
 
-    func statistics() -> (captured: Int, monitorDropped: Int, uplinkUnderflow: Int, peakRMS: Double) {
+    func statistics() -> (captured: Int, monitorDropped: Int, uplinkUnderflow: Int, peakRMS: Double, recentRMS: Double) {
         lock.lock()
         let samples = capturedSamples
         let peak = peakRMS
+        let recent = windowPeakRMS
+        windowPeakRMS = 0
         lock.unlock()
-        return (samples / 320, monitor.droppedFrames(), phoneQueue.statistics().underflowFrames, peak)
+        return (samples / 320, monitor.droppedFrames(), phoneQueue.statistics().underflowFrames, peak, recent)
     }
 
     func stop() {
@@ -514,7 +521,17 @@ final class PhoneAudioStream {
     private var callerMonitorEnabled = true
     private let physicalMonitorOutput: AudioDeviceID?
     private let localReception: LocalReceptionEngine?
+    private var takeoverEngine: LocalReceptionEngine?
+    private var takeoverPending = false
+    private var lastAudibleUplink = Date.distantPast
+    private var localReceptionExclusive: Bool {
+        gate.lock(); defer { gate.unlock() }
+        return localReception != nil || takeoverEngine != nil || takeoverPending
+    }
     private let localCapture: LocalCallCapture?
+    private let gptCaptureEngine: LocalReceptionEngine?
+    private var gptCapturePassThrough = false
+    private let silenceSeconds: Int
     private var setup: ADBAudioStreamSetup?
     private var active = false
     private let onEvent: (LiveAudioEvent) -> Void
@@ -523,10 +540,14 @@ final class PhoneAudioStream {
     init(physicalMonitorOutput: AudioDeviceID? = nil,
          localReception: LocalReceptionEngine? = nil,
          localCapture: LocalCallCapture? = nil,
+         gptCaptureEngine: LocalReceptionEngine? = nil,
+         silenceSeconds: Int = 0,
          onEvent: @escaping (LiveAudioEvent) -> Void) {
         self.physicalMonitorOutput = physicalMonitorOutput
         self.localReception = localReception
         self.localCapture = localCapture
+        self.gptCaptureEngine = gptCaptureEngine
+        self.silenceSeconds = max(0, min(60, silenceSeconds))
         self.onEvent = onEvent
         self.microphone = LiveMacMicrophone(queue: microphoneQueue)
     }
@@ -534,6 +555,31 @@ final class PhoneAudioStream {
     var isActive: Bool {
         gate.lock(); defer { gate.unlock() }
         return active && !closed
+    }
+
+    /// Called only for the current auto-answered session by AssistantModel.
+    /// Keep the established Android socket, stop virtual audio, then switch
+    /// the input/output frame consumers to the already prepared local engine.
+    func takeOverWithLocalReception(_ engine: LocalReceptionEngine) -> Bool {
+        gate.lock()
+        guard active, !closed, localReception == nil, takeoverEngine == nil, !takeoverPending else { gate.unlock(); return false }
+        takeoverPending = true
+        aiReplyToPhone = false
+        let virtualMic = chatGPTVirtualMic; chatGPTVirtualMic = nil
+        let aiCapture = aiReplyCapture; aiReplyCapture = nil
+        callerMonitorEnabled = false
+        gate.unlock()
+        virtualMic?.stop(); aiCapture?.stop(); microphone.stop()
+        let started: Bool
+        if engine === gptCaptureEngine { started = engine.promoteToLocalReception() }
+        else { started = engine.beginCall() }
+        gate.lock()
+        let success = started && active && !closed
+        if success { takeoverEngine = engine }
+        takeoverPending = false
+        gate.unlock()
+        if started && !success { engine.endCall() }
+        return success
     }
 
     func setCallerMonitorEnabled(_ enabled: Bool) {
@@ -549,7 +595,7 @@ final class PhoneAudioStream {
     }
 
     func setMicrophone(_ enabled: Bool) throws {
-        if enabled && localReception != nil { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
+        if enabled && localReceptionExclusive { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
         if enabled {
             guard isActive else { throw LiveAudioFailure.reason("AUDIO_NOT_ACTIVE") }
             gate.lock()
@@ -603,7 +649,7 @@ final class PhoneAudioStream {
 
     /// Opt-in receive-only ChatGPT Voice input; never routes AI audio to caller.
     func setChatGPTInputRouting(_ enabled: Bool) throws {
-        if enabled && localReception != nil { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
+        if enabled && localReceptionExclusive { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
         if !enabled {
             gate.lock()
             let old = chatGPTVirtualMic
@@ -636,7 +682,7 @@ final class PhoneAudioStream {
     /// The monitor is safe by default: AI audio can be heard locally but
     /// cannot reach the phone unless a second distinct consent action occurs.
     func setAIReplyMonitoring(_ enabled: Bool, physicalOutputID: AudioDeviceID? = nil) throws {
-        if enabled && localReception != nil { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
+        if enabled && localReceptionExclusive { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
         if !enabled {
             gate.lock()
             aiReplyToPhone = false
@@ -680,7 +726,7 @@ final class PhoneAudioStream {
     }
 
     func setAIReplyToPhone(_ enabled: Bool) throws {
-        if enabled && localReception != nil { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
+        if enabled && localReceptionExclusive { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
         guard isActive else { throw LiveAudioFailure.reason("AI_RETURN_CALL_INACTIVE") }
         if enabled {
             gate.lock()
@@ -734,12 +780,15 @@ final class PhoneAudioStream {
             aiReplyToPhone = false
             let session = setup
             setup = nil
+            let takeover = takeoverEngine; takeoverEngine = nil
             gate.unlock()
             if fd >= 0 {
                 _ = Darwin.shutdown(fd, Int32(SHUT_RDWR))
                 _ = Darwin.close(fd)
             }
             localReception?.endCall()
+            gptCaptureEngine?.endCall()
+            if let takeover, takeover !== gptCaptureEngine { takeover.endCall() }
             virtualMic?.stop()
             aiCapture?.stop()
             if let process, process.isRunning { process.terminate() }
@@ -873,11 +922,16 @@ final class PhoneAudioStream {
             } catch { reason = "MAC_SPEAKER_START"; return }
         }
         defer { speaker?.stop() }
+        if let gptCaptureEngine, !gptCaptureEngine.beginCall(capture: localCapture, transcriptOnly: true) {
+            localCapture?.revoke()
+            gate.lock(); gptCapturePassThrough = true; gate.unlock()
+        }
 
         gate.lock()
         active = true
         gate.unlock()
         report(.active)
+        if gptCaptureEngine != nil && gptCapturePassThrough { report(.gptCapturePreludeFinished) }
 
         let started = Date()
         DispatchQueue.global(qos: .userInitiated).async { [self] in
@@ -885,6 +939,9 @@ final class PhoneAudioStream {
         }
         var received = 0
         var downlinkPeakRMS = 0.0
+        var downlinkWindowRMS = 0.0
+        var quietFrames = 0
+        var audibleFrames = 0
         while !isClosed && Date().timeIntervalSince(started) < maxDuration {
             guard let frame = Self.readExact(fd, count: 640) else {
                 reason = "AUDIO_REMOTE_CLOSED"
@@ -898,26 +955,59 @@ final class PhoneAudioStream {
                 let normalized = Double(Int16(bitPattern: sample)) / 32768.0
                 power += normalized * normalized
             }
-            downlinkPeakRMS = max(downlinkPeakRMS, sqrt(power / 320.0))
+            let rms = sqrt(power / 320.0)
+            downlinkPeakRMS = max(downlinkPeakRMS, rms)
+            downlinkWindowRMS = max(downlinkWindowRMS, rms)
+            // PCM level heuristic (not semantic VAD). Count received 20ms frames,
+            // not network downtime, and require consecutive audible frames to reset.
+            gate.lock()
+            let assistantSpeaking = Date().timeIntervalSince(lastAudibleUplink) < 1.0
+            let preludePending = gptCaptureEngine != nil && !gptCapturePassThrough
+            let switching = takeoverPending
+            let currentLocal = takeoverEngine ?? localReception
+            gate.unlock()
+            if silenceSeconds > 0 && !assistantSpeaking && !preludePending && !switching {
+                quietFrames += 1
+                audibleFrames = rms >= 0.008 ? audibleFrames + 1 : 0
+                if audibleFrames >= 5 { quietFrames = 0 }
+                if quietFrames == silenceSeconds * 50 { report(.callerSilenceLimit) }
+            } else { quietFrames = 0; audibleFrames = 0 }
             gate.lock()
             let callerMonitor = callerMonitorEnabled
             let virtualMic = chatGPTVirtualMic
+            var passThrough = gptCapturePassThrough
             gate.unlock()
-            if let localReception {
-                if !localReception.isReady { reason = "LOCAL_ASR_FAILED"; break }
+            if currentLocal == nil && !switching, let gptCaptureEngine {
+                if !gptCaptureEngine.isReady { localCapture?.revoke() }
+                if !passThrough {
+                    if Date().timeIntervalSince(started) >= 18 { gptCaptureEngine.skipPendingConsentForGPT() }
+                    if gptCaptureEngine.readyForGPT || !gptCaptureEngine.isReady {
+                        gate.lock(); gptCapturePassThrough = true; gate.unlock()
+                        passThrough = true
+                        report(.gptCapturePreludeFinished)
+                    }
+                }
+                if gptCaptureEngine.isReady {
+                    localCapture?.append(frame, uplink: false)
+                    gptCaptureEngine.feed(frame)
+                }
+            }
+            if let currentLocal {
+                if !currentLocal.isReady { reason = "LOCAL_ASR_FAILED"; break }
                 localCapture?.append(frame, uplink: false)
-                localReception.feed(frame)
-            } else {
+                currentLocal.feed(frame)
+            } else if !switching && (gptCaptureEngine == nil || passThrough) {
                 if callerMonitor { speaker?.feed(frame) }
                 virtualMic?.feed(frame)
             }
             received += 1
             if received % 50 == 0 {
-                report(.downlinkSignal(peakRMS: downlinkPeakRMS))
+                report(.downlinkSignal(peakRMS: downlinkPeakRMS, recentRMS: downlinkWindowRMS))
+                downlinkWindowRMS = 0
                 reportMetrics(received: received, speaker: speaker)
             }
         }
-        report(.downlinkSignal(peakRMS: downlinkPeakRMS))
+        report(.downlinkSignal(peakRMS: downlinkPeakRMS, recentRMS: downlinkWindowRMS))
         reportMetrics(received: received, speaker: speaker)
         if isClosed { reason = "USER_STOPPED" }
         else if Date().timeIntervalSince(started) >= maxDuration { reason = "SESSION_LIMIT_180S" }
@@ -945,6 +1035,7 @@ final class PhoneAudioStream {
                                     monitorDropped: stats.monitorDropped,
                                     uplinkUnderflow: stats.uplinkUnderflow,
                                     peakRMS: stats.peakRMS))
+            report(.replyWindowSignal(recentRMS: stats.recentRMS))
         }
         report(.metrics(received: received, sent: sending.sent,
                         dropped: speaker?.droppedFrames() ?? 0,
@@ -984,10 +1075,17 @@ final class PhoneAudioStream {
             gate.lock()
             let forwardAI = aiReplyToPhone
             let capture = aiReplyCapture
+            let passThrough = gptCapturePassThrough
+            let currentLocal = takeoverEngine ?? localReception
+            let switching = takeoverPending
             gate.unlock()
             let data: [UInt8]
-            if let localReception {
-                data = localReception.nextFrame()
+            if switching {
+                data = [UInt8](repeating: 0, count: 640)
+            } else if let currentLocal {
+                data = currentLocal.nextFrame()
+            } else if let gptCaptureEngine, !passThrough {
+                data = gptCaptureEngine.nextFrame()
             } else if forwardAI, let capture {
                 data = capture.nextPhoneFrame()
             } else {
@@ -995,7 +1093,11 @@ final class PhoneAudioStream {
             }
             guard Self.sendAll(fd, data) else { break }
             localCapture?.append(data, uplink: true)
+            let hasAudio = stride(from: 0, to: data.count - data.count % 2, by: 2).contains { offset in
+                abs(Int(Int16(bitPattern: UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)))) >= 300
+            }
             gate.lock()
+            if hasAudio { lastAudibleUplink = Date() }
             sent += 1
             txLateFrames = pacing.lateFrames
             gate.unlock()
