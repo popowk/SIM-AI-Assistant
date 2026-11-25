@@ -521,6 +521,13 @@ final class PhoneAudioStream {
     private var callerMonitorEnabled = true
     private let physicalMonitorOutput: AudioDeviceID?
     private let localReception: LocalReceptionEngine?
+    private var takeoverEngine: LocalReceptionEngine?
+    private var takeoverPending = false
+    private var lastAudibleUplink = Date.distantPast
+    private var localReceptionExclusive: Bool {
+        gate.lock(); defer { gate.unlock() }
+        return localReception != nil || takeoverEngine != nil || takeoverPending
+    }
     private let localCapture: LocalCallCapture?
     private let gptCaptureEngine: LocalReceptionEngine?
     private var gptCapturePassThrough = false
@@ -550,6 +557,31 @@ final class PhoneAudioStream {
         return active && !closed
     }
 
+    /// Called only for the current auto-answered session by AssistantModel.
+    /// Keep the established Android socket, stop virtual audio, then switch
+    /// the input/output frame consumers to the already prepared local engine.
+    func takeOverWithLocalReception(_ engine: LocalReceptionEngine) -> Bool {
+        gate.lock()
+        guard active, !closed, localReception == nil, takeoverEngine == nil, !takeoverPending else { gate.unlock(); return false }
+        takeoverPending = true
+        aiReplyToPhone = false
+        let virtualMic = chatGPTVirtualMic; chatGPTVirtualMic = nil
+        let aiCapture = aiReplyCapture; aiReplyCapture = nil
+        callerMonitorEnabled = false
+        gate.unlock()
+        virtualMic?.stop(); aiCapture?.stop(); microphone.stop()
+        let started: Bool
+        if engine === gptCaptureEngine { started = engine.promoteToLocalReception() }
+        else { started = engine.beginCall() }
+        gate.lock()
+        let success = started && active && !closed
+        if success { takeoverEngine = engine }
+        takeoverPending = false
+        gate.unlock()
+        if started && !success { engine.endCall() }
+        return success
+    }
+
     func setCallerMonitorEnabled(_ enabled: Bool) {
         gate.lock()
         callerMonitorEnabled = enabled
@@ -563,7 +595,7 @@ final class PhoneAudioStream {
     }
 
     func setMicrophone(_ enabled: Bool) throws {
-        if enabled && localReception != nil { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
+        if enabled && localReceptionExclusive { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
         if enabled {
             guard isActive else { throw LiveAudioFailure.reason("AUDIO_NOT_ACTIVE") }
             gate.lock()
@@ -617,7 +649,7 @@ final class PhoneAudioStream {
 
     /// Opt-in receive-only ChatGPT Voice input; never routes AI audio to caller.
     func setChatGPTInputRouting(_ enabled: Bool) throws {
-        if enabled && localReception != nil { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
+        if enabled && localReceptionExclusive { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
         if !enabled {
             gate.lock()
             let old = chatGPTVirtualMic
@@ -650,7 +682,7 @@ final class PhoneAudioStream {
     /// The monitor is safe by default: AI audio can be heard locally but
     /// cannot reach the phone unless a second distinct consent action occurs.
     func setAIReplyMonitoring(_ enabled: Bool, physicalOutputID: AudioDeviceID? = nil) throws {
-        if enabled && localReception != nil { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
+        if enabled && localReceptionExclusive { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
         if !enabled {
             gate.lock()
             aiReplyToPhone = false
@@ -694,7 +726,7 @@ final class PhoneAudioStream {
     }
 
     func setAIReplyToPhone(_ enabled: Bool) throws {
-        if enabled && localReception != nil { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
+        if enabled && localReceptionExclusive { throw LiveAudioFailure.reason("LOCAL_RECEPTION_EXCLUSIVE") }
         guard isActive else { throw LiveAudioFailure.reason("AI_RETURN_CALL_INACTIVE") }
         if enabled {
             gate.lock()
@@ -748,6 +780,7 @@ final class PhoneAudioStream {
             aiReplyToPhone = false
             let session = setup
             setup = nil
+            let takeover = takeoverEngine; takeoverEngine = nil
             gate.unlock()
             if fd >= 0 {
                 _ = Darwin.shutdown(fd, Int32(SHUT_RDWR))
@@ -755,6 +788,7 @@ final class PhoneAudioStream {
             }
             localReception?.endCall()
             gptCaptureEngine?.endCall()
+            if let takeover, takeover !== gptCaptureEngine { takeover.endCall() }
             virtualMic?.stop()
             aiCapture?.stop()
             if let process, process.isRunning { process.terminate() }
@@ -926,18 +960,24 @@ final class PhoneAudioStream {
             downlinkWindowRMS = max(downlinkWindowRMS, rms)
             // PCM level heuristic (not semantic VAD). Count received 20ms frames,
             // not network downtime, and require consecutive audible frames to reset.
-            if silenceSeconds > 0 {
+            gate.lock()
+            let assistantSpeaking = Date().timeIntervalSince(lastAudibleUplink) < 1.0
+            let preludePending = gptCaptureEngine != nil && !gptCapturePassThrough
+            let switching = takeoverPending
+            let currentLocal = takeoverEngine ?? localReception
+            gate.unlock()
+            if silenceSeconds > 0 && !assistantSpeaking && !preludePending && !switching {
                 quietFrames += 1
                 audibleFrames = rms >= 0.008 ? audibleFrames + 1 : 0
                 if audibleFrames >= 5 { quietFrames = 0 }
                 if quietFrames == silenceSeconds * 50 { report(.callerSilenceLimit) }
-            }
+            } else { quietFrames = 0; audibleFrames = 0 }
             gate.lock()
             let callerMonitor = callerMonitorEnabled
             let virtualMic = chatGPTVirtualMic
             var passThrough = gptCapturePassThrough
             gate.unlock()
-            if let gptCaptureEngine {
+            if currentLocal == nil && !switching, let gptCaptureEngine {
                 if !gptCaptureEngine.isReady { localCapture?.revoke() }
                 if !passThrough {
                     if Date().timeIntervalSince(started) >= 18 { gptCaptureEngine.skipPendingConsentForGPT() }
@@ -952,11 +992,11 @@ final class PhoneAudioStream {
                     gptCaptureEngine.feed(frame)
                 }
             }
-            if let localReception {
-                if !localReception.isReady { reason = "LOCAL_ASR_FAILED"; break }
+            if let currentLocal {
+                if !currentLocal.isReady { reason = "LOCAL_ASR_FAILED"; break }
                 localCapture?.append(frame, uplink: false)
-                localReception.feed(frame)
-            } else if gptCaptureEngine == nil || passThrough {
+                currentLocal.feed(frame)
+            } else if !switching && (gptCaptureEngine == nil || passThrough) {
                 if callerMonitor { speaker?.feed(frame) }
                 virtualMic?.feed(frame)
             }
@@ -1036,10 +1076,14 @@ final class PhoneAudioStream {
             let forwardAI = aiReplyToPhone
             let capture = aiReplyCapture
             let passThrough = gptCapturePassThrough
+            let currentLocal = takeoverEngine ?? localReception
+            let switching = takeoverPending
             gate.unlock()
             let data: [UInt8]
-            if let localReception {
-                data = localReception.nextFrame()
+            if switching {
+                data = [UInt8](repeating: 0, count: 640)
+            } else if let currentLocal {
+                data = currentLocal.nextFrame()
             } else if let gptCaptureEngine, !passThrough {
                 data = gptCaptureEngine.nextFrame()
             } else if forwardAI, let capture {
@@ -1049,7 +1093,11 @@ final class PhoneAudioStream {
             }
             guard Self.sendAll(fd, data) else { break }
             localCapture?.append(data, uplink: true)
+            let hasAudio = stride(from: 0, to: data.count - data.count % 2, by: 2).contains { offset in
+                abs(Int(Int16(bitPattern: UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)))) >= 300
+            }
             gate.lock()
+            if hasAudio { lastAudibleUplink = Date() }
             sent += 1
             txLateFrames = pacing.lateFrames
             gate.unlock()

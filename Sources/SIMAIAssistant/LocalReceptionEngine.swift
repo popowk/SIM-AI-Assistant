@@ -42,6 +42,18 @@ final class LocalReceptionEngine {
         }
         return passThroughStarted
     }
+    /// Promote the same call's recognizer without resetting its capture authorization.
+    func promoteToLocalReception() -> Bool {
+        gate.lock()
+        guard active, ready, !disposed, transcriptOnly, passThroughStarted,
+              let greeting = replyPCM[.greeting], !greeting.isEmpty else { gate.unlock(); return false }
+        transcriptOnly = false; passThroughStarted = false
+        policy = LocalReceptionPolicy(); ignoreAfterGoodbye = false
+        speaking = greeting; cursor = 0; quietUntil = .distantPast
+        gate.unlock()
+        onEvent(.status("GPT 音频不可用，已由本地接待接管"))
+        return true
+    }
     func skipPendingConsentForGPT() {
         gate.lock(); defer { gate.unlock() }
         guard active, transcriptOnly, consentPending, !passThroughStarted else { return }

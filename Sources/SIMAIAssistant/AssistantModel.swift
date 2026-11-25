@@ -745,8 +745,36 @@ final class AssistantModel: ObservableObject {
 
     /// At most one restart per auto-answered call. Keep the Android PCM stream
     /// and the call identity; never recover a manually answered or muted call.
+    private func tryLocalFallbackDuringCall() -> Bool {
+        guard localFallbackEnabled, !localFallbackForCurrentRing, autoCallEnabled,
+              automaticAnswerAcknowledged, autoCallAudioRequested, livePhoneState == "OFFHOOK",
+              automaticAnswerSession == bridgeCursor.session,
+              automaticOffhookSequence == bridgeCursor.lastSequence,
+              automaticOffhookSequence > 0, liveVoiceActive,
+              localReceptionReady, let engine = localReceptionEngine, engine.isReady,
+              let stream = voiceStream, stream.takeOverWithLocalReception(engine) else { return false }
+        localFallbackForCurrentRing = true
+        localCallAudioRequested = true
+        localAudioAttemptedForRing = true
+        autoCallAudioRequested = false
+        gptCapturePreludePending = false
+        voiceStopCheckGeneration += 1
+        resumeAIForwardAfterVoicePause = false
+        resumeAIForwardAfterIsolationRestored = false
+        resumeAIForwardAfterMicrophoneRestored = false
+        aiReplyToPhoneEnabled = false; aiReplyMonitorEnabled = false
+        chatGPTVoiceRouteEnabled = false; liveVoiceMicrophoneEnabled = false
+        voiceSessionPrepared = false; autoStartedWebVoiceForRing = false
+        embeddedVoiceBrowser.stopVoiceSessionIfActive()
+        hideEmbeddedVoiceWindow()
+        restoreAutomaticGPTOutput(forceInput: true)
+        liveVoiceStatus = "本地备用接待已接管原有电话 PCM"
+        autoCallStatus = "GPT 恢复失败，本地接待继续当前通话"
+        log(.warn, .audio, "本地备用接待已接管当前通话，无需重连 ADB", details: ["stage": "LOCAL_FALLBACK_IN_CALL"])
+        return true
+    }
     private func checkGPTRecovery() {
-        guard useEmbeddedVoiceBrowser, isolatedChatGPTOutputEnabled,
+        guard useEmbeddedVoiceBrowser, isolatedChatGPTOutputEnabled, !localFallbackForCurrentRing,
               autoCallAudioRequested, automaticAnswerAcknowledged,
               livePhoneState == "OFFHOOK", liveVoiceActive,
               embeddedVoiceBrowser.automaticVoiceButtonEnabled,
@@ -759,7 +787,7 @@ final class AssistantModel: ObservableObject {
             if now >= deadline {
                 voiceRecoveryDeadline = nil
                 log(.warn, .audio, "GPT 音频自动恢复超时", details: ["reason": "GPT_RECOVERY_TIMEOUT"])
-                requestAutomaticHangup(reason: "GPT_RECOVERY_TIMEOUT")
+                if !tryLocalFallbackDuringCall() { requestAutomaticHangup(reason: "GPT_RECOVERY_TIMEOUT") }
                 return
             }
             if ready && now.timeIntervalSince(voiceRecoveryStartedAt) >= 2 {
@@ -2756,7 +2784,7 @@ final class AssistantModel: ObservableObject {
                         reason: reason,
                         automaticAudioSession: self.autoCallAudioRequested
                     )
-                    if localEngine != nil {
+                    if localEngine != nil || self.localFallbackForCurrentRing {
                         self.localCallAudioRequested = false
                         self.autoCallStatus = "本地语音通道已结束：" + reason
                     }
@@ -2974,7 +3002,7 @@ final class AssistantModel: ObservableObject {
     /// or automatically answer calls. User first verifies the official Voice
     /// session is open with BlackHole 2ch input / 16ch output.
     func enableGPTTwoWayPhoneBridge() {
-        guard !gptCapturePreludePending else { return }
+        guard !gptCapturePreludePending, !localFallbackForCurrentRing else { return }
         guard liveVoiceActive, voiceStream != nil else {
             aiReplyReturnStatus = "请先接听真实电话，并建立实时通话音频"
             return
