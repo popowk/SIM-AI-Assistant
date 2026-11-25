@@ -36,6 +36,7 @@ final class LocalCallCapture {
         if recordAudio && webhook != nil { return .consentBoth }
         return recordAudio ? .consentRecording : .consentWebhook
     }
+    var isAuthorized: Bool { gate.lock(); defer { gate.unlock() }; return allowed && !finalized }
     func authorize() { gate.lock(); if !finalized { allowed = true }; gate.unlock() }
     func revoke() {
         gate.lock(); allowed = false; incoming.removeAll(); outgoing.removeAll(); turns.removeAll(); gate.unlock()

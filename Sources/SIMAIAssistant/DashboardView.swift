@@ -101,7 +101,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.46" : "AI 电话自动值守 · 全双工音频 · v0.4.46")
+                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.47" : "AI 电话自动值守 · 全双工音频 · v0.4.47")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -197,6 +197,15 @@ struct DashboardView: View {
                 }.disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
                 Text("按来电 PCM 电平判断静默（实验功能），仅自动接听的通话生效。")
                     .font(.caption).foregroundStyle(.secondary)
+                if model.localReceptionEnabled || model.localFallbackEnabled {
+                    DisclosureGroup("审核本地自动播放话术") {
+                        Text(model.localSpeechReview).font(.caption).textSelection(.enabled)
+                        Button(model.localSpeechApproved ? "撤回全部本地话术授权" : "确认以上全部话术，允许本地自动播报") {
+                            if model.localSpeechApproved { model.revokeLocalSpeechApproval() } else { model.approveLocalSpeech() }
+                        }.disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                        Text(model.localSpeechApproved ? "已审核；修改话术后需重新确认" : "未审核；禁止本地接听及自动接管").font(.caption)
+                    }
+                }
                 if !model.localReceptionEnabled {
                     DisclosureGroup("GPT 接待话术") {
                         TextEditor(text: $model.gptReceptionPrompt).frame(minHeight: 90)
@@ -219,9 +228,12 @@ struct DashboardView: View {
                             .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
                         Toggle("挂断后推送来电者识别文字", isOn: $model.localSendTranscript)
                             .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
-                        Toggle("告知后自动开始，无需逐次回答同意", isOn: $model.localNoticeOnly)
-                            .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
-                        Text("仅在适用规则允许时启用告知模式。拒绝或撤回则停止保存和推送；GPT 模式识别来电者文字，双向声音可保存在本机。")
+                        if model.gptCaptureAwaitingApproval && model.liveVoiceActive {
+                            Button(model.gptCaptureApproved ? "撤回本次录音及推送授权" : "已告知来电者并获得同意，开始本次录音 / 转写") {
+                                model.setCurrentGPTCaptureApproval(!model.gptCaptureApproved)
+                            }
+                        }
+                        Text("GPT 直接接听，不播放本地录音告知。仅在明确确认本次授权后开始保存及推送；撤回清除本次记录。")
                             .font(.caption).foregroundStyle(.secondary)
                         HStack {
                             Button("打开录音目录") { model.openLocalRecordings() }
@@ -666,7 +678,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.46 (Build 63)").font(.caption.monospaced())
+            Text("v0.4.47 (Build 64)").font(.caption.monospaced())
         }
     }
 

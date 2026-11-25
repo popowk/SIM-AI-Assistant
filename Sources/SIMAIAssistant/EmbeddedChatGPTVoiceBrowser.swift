@@ -388,6 +388,11 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
               const audioConstraints = request.audio === true
                 ? {} : {...request.audio};
               delete audioConstraints.deviceId;
+              // Telephony PCM is already processed. Browser echo cancellation
+              // and noise suppression can suppress virtual microphone speech.
+              audioConstraints.echoCancellation = false;
+              audioConstraints.noiseSuppression = false;
+              audioConstraints.autoGainControl = false;
               if (window.__simaiBlackHole2DeviceId) {
                 audioConstraints.deviceId =
                   {exact: window.__simaiBlackHole2DeviceId};
@@ -432,6 +437,9 @@ final class EmbeddedChatGPTVoiceBrowser: NSObject, ObservableObject, WKNavigatio
                     audio: request.audio === true ? {} : {...request.audio}
                   };
                   targetConstraints.audio.deviceId = {exact: target.deviceId};
+                  targetConstraints.audio.echoCancellation = false;
+                  targetConstraints.audio.noiseSuppression = false;
+                  targetConstraints.audio.autoGainControl = false;
                   const targetStream = await originalCapture(targetConstraints);
                   const targetTracks = targetStream.getAudioTracks();
                   if (targetTracks.length > 0 && targetTracks.every(t => t.readyState === 'live')) {

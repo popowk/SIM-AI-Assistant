@@ -166,7 +166,7 @@ enum ADBInspector {
         return false
     }
 
-    static func inspect(at selected: String? = nil, allowRestart: Bool = true) -> ADBInspection {
+    static func inspect(at selected: String? = nil, allowRestart: Bool = true, wirelessHost: String? = nil) -> ADBInspection {
         guard let executable = executable(at: selected) else {
             let message = (selected?.isEmpty == false)
                 ? "所选 ADB 路径无效或无执行权限；请重新选择 adb 文件"
@@ -198,6 +198,34 @@ enum ADBInspector {
                     unauthorized = items.filter { $0.state == "unauthorized" }.count
                     offline = items.filter { $0.state == "offline" }.count
                 }
+            }
+            if authorized == 0, let wirelessHost, !wirelessHost.isEmpty {
+                // Only reconnect a previously paired TLS wireless-debug service
+                // matching the configured Companion host. Never enable tcpip 5555.
+                let host = wirelessHost.split(separator: ":").first.map(String.init) ?? ""
+                var candidates: [String] = []
+                if let saved = UserDefaults.standard.string(forKey: "SIMAI_LAST_AUTHORIZED_WIFI_ADB"),
+                   BridgeRetryPolicy.validWirelessEndpoint(saved), saved.hasPrefix(host + ":") { candidates.append(saved) }
+                if case .completed(0, let discovered) = run(executable, args: ["mdns", "services"], timeout: 4) {
+                    for line in discovered.split(separator: "\n") where line.contains("_adb-tls-connect._tcp") {
+                        if let endpoint = line.split(whereSeparator: { $0.isWhitespace }).last.map(String.init),
+                           endpoint.hasPrefix(host + ":"), BridgeRetryPolicy.validWirelessEndpoint(endpoint), !candidates.contains(endpoint) { candidates.append(endpoint) }
+                    }
+                }
+                for endpoint in candidates.prefix(3) {
+                    _ = run(executable, args: ["connect", endpoint], timeout: 5)
+                    if case .completed(0, let refreshed) = run(executable, args: ["devices"], timeout: 5) {
+                        items = parseDevices(refreshed)
+                        authorized = items.filter { $0.state == "device" }.count
+                        unauthorized = items.filter { $0.state == "unauthorized" }.count
+                        offline = items.filter { $0.state == "offline" }.count
+                        if authorized > 0 { break }
+                    }
+                }
+            }
+            if authorized == 1, let serial = items.first(where: { $0.state == "device" })?.serial,
+               BridgeRetryPolicy.validWirelessEndpoint(serial) {
+                UserDefaults.standard.set(serial, forKey: "SIMAI_LAST_AUTHORIZED_WIFI_ADB")
             }
             let status: String
             if authorized > 0 {
