@@ -197,6 +197,16 @@ struct DashboardView: View {
                 }.disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
                 Text("按来电 PCM 电平判断静默（实验功能），仅自动接听的通话生效。")
                     .font(.caption).foregroundStyle(.secondary)
+                if !model.localReceptionEnabled {
+                    Toggle("GPT 接听前失败时使用本地备用接待", isOn: Binding(
+                        get: { model.localFallbackEnabled }, set: { model.setLocalFallbackEnabled($0) }))
+                        .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                    if model.localFallbackEnabled {
+                        Text(model.localReceptionStatus).font(.caption)
+                        Button("准备 / 重新自检备用模型") { model.prepareLocalReception() }
+                            .disabled(model.localReceptionPreparing || model.localModelDownloading || model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                    }
+                }
                 if model.localReceptionEnabled {
                     Text(model.localReceptionStatus).font(.caption)
                     TextField("本地接待开场话术", text: $model.localGreeting)

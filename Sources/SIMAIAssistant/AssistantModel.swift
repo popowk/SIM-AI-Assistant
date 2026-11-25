@@ -51,6 +51,8 @@ final class AssistantModel: ObservableObject {
     @Published var autoCallEnabled =
         UserDefaults.standard.object(forKey: "SIMAI_AUTO_CALL") as? Bool ?? true
     @Published var localReceptionEnabled = UserDefaults.standard.bool(forKey: "SIMAI_LOCAL_RECEPTION")
+    @Published private(set) var localFallbackEnabled = UserDefaults.standard.bool(forKey: "SIMAI_LOCAL_FALLBACK")
+    private var localFallbackForCurrentRing = false
     @Published private(set) var localReceptionReady = false
     @Published private(set) var localReceptionStatus = "未准备本地接待引擎"
     @Published private(set) var localReceptionText: [String] = []
@@ -469,6 +471,7 @@ final class AssistantModel: ObservableObject {
             useEmbeddedVoiceBrowser = false
             prepareLocalReception()
         } else if autoCallEnabled && useEmbeddedVoiceBrowser {
+            if localFallbackEnabled { prepareLocalReception() }
             embeddedVoiceBrowser.loadIfNeeded()
             log(.info, .audio, "自动值守已预载 ChatGPT 登录页面（未开启麦克风）",
                 details: ["stage": "VOICE_PAGE_PREWARMED_IDLE"])
@@ -639,7 +642,7 @@ final class AssistantModel: ObservableObject {
 
     private func onEmbeddedVoiceCapture(_ active: Bool) {
         embeddedVoiceCaptureActive = active
-        guard useEmbeddedVoiceBrowser else { return }
+        guard useEmbeddedVoiceBrowser, !localFallbackForCurrentRing else { return }
         if active {
             voiceStopCheckGeneration += 1
             if automaticAnswerAcknowledged { autoVoiceCaptureObserved = true }
@@ -788,7 +791,7 @@ final class AssistantModel: ObservableObject {
     }
 
     private func checkEmbeddedVoiceHealth() {
-        guard useEmbeddedVoiceBrowser else { return }
+        guard useEmbeddedVoiceBrowser, !localFallbackForCurrentRing else { return }
         // Never auto-start Voice merely because a WebKit page is loaded at idle.
         guard incomingVoicePending else {
             if liveVoiceActive || (automaticAnswerAcknowledged &&
@@ -835,6 +838,7 @@ final class AssistantModel: ObservableObject {
             embeddedVoiceStatus = "Voice 启动超时：本次来电不自动接听"
             log(.warn, .audio, "按需启动 Voice 超时，放弃本次接听",
                 details: ["reason": "ON_DEMAND_VOICE_TIMEOUT"])
+            if tryLocalFallbackBeforeAnswer(reason: "VOICE_START_TIMEOUT") { return }
             embeddedVoiceBrowser.preservePageAfterCall(reason: "TIMEOUT")
             restoreAutomaticGPTOutput(forceInput: true)
             return
@@ -863,10 +867,12 @@ final class AssistantModel: ObservableObject {
         let problems = automaticVoiceReadinessIssues()
         if !problems.isEmpty {
             autoCallStatus = "本次未自动接听：" + problems.joined(separator: "；")
+            _ = tryLocalFallbackBeforeAnswer(reason: "GPT_READINESS_FAILED")
             return
         }
         guard prepareAutomaticGPTOutput() else {
             autoCallStatus = "本次未自动接听：虚拟音频路由准备失败"
+            _ = tryLocalFallbackBeforeAnswer(reason: "GPT_ROUTE_FAILED")
             return
         }
         incomingVoicePending = true
@@ -898,7 +904,9 @@ final class AssistantModel: ObservableObject {
                     self.autoCallStatus = "未接听：音频实际渲染预检失败"
                     self.log(.warn, .audio, "来电前音频输出预检失败",
                              details: ["reason": code])
-                    self.restoreAutomaticGPTOutput(forceInput: true)
+                    if !self.tryLocalFallbackBeforeAnswer(reason: "GPT_HAL_PREFLIGHT_FAILED") {
+                        self.restoreAutomaticGPTOutput(forceInput: true)
+                    }
                     return
                 }
                 self.incomingPreflightPassed = true
@@ -1205,6 +1213,47 @@ final class AssistantModel: ObservableObject {
     }
 
     // MARK: - Lightweight offline telephone reception
+    func setLocalFallbackEnabled(_ enabled: Bool) {
+        guard !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
+              livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
+        localFallbackEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "SIMAI_LOCAL_FALLBACK")
+        if enabled && !localReceptionEnabled { prepareLocalReception() }
+        else if !enabled && !localReceptionEnabled {
+            localEngineGeneration = UUID()
+            localReceptionEngine?.stop(); localReceptionEngine = nil
+            localReceptionReady = false; localReceptionPreparing = false
+            localReceptionStatus = "本地备用引擎已停止"
+        }
+    }
+
+    /// Only before answering the same tracked ring. Never answer a new call
+    /// on the strength of an earlier call or an unprepared offline engine.
+    @discardableResult
+    private func tryLocalFallbackBeforeAnswer(reason: String) -> Bool {
+        guard localFallbackEnabled, !localReceptionEnabled, !localFallbackForCurrentRing,
+              autoCallEnabled, localReceptionReady, localReceptionEngine?.isReady == true,
+              adbWasAuthorized, livePhoneState == "RINGING", !answerCallBusy,
+              !automaticAnswerRequested, !automaticAnswerAcknowledged,
+              !liveVoiceActive, !liveVoiceStarting, !adbInstalling, !audioProbeBusy,
+              bridgeCursor.session == observedRingingSession,
+              bridgeCursor.lastSequence == observedRingingSequence,
+              !bridgeCursor.session.isEmpty, bridgeCursor.lastSequence > 0,
+              let jar = Bundle.main.resourceURL?.appendingPathComponent("SIMAI-Audio-Probe.jar"),
+              FileManager.default.fileExists(atPath: jar.path) else { return false }
+        localFallbackForCurrentRing = true
+        incomingVoicePending = false; incomingVoiceDeadline = nil
+        incomingPreflightPassed = false; incomingPreflightRunning = false
+        incomingVoiceBlockedUntilIdle = true; voiceSessionPrepared = false
+        autoStartedWebVoiceForRing = false
+        embeddedVoiceBrowser.stopVoiceSessionIfActive()
+        hideEmbeddedVoiceWindow()
+        restoreAutomaticGPTOutput(forceInput: true)
+        autoCallState.reset()
+        log(.warn, .audio, "GPT 接听前未就绪，切换至已准备的本地接待", details: ["reason": reason])
+        reactToLocalReception("RINGING")
+        return true
+    }
     func setLocalReceptionEnabled(_ enabled: Bool) {
         guard !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
               livePhoneState != "OFFHOOK", livePhoneState != "RINGING" else {
@@ -1226,6 +1275,7 @@ final class AssistantModel: ObservableObject {
             localRingSession = ""; localRingSequence = 0
             localAudioAttemptedForRing = false
             setEmbeddedVoiceBrowserEnabled(true)
+            if localFallbackEnabled { prepareLocalReception() }
         }
     }
 
@@ -1240,7 +1290,7 @@ final class AssistantModel: ObservableObject {
                 guard let self else { return }
                 self.localModelDownloading = false
                 self.localModelStatus = "模型已下载并校验，升级时保留"
-                if self.localReceptionEnabled { self.prepareLocalReception() }
+                if self.localReceptionEnabled || self.localFallbackEnabled { self.prepareLocalReception() }
             } catch {
                 guard let self else { return }
                 self.localModelDownloading = false
@@ -1250,12 +1300,13 @@ final class AssistantModel: ObservableObject {
     }
 
     func prepareLocalReception() {
-        guard localReceptionEnabled, !liveVoiceActive, !liveVoiceStarting,
+        guard localReceptionEnabled || localFallbackEnabled else { return }
+        guard !liveVoiceActive, !liveVoiceStarting,
               livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
         guard !localModelDownloading, LocalModelStore.filesPresent else {
             localReceptionReady = false; localReceptionPreparing = false
             localReceptionStatus = "请手动下载本地识别模型"
-            autoCallStatus = "本地模型未下载，暂停自动接待"
+            if localReceptionEnabled { autoCallStatus = "本地模型未下载，暂停自动接待" }
             return
         }
         localEngineGeneration = UUID()
@@ -1266,13 +1317,14 @@ final class AssistantModel: ObservableObject {
         localReceptionStatus = "正在加载本地语音引擎…"
         let engine = LocalReceptionEngine(customPhrases: [.greeting: localGreeting, .goodbye: localGoodbye]) { [weak self] event in
             Task { @MainActor in
-                guard let self, self.localEngineGeneration == generation, self.localReceptionEnabled else { return }
+                guard let self, self.localEngineGeneration == generation,
+                      self.localReceptionEnabled || self.localFallbackEnabled else { return }
                 switch event {
                 case .ready:
                     self.localReceptionReady = true
                     self.localReceptionPreparing = false
                     self.localReceptionStatus = "中文识别与系统语音实际预检通过，等待来电"
-                    self.autoCallStatus = self.autoCallEnabled ? "离线接待已就绪" : "离线接待已就绪；自动接听关闭"
+                    if self.localReceptionEnabled { self.autoCallStatus = self.autoCallEnabled ? "离线接待已就绪" : "离线接待已就绪；自动接听关闭" }
                     self.log(.info, .audio, "本地接待模型与固定语音已准备", details: ["stage": "LOCAL_RECEPTION_READY"])
                 case .status(let status):
                     self.localReceptionStatus = status
@@ -1289,9 +1341,9 @@ final class AssistantModel: ObservableObject {
                     if code == "LOCAL_MODEL_MISSING_OR_INVALID" {
                         self.localModelStatus = "模型缺失或校验失败，请手动重新下载"
                     }
-                    self.autoCallStatus = "本地引擎不可用，暂停自动接待"
+                    if self.localReceptionEnabled || self.localFallbackForCurrentRing { self.autoCallStatus = "本地引擎不可用，暂停自动接待" }
                     self.log(.warn, .audio, "本地接待引擎预检或执行失败", details: ["reason": code])
-                    if self.liveVoiceActive || self.liveVoiceStarting { self.stopLiveVoice() }
+                    if (self.localReceptionEnabled || self.localFallbackForCurrentRing) && (self.liveVoiceActive || self.liveVoiceStarting) { self.stopLiveVoice() }
                 }
             }
         }
@@ -1351,7 +1403,7 @@ final class AssistantModel: ObservableObject {
     func setAutoCallEnabled(_ enabled: Bool) {
         autoCallEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "SIMAI_AUTO_CALL")
-        if localReceptionEnabled {
+        if localReceptionEnabled || localFallbackForCurrentRing {
             if !enabled {
                 localCallAudioRequested = false
                 if liveVoiceActive || liveVoiceStarting { stopLiveVoice() }
@@ -1460,6 +1512,17 @@ final class AssistantModel: ObservableObject {
     }
 
     private func reactToAutomaticCallState(_ state: String) {
+        if localFallbackForCurrentRing {
+            reactToLocalReception(state)
+            if state == "IDLE" {
+                localFallbackForCurrentRing = false
+                incomingVoiceBlockedUntilIdle = false
+                automaticAnswerSession = ""; automaticOffhookSequence = 0
+                autoHangupAttempted = false; autoHangupBusy = false
+                autoCallStatus = "本地备用接待结束，下一通优先 GPT"
+            }
+            return
+        }
         if localReceptionEnabled { reactToLocalReception(state); return }
         let newIdle = state == "IDLE" && previousObservedPhoneState != "IDLE" &&
                       !previousObservedPhoneState.isEmpty
@@ -2016,6 +2079,7 @@ final class AssistantModel: ObservableObject {
         if snapshot.state == "RINGING" &&
            (observedRingingSession != snapshot.session ||
             observedRingingSequence != snapshot.seq) {
+            localFallbackForCurrentRing = false
             observedRingingSession = snapshot.session
             observedRingingSequence = snapshot.seq
             manualPickupFromTrackedRing = false
@@ -2919,7 +2983,7 @@ final class AssistantModel: ObservableObject {
         resumeAIForwardAfterIsolationRestored = false
         resumeAIForwardAfterMicrophoneRestored = false
         resumeAIForwardAfterVoicePause = false
-        if localReceptionEnabled && (liveVoiceActive || liveVoiceStarting) {
+        if (localReceptionEnabled || localFallbackForCurrentRing) && (liveVoiceActive || liveVoiceStarting) {
             stopLiveVoice()
             return
         }
@@ -2937,7 +3001,7 @@ final class AssistantModel: ObservableObject {
         resumeAIForwardAfterIsolationRestored = false
         resumeAIForwardAfterMicrophoneRestored = false
         resumeAIForwardAfterVoicePause = false
-        if localReceptionEnabled && (livePhoneState == "RINGING" || livePhoneState == "OFFHOOK") {
+        if (localReceptionEnabled || localFallbackForCurrentRing) && (livePhoneState == "RINGING" || livePhoneState == "OFFHOOK") {
             localAudioAttemptedForRing = true
         }
         guard liveVoiceStarting || liveVoiceActive else {
@@ -3021,7 +3085,7 @@ final class AssistantModel: ObservableObject {
         guard !answerCallBusy && !adbInstalling, livePhoneState == "RINGING",
               !bridgeCursor.session.isEmpty, bridgeCursor.lastSequence > 0 else { return }
         if automatic {
-            let engineReady = localReceptionEnabled
+            let engineReady = (localReceptionEnabled || localFallbackForCurrentRing)
                 ? (localReceptionReady && localReceptionEngine?.isReady == true &&
                    localRingSession == bridgeCursor.session && localRingSequence == bridgeCursor.lastSequence)
                 : (voiceSessionPrepared && incomingPreflightPassed && useEmbeddedVoiceBrowser &&
