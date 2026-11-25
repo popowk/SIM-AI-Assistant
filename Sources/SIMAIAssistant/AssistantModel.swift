@@ -153,6 +153,7 @@ final class AssistantModel: ObservableObject {
     private var recentReplySignalAt = Date.distantPast
     private var voiceRecovery = VoiceRecoveryPolicy()
     private var voiceRecoveryDeadline: Date?
+    private var nextCallWebhookDrainAt = Date.distantPast
     private var voiceRecoveryStartedAt = Date.distantPast
     private var ranBlackHoleInputProbe = false
     @Published var blackHoleActualInputStatus = "尚未验证 BlackHole 2ch 输入回环"
@@ -1617,6 +1618,7 @@ final class AssistantModel: ObservableObject {
                 self?.refreshPendingBlackHoleInstall()
                 self?.checkEmbeddedVoiceHealth()
                 self?.checkIsolatedReturnSafety()
+                self?.drainCallWebhookIfNeeded()
             }
         }
         // Never race two independent "adb devices" launches on startup.
@@ -1773,6 +1775,15 @@ final class AssistantModel: ObservableObject {
     /// Save locally in macOS Keychain, never in UserDefaults or diagnostics.
     /// Forwarding cannot begin until the user separately grants RECEIVE_SMS
     /// on Android. If the phone is connected, also attempt an explicit sync.
+    private func drainCallWebhookIfNeeded() {
+        guard localSendTranscript, !liveVoiceActive, !liveVoiceStarting,
+              livePhoneState != "RINGING", livePhoneState != "OFFHOOK",
+              Date() >= nextCallWebhookDrainAt else { return }
+        nextCallWebhookDrainAt = Date().addingTimeInterval(60)
+        guard let settings = FeishuWebhookStore.load() else { return }
+        Task { await CallWebhookOutbox.shared.drain(settings: settings) }
+    }
+
     func saveFeishuSettings() {
         let value = FeishuWebhookSettings(
             webhook: feishuWebhookDraft.trimmingCharacters(in: .whitespacesAndNewlines),

@@ -78,7 +78,8 @@ final class LocalCallCapture {
         }
         if let webhook {
             let message = payload.2.isEmpty ? text + "（未识别到有效文字）" : text
-            statuses.append(await Self.sendWithRetry(message, settings: webhook) ? "飞书文字发送成功" : "飞书发送失败（已尝试重试）")
+            let outcome = await CallWebhookOutbox.shared.enqueue(id: identifier, text: message, settings: webhook)
+            statuses.append(outcome)
         }
         return statuses.joined(separator: "；")
     }
@@ -124,7 +125,7 @@ final class LocalCallCapture {
     private final class NoRedirect: NSObject, URLSessionTaskDelegate {
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
     }
-    private static func sendWithRetry(_ text: String, settings: FeishuWebhookSettings) async -> Bool {
+    static func sendWithRetry(_ text: String, settings: FeishuWebhookSettings) async -> Bool {
         for attempt in 0..<3 {
             if attempt > 0 { try? await Task.sleep(nanoseconds: UInt64(attempt * 2) * 1_000_000_000) }
             if Task.isCancelled { return false }
