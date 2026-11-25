@@ -201,10 +201,27 @@ struct DashboardView: View {
                     Toggle("GPT 接听前失败时使用本地备用接待", isOn: Binding(
                         get: { model.localFallbackEnabled }, set: { model.setLocalFallbackEnabled($0) }))
                         .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
-                    if model.localFallbackEnabled {
+                    Toggle("GPT 通话使用本地录音 / 来电者转写", isOn: Binding(
+                        get: { model.gptCaptureEnabled }, set: { model.setGPTCaptureEnabled($0) }))
+                        .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                    if model.localFallbackEnabled || model.gptCaptureEnabled {
                         Text(model.localReceptionStatus).font(.caption)
                         Button("准备 / 重新自检备用模型") { model.prepareLocalReception() }
                             .disabled(model.localReceptionPreparing || model.localModelDownloading || model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                    }
+                    if model.localFallbackEnabled || model.gptCaptureEnabled {
+                        Toggle("保存本地双向录音", isOn: $model.localRecordAudio)
+                            .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                        Toggle("挂断后推送来电者识别文字", isOn: $model.localSendTranscript)
+                            .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                        Toggle("告知后自动开始，无需逐次回答同意", isOn: $model.localNoticeOnly)
+                            .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                        Text("仅在适用规则允许时启用告知模式。拒绝或撤回则停止保存和推送；GPT 模式识别来电者文字，双向声音可保存在本机。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button("打开录音目录") { model.openLocalRecordings() }
+                            Text(model.localCaptureStatus).font(.caption)
+                        }
                     }
                 }
                 if model.localReceptionEnabled {

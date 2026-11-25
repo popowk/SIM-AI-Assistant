@@ -17,6 +17,7 @@ enum LiveAudioEvent {
     case downlinkSignal(peakRMS: Double, recentRMS: Double)
     case replyWindowSignal(recentRMS: Double)
     case callerSilenceLimit
+    case gptCapturePreludeFinished
     case finished(String)
 }
 
@@ -521,6 +522,8 @@ final class PhoneAudioStream {
     private let physicalMonitorOutput: AudioDeviceID?
     private let localReception: LocalReceptionEngine?
     private let localCapture: LocalCallCapture?
+    private let gptCaptureEngine: LocalReceptionEngine?
+    private var gptCapturePassThrough = false
     private let silenceSeconds: Int
     private var setup: ADBAudioStreamSetup?
     private var active = false
@@ -530,11 +533,13 @@ final class PhoneAudioStream {
     init(physicalMonitorOutput: AudioDeviceID? = nil,
          localReception: LocalReceptionEngine? = nil,
          localCapture: LocalCallCapture? = nil,
+         gptCaptureEngine: LocalReceptionEngine? = nil,
          silenceSeconds: Int = 0,
          onEvent: @escaping (LiveAudioEvent) -> Void) {
         self.physicalMonitorOutput = physicalMonitorOutput
         self.localReception = localReception
         self.localCapture = localCapture
+        self.gptCaptureEngine = gptCaptureEngine
         self.silenceSeconds = max(0, min(60, silenceSeconds))
         self.onEvent = onEvent
         self.microphone = LiveMacMicrophone(queue: microphoneQueue)
@@ -749,6 +754,7 @@ final class PhoneAudioStream {
                 _ = Darwin.close(fd)
             }
             localReception?.endCall()
+            gptCaptureEngine?.endCall()
             virtualMic?.stop()
             aiCapture?.stop()
             if let process, process.isRunning { process.terminate() }
@@ -882,11 +888,16 @@ final class PhoneAudioStream {
             } catch { reason = "MAC_SPEAKER_START"; return }
         }
         defer { speaker?.stop() }
+        if let gptCaptureEngine, !gptCaptureEngine.beginCall(capture: localCapture, transcriptOnly: true) {
+            localCapture?.revoke()
+            gate.lock(); gptCapturePassThrough = true; gate.unlock()
+        }
 
         gate.lock()
         active = true
         gate.unlock()
         report(.active)
+        if gptCaptureEngine != nil && gptCapturePassThrough { report(.gptCapturePreludeFinished) }
 
         let started = Date()
         DispatchQueue.global(qos: .userInitiated).async { [self] in
@@ -924,12 +935,28 @@ final class PhoneAudioStream {
             gate.lock()
             let callerMonitor = callerMonitorEnabled
             let virtualMic = chatGPTVirtualMic
+            var passThrough = gptCapturePassThrough
             gate.unlock()
+            if let gptCaptureEngine {
+                if !gptCaptureEngine.isReady { localCapture?.revoke() }
+                if !passThrough {
+                    if Date().timeIntervalSince(started) >= 18 { gptCaptureEngine.skipPendingConsentForGPT() }
+                    if gptCaptureEngine.readyForGPT || !gptCaptureEngine.isReady {
+                        gate.lock(); gptCapturePassThrough = true; gate.unlock()
+                        passThrough = true
+                        report(.gptCapturePreludeFinished)
+                    }
+                }
+                if gptCaptureEngine.isReady {
+                    localCapture?.append(frame, uplink: false)
+                    gptCaptureEngine.feed(frame)
+                }
+            }
             if let localReception {
                 if !localReception.isReady { reason = "LOCAL_ASR_FAILED"; break }
                 localCapture?.append(frame, uplink: false)
                 localReception.feed(frame)
-            } else {
+            } else if gptCaptureEngine == nil || passThrough {
                 if callerMonitor { speaker?.feed(frame) }
                 virtualMic?.feed(frame)
             }
@@ -1008,10 +1035,13 @@ final class PhoneAudioStream {
             gate.lock()
             let forwardAI = aiReplyToPhone
             let capture = aiReplyCapture
+            let passThrough = gptCapturePassThrough
             gate.unlock()
             let data: [UInt8]
             if let localReception {
                 data = localReception.nextFrame()
+            } else if let gptCaptureEngine, !passThrough {
+                data = gptCaptureEngine.nextFrame()
             } else if forwardAI, let capture {
                 data = capture.nextPhoneFrame()
             } else {

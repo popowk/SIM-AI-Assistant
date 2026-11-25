@@ -8,6 +8,7 @@ import SIMAICore
 final class LocalCallCapture {
     let recordAudio: Bool
     let noticeOnly: Bool
+    let gptMode: Bool
     private let webhook: FeishuWebhookSettings?
     var requestsForwarding: Bool { webhook != nil }
     private let gate = NSLock()
@@ -21,9 +22,10 @@ final class LocalCallCapture {
     // Existing phone audio helper enforces 180 seconds. A little headroom.
     private let limit = 16_000 * 2 * 185
 
-    init(recordAudio: Bool, webhook: FeishuWebhookSettings?, noticeOnly: Bool = false) {
+    init(recordAudio: Bool, webhook: FeishuWebhookSettings?, noticeOnly: Bool = false, gptMode: Bool = false) {
         self.recordAudio = recordAudio
         self.noticeOnly = noticeOnly
+        self.gptMode = gptMode
         self.webhook = webhook
     }
     var greeting: LocalReceptionPolicy.Reply {
@@ -53,6 +55,13 @@ final class LocalCallCapture {
         let custom = spokenText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         turns.append("来电者：" + clean + "\n助理：" + (custom.isEmpty ? reply.text : String(custom.prefix(100))))
     }
+    func addCallerText(_ heard: String) {
+        gate.lock(); defer { gate.unlock() }
+        guard allowed, !finalized, turns.count < 180 else { return }
+        let clean = String(heard.prefix(600))
+        let sensitive = ["验证码", "密码", "银行卡", "支付密码"].contains { clean.contains($0) }
+        turns.append("来电者：" + (sensitive ? "（涉及敏感信息，已省略）" : clean))
+    }
     static var directory: URL {
         (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory).appendingPathComponent("SIM-AI-Assistant/CallRecordings", isDirectory: true)
@@ -61,7 +70,7 @@ final class LocalCallCapture {
     func finish() async -> String {
         let payload = take()
         guard let payload else { return "未取得同意：未保存、未转发" }
-        let text = "【SIM AI 本地电话接待】\n记录编号：" + identifier + "\n时间：" + began.formatted() + "\n通话识别文字（可能有误）：\n" + payload.2.joined(separator: "\n\n")
+        let text = (gptMode ? "【SIM AI GPT 电话接待 · 本地识别来电者】" : "【SIM AI 本地电话接待】") + "\n记录编号：" + identifier + "\n时间：" + began.formatted() + "\n通话识别文字（可能有误）：\n" + payload.2.joined(separator: "\n\n")
         var statuses: [String] = []
         if recordAudio {
             do {

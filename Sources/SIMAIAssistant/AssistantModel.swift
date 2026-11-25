@@ -53,6 +53,8 @@ final class AssistantModel: ObservableObject {
     @Published var localReceptionEnabled = UserDefaults.standard.bool(forKey: "SIMAI_LOCAL_RECEPTION")
     @Published private(set) var localFallbackEnabled = UserDefaults.standard.bool(forKey: "SIMAI_LOCAL_FALLBACK")
     private var localFallbackForCurrentRing = false
+    @Published private(set) var gptCaptureEnabled = UserDefaults.standard.bool(forKey: "SIMAI_GPT_CAPTURE")
+    private var gptCapturePreludePending = false
     @Published private(set) var localReceptionReady = false
     @Published private(set) var localReceptionStatus = "未准备本地接待引擎"
     @Published private(set) var localReceptionText: [String] = []
@@ -471,7 +473,7 @@ final class AssistantModel: ObservableObject {
             useEmbeddedVoiceBrowser = false
             prepareLocalReception()
         } else if autoCallEnabled && useEmbeddedVoiceBrowser {
-            if localFallbackEnabled { prepareLocalReception() }
+            if localFallbackEnabled || gptCaptureEnabled { prepareLocalReception() }
             embeddedVoiceBrowser.loadIfNeeded()
             log(.info, .audio, "自动值守已预载 ChatGPT 登录页面（未开启麦克风）",
                 details: ["stage": "VOICE_PAGE_PREWARMED_IDLE"])
@@ -748,7 +750,7 @@ final class AssistantModel: ObservableObject {
               autoCallAudioRequested, automaticAnswerAcknowledged,
               livePhoneState == "OFFHOOK", liveVoiceActive,
               embeddedVoiceBrowser.automaticVoiceButtonEnabled,
-              !autoHangupAttempted else { return }
+              !autoHangupAttempted, !gptCapturePreludePending else { return }
         let now = Date()
         let ready = embeddedVoiceBrowser.microphoneActive &&
             embeddedVoiceBrowser.isolatedMicrophoneReady && embeddedVoiceBrowser.isolatedOutputReady &&
@@ -1213,13 +1215,25 @@ final class AssistantModel: ObservableObject {
     }
 
     // MARK: - Lightweight offline telephone reception
+    func setGPTCaptureEnabled(_ enabled: Bool) {
+        guard !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
+              livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
+        gptCaptureEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "SIMAI_GPT_CAPTURE")
+        if enabled && !localReceptionEnabled { prepareLocalReception() }
+        else if !enabled && !localReceptionEnabled && !localFallbackEnabled {
+            localEngineGeneration = UUID()
+            localReceptionEngine?.stop(); localReceptionEngine = nil
+            localReceptionReady = false; localReceptionPreparing = false
+        }
+    }
     func setLocalFallbackEnabled(_ enabled: Bool) {
         guard !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
               livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
         localFallbackEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "SIMAI_LOCAL_FALLBACK")
         if enabled && !localReceptionEnabled { prepareLocalReception() }
-        else if !enabled && !localReceptionEnabled {
+        else if !enabled && !localReceptionEnabled && !gptCaptureEnabled {
             localEngineGeneration = UUID()
             localReceptionEngine?.stop(); localReceptionEngine = nil
             localReceptionReady = false; localReceptionPreparing = false
@@ -1275,7 +1289,7 @@ final class AssistantModel: ObservableObject {
             localRingSession = ""; localRingSequence = 0
             localAudioAttemptedForRing = false
             setEmbeddedVoiceBrowserEnabled(true)
-            if localFallbackEnabled { prepareLocalReception() }
+            if localFallbackEnabled || gptCaptureEnabled { prepareLocalReception() }
         }
     }
 
@@ -1290,7 +1304,7 @@ final class AssistantModel: ObservableObject {
                 guard let self else { return }
                 self.localModelDownloading = false
                 self.localModelStatus = "模型已下载并校验，升级时保留"
-                if self.localReceptionEnabled || self.localFallbackEnabled { self.prepareLocalReception() }
+                if self.localReceptionEnabled || self.localFallbackEnabled || self.gptCaptureEnabled { self.prepareLocalReception() }
             } catch {
                 guard let self else { return }
                 self.localModelDownloading = false
@@ -1300,7 +1314,7 @@ final class AssistantModel: ObservableObject {
     }
 
     func prepareLocalReception() {
-        guard localReceptionEnabled || localFallbackEnabled else { return }
+        guard localReceptionEnabled || localFallbackEnabled || gptCaptureEnabled else { return }
         guard !liveVoiceActive, !liveVoiceStarting,
               livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
         guard !localModelDownloading, LocalModelStore.filesPresent else {
@@ -1318,7 +1332,7 @@ final class AssistantModel: ObservableObject {
         let engine = LocalReceptionEngine(customPhrases: [.greeting: localGreeting, .goodbye: localGoodbye]) { [weak self] event in
             Task { @MainActor in
                 guard let self, self.localEngineGeneration == generation,
-                      self.localReceptionEnabled || self.localFallbackEnabled else { return }
+                      self.localReceptionEnabled || self.localFallbackEnabled || self.gptCaptureEnabled else { return }
                 switch event {
                 case .ready:
                     self.localReceptionReady = true
@@ -2604,17 +2618,24 @@ final class AssistantModel: ObservableObject {
         liveVoiceHandshakeAttempts = 0
         log(.info, .audio, "用户确认开始实时电话音频预览",
             details: ["mode": "manual", "mic": "muted", "maxDurationSeconds": "180"])
-        let savedWebhook = (localEngine != nil && localSendTranscript) ? FeishuWebhookStore.load() : nil
+        let wantsGPTCapture = localEngine == nil && gptCaptureEnabled && autoCallAudioRequested && automaticAnswerAcknowledged && useEmbeddedVoiceBrowser
+        let savedWebhook = ((localEngine != nil || wantsGPTCapture) && localSendTranscript) ? FeishuWebhookStore.load() : nil
         let validWebhook = savedWebhook.flatMap { FeishuWebhookSettings.validWebhook($0.webhook) ? $0 : nil }
-        let capture = localEngine != nil && (localRecordAudio || validWebhook != nil)
-            ? LocalCallCapture(recordAudio: localRecordAudio, webhook: validWebhook, noticeOnly: localNoticeOnly) : nil
-        if localEngine != nil {
+        let gptEngine = wantsGPTCapture && localReceptionReady && localReceptionEngine?.isReady == true && (localRecordAudio || validWebhook != nil) ? localReceptionEngine : nil
+        let capture = (localEngine != nil || gptEngine != nil) && (localRecordAudio || validWebhook != nil)
+            ? LocalCallCapture(recordAudio: localRecordAudio, webhook: validWebhook, noticeOnly: localNoticeOnly, gptMode: gptEngine != nil) : nil
+        gptCapturePreludePending = gptEngine != nil
+        if wantsGPTCapture && gptEngine == nil && (localRecordAudio || localSendTranscript) {
+            localCaptureStatus = "本地识别模型或飞书配置未就绪，本次 GPT 不录音 / 推送"
+        }
+        if localEngine != nil || gptEngine != nil {
             localCaptureStatus = localSendTranscript && validWebhook == nil
                 ? "飞书地址未配置；不发送文字"
                 : (capture == nil ? "未开启录音或文字推送" : (localNoticeOnly ? "等待播放录音 / 转发告知" : "等待来电者同意"))
         }
         let stream = PhoneAudioStream(physicalMonitorOutput: UInt32(selectedVoiceMonitorOutputID),
                                       localReception: localEngine, localCapture: capture,
+                                      gptCaptureEngine: gptEngine,
                                       silenceSeconds: silenceHangupSeconds) { [weak self] update in
             Task { @MainActor in
                 guard let self, self.voiceSessionID == id else { return }
@@ -2631,6 +2652,8 @@ final class AssistantModel: ObservableObject {
                         self.liveVoiceStatus = "本地离线语音接待已连接 · 半双工"
                         self.autoCallStatus = "本地接待运行中 · 无 GPT、无虚拟声卡"
                         self.log(.info, .audio, "本地语音引擎已直连电话 PCM", details: ["stage": "LOCAL_PCM_ACTIVE"])
+                    } else if self.gptCapturePreludePending {
+                        self.autoCallStatus = "正在播放录音 / 转发告知，随后进入 GPT 接待"
                     } else if self.autoCallAudioRequested {
                         self.enableGPTTwoWayPhoneBridge()
                         self.autoCallStatus = self.aiReplyToPhoneEnabled
@@ -2643,6 +2666,12 @@ final class AssistantModel: ObservableObject {
                     }
                     self.log(.info, .audio, "ADB 双向 PCM 通道已建立",
                         details: ["sampleRate": "16000", "channels": "1", "frameMs": "20"])
+                case .gptCapturePreludeFinished:
+                    self.gptCapturePreludePending = false
+                    if self.autoCallAudioRequested && self.liveVoiceActive && self.livePhoneState == "OFFHOOK" {
+                        self.enableGPTTwoWayPhoneBridge()
+                        self.localCaptureStatus = "已结束录音告知流程，按授权状态进行本地录音 / 转写"
+                    }
                 case .metrics(let received, let sent, let dropped,
                               let micUnderflows, let micOverflows,
                               let txLate, let micBufferedMs, let voiceRouteDropped,
@@ -2715,6 +2744,7 @@ final class AssistantModel: ObservableObject {
                         }
                     }
                 case .finished(let reason):
+                    self.gptCapturePreludePending = false
                     self.voiceRecoveryDeadline = nil
                     // The Android PCM helper independently watches the real
                     // cellular AudioManager call mode. In the 21:53 report it
@@ -2729,7 +2759,8 @@ final class AssistantModel: ObservableObject {
                     if localEngine != nil {
                         self.localCallAudioRequested = false
                         self.autoCallStatus = "本地语音通道已结束：" + reason
-                        if let capture {
+                    }
+                    if let capture {
                             self.localCaptureStatus = "正在完成本地存档 / 文字推送"
                             Task { [weak self] in
                                 let result = await capture.finish()
@@ -2737,7 +2768,6 @@ final class AssistantModel: ObservableObject {
                                 if self.voiceSessionID == id { self.localCaptureStatus = result }
                                 self.log(.info, .audio, "本地接待存档与推送流程结束", details: ["stage": "LOCAL_CAPTURE_FINISHED", "result": result])
                             }
-                        }
                     }
                     if reason == "SESSION_LIMIT_180S" &&
                        self.automaticAnswerAcknowledged &&
@@ -2944,6 +2974,7 @@ final class AssistantModel: ObservableObject {
     /// or automatically answer calls. User first verifies the official Voice
     /// session is open with BlackHole 2ch input / 16ch output.
     func enableGPTTwoWayPhoneBridge() {
+        guard !gptCapturePreludePending else { return }
         guard liveVoiceActive, voiceStream != nil else {
             aiReplyReturnStatus = "请先接听真实电话，并建立实时通话音频"
             return
@@ -2997,6 +3028,7 @@ final class AssistantModel: ObservableObject {
     }
 
     func stopLiveVoice() {
+        gptCapturePreludePending = false
         voiceRecoveryDeadline = nil
         resumeAIForwardAfterIsolationRestored = false
         resumeAIForwardAfterMicrophoneRestored = false
