@@ -101,7 +101,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.45" : "AI 电话自动值守 · 全双工音频 · v0.4.45")
+                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.46" : "AI 电话自动值守 · 全双工音频 · v0.4.46")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -198,7 +198,12 @@ struct DashboardView: View {
                 Text("按来电 PCM 电平判断静默（实验功能），仅自动接听的通话生效。")
                     .font(.caption).foregroundStyle(.secondary)
                 if !model.localReceptionEnabled {
-                    Toggle("GPT 接听前失败时使用本地备用接待", isOn: Binding(
+                    DisclosureGroup("GPT 接待话术") {
+                        TextEditor(text: $model.gptReceptionPrompt).frame(minHeight: 90)
+                        Button("复制话术至剪贴板") { model.copyGPTReceptionPrompt() }
+                        Text("本地保存；首次设置或修改后，请粘贴到官方 ChatGPT 的个性化设置或接待对话。程序不保证网页自动加载提示词。").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Toggle("GPT 失败时使用本地备用接待", isOn: Binding(
                         get: { model.localFallbackEnabled }, set: { model.setLocalFallbackEnabled($0) }))
                         .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
                     Toggle("GPT 通话使用本地录音 / 来电者转写", isOn: Binding(
@@ -661,7 +666,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.45 (Build 62)").font(.caption.monospaced())
+            Text("v0.4.46 (Build 63)").font(.caption.monospaced())
         }
     }
 

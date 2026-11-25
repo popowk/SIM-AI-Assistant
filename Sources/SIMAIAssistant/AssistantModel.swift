@@ -60,6 +60,14 @@ final class AssistantModel: ObservableObject {
     @Published private(set) var localReceptionText: [String] = []
     @Published private(set) var localReceptionPreparing = false
     @Published private(set) var localModelDownloading = false
+    @Published var gptReceptionPrompt = UserDefaults.standard.string(forKey: "SIMAI_GPT_RECEPTION_PROMPT") ?? "你是王先生的AI电话助理。用简短自然的中文接听，开场说：喂，你好，有什么事情吗？询问来电目的，记录需要转达的事项，不替王先生承诺，不索取密码、验证码或支付信息。对方结束通话时礼貌告别。" {
+        didSet { UserDefaults.standard.set(gptReceptionPrompt, forKey: "SIMAI_GPT_RECEPTION_PROMPT") }
+    }
+    func copyGPTReceptionPrompt() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(gptReceptionPrompt, forType: .string)
+        embeddedVoiceStatus = "已复制接待提示词，请粘贴至 ChatGPT 个性化设置或当前接待对话。"
+    }
     @Published var localGreeting = UserDefaults.standard.string(forKey: "SIMAI_LOCAL_GREETING") ?? "喂，你好，有什么事情吗？" {
         didSet { UserDefaults.standard.set(localGreeting, forKey: "SIMAI_LOCAL_GREETING") }
     }
@@ -185,8 +193,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.45"
-    let buildNumber = "62"
+    let version = "0.4.46"
+    let buildNumber = "63"
     @Published private(set) var phoneDiagnosticsCollecting = false
     @Published private(set) var phoneDiagnosticsStatus = "导出时自动读取手机日志"
     @Published private(set) var phoneDiagnosticsPreview = ""
