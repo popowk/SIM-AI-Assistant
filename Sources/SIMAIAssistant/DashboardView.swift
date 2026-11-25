@@ -206,7 +206,9 @@ struct DashboardView: View {
                         .disabled(model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK" || model.liveVoiceActive || model.liveVoiceStarting)
                     Toggle("挂断后通过已配置的飞书 Webhook 推送文字", isOn: $model.localSendTranscript)
                         .disabled(model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK" || model.liveVoiceActive || model.liveVoiceStarting)
-                    Text("开启后，接通时先询问来电者是否同意。仅在明确同意后保存或转发；拒绝或撤回即停止。录音保存在 Mac，不随诊断包上传。")
+                    Toggle("告知后自动开始，无需逐次回答同意", isOn: $model.localNoticeOnly)
+                        .disabled(model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK" || model.liveVoiceActive || model.liveVoiceStarting)
+                    Text("仅在适用规则允许时启用告知模式；接通先播报录音 / 文字转达告知，拒绝或撤回即清除记录。录音仅保存在 Mac，不随诊断包上传。")
                         .font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Button("打开录音目录") { model.openLocalRecordings() }

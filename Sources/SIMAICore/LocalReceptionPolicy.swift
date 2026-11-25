@@ -6,12 +6,16 @@ public struct LocalReceptionPolicy {
     public enum Reply: String, CaseIterable {
         case greeting, purpose, delivery, business, callback, noted, repeatPlease, goodbye, noSensitive
         case consentRecording, consentWebhook, consentBoth, consentAccepted, consentDeclined
+        case noticeRecording, noticeWebhook, noticeBoth
         public var text: String {
             switch self {
             case .greeting: return "您好，我是王先生的AI电话助理，本次通话由本地语音程序处理。请问您有什么事情？"
             case .consentRecording: return "您好，我是王先生的AI电话助理。是否同意本次通话在本机录音？请说同意或不同意。"
             case .consentWebhook: return "您好，我是王先生的AI电话助理。是否同意将本次通话识别文字发送给王先生的飞书机器人？请说同意或不同意。"
             case .consentBoth: return "您好，我是王先生的AI电话助理。是否同意本机录音并将识别文字发送给王先生的飞书机器人？请说同意或不同意。"
+            case .noticeRecording: return "您好，我是AI电话助理，本次通话将在本机录音。如不希望录音，请告诉我。请问您有什么事情？"
+            case .noticeWebhook: return "您好，我是AI电话助理，本次通话文字会转达给王先生。如不希望转达，请告诉我。请问您有什么事情？"
+            case .noticeBoth: return "您好，我是AI电话助理，本次通话会录音，识别文字会转达给王先生。如不希望记录，请告诉我。请问您有什么事情？"
             case .consentAccepted: return "好的，请问您有什么事情？"
             case .consentDeclined: return "好的，不录音也不转发文字。请问您有什么事情？"
             case .purpose: return "请问您找王先生具体有什么事情？"
@@ -77,6 +81,6 @@ public enum LocalCaptureConsent {
         return false
     }
     public static func revokes(_ text: String) -> Bool {
-        ["停止录音","不要录音","别录音","取消录音","不同意录音","不要转发","停止转发","取消转发","不要发送文字","撤回同意"].contains(where: { text.contains($0) })
+        ["停止录音","不要录音","别录音","取消录音","不同意录音","不要转发","停止转发","取消转发","不要发送文字","撤回同意","不同意","不希望记录","不要记录","别记录","不希望录音","不希望转达","不要转达"].contains(where: { text.contains($0) })
     }
 }

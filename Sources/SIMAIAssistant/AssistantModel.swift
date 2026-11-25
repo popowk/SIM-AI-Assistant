@@ -66,6 +66,9 @@ final class AssistantModel: ObservableObject {
         didSet { UserDefaults.standard.set(silenceHangupSeconds, forKey: "SIMAI_SILENCE_HANGUP") }
     }
     @Published private(set) var localModelStatus = LocalModelStore.filesPresent ? "模型已缓存" : "模型未下载"
+    @Published var localNoticeOnly = UserDefaults.standard.bool(forKey: "SIMAI_LOCAL_NOTICE_ONLY") {
+        didSet { UserDefaults.standard.set(localNoticeOnly, forKey: "SIMAI_LOCAL_NOTICE_ONLY") }
+    }
     @Published var localRecordAudio = UserDefaults.standard.bool(forKey: "SIMAI_LOCAL_RECORD_AUDIO") {
         didSet { UserDefaults.standard.set(localRecordAudio, forKey: "SIMAI_LOCAL_RECORD_AUDIO") }
     }
@@ -2529,11 +2532,11 @@ final class AssistantModel: ObservableObject {
         let savedWebhook = (localEngine != nil && localSendTranscript) ? FeishuWebhookStore.load() : nil
         let validWebhook = savedWebhook.flatMap { FeishuWebhookSettings.validWebhook($0.webhook) ? $0 : nil }
         let capture = localEngine != nil && (localRecordAudio || validWebhook != nil)
-            ? LocalCallCapture(recordAudio: localRecordAudio, webhook: validWebhook) : nil
+            ? LocalCallCapture(recordAudio: localRecordAudio, webhook: validWebhook, noticeOnly: localNoticeOnly) : nil
         if localEngine != nil {
             localCaptureStatus = localSendTranscript && validWebhook == nil
                 ? "飞书地址未配置；不发送文字"
-                : (capture == nil ? "未开启录音或文字推送" : "等待来电者同意")
+                : (capture == nil ? "未开启录音或文字推送" : (localNoticeOnly ? "等待播放录音 / 转发告知" : "等待来电者同意"))
         }
         let stream = PhoneAudioStream(physicalMonitorOutput: UInt32(selectedVoiceMonitorOutputID),
                                       localReception: localEngine, localCapture: capture,

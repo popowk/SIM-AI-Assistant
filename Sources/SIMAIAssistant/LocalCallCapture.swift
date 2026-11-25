@@ -7,6 +7,7 @@ import SIMAICore
 /// actually read/written by the telephone bridge is captured, not desktop audio.
 final class LocalCallCapture {
     let recordAudio: Bool
+    let noticeOnly: Bool
     private let webhook: FeishuWebhookSettings?
     var requestsForwarding: Bool { webhook != nil }
     private let gate = NSLock()
@@ -20,11 +21,16 @@ final class LocalCallCapture {
     // Existing phone audio helper enforces 180 seconds. A little headroom.
     private let limit = 16_000 * 2 * 185
 
-    init(recordAudio: Bool, webhook: FeishuWebhookSettings?) {
+    init(recordAudio: Bool, webhook: FeishuWebhookSettings?, noticeOnly: Bool = false) {
         self.recordAudio = recordAudio
+        self.noticeOnly = noticeOnly
         self.webhook = webhook
     }
     var greeting: LocalReceptionPolicy.Reply {
+        if noticeOnly {
+            if recordAudio && webhook != nil { return .noticeBoth }
+            return recordAudio ? .noticeRecording : .noticeWebhook
+        }
         if recordAudio && webhook != nil { return .consentBoth }
         return recordAudio ? .consentRecording : .consentWebhook
     }
@@ -55,7 +61,7 @@ final class LocalCallCapture {
     func finish() async -> String {
         let payload = take()
         guard let payload else { return "未取得同意：未保存、未转发" }
-        let text = "【SIM AI 本地电话接待】\n时间：" + began.formatted() + "\n通话识别文字（可能有误）：\n" + payload.2.joined(separator: "\n\n")
+        let text = "【SIM AI 本地电话接待】\n记录编号：" + identifier + "\n时间：" + began.formatted() + "\n通话识别文字（可能有误）：\n" + payload.2.joined(separator: "\n\n")
         var statuses: [String] = []
         if recordAudio {
             do {
@@ -65,6 +71,7 @@ final class LocalCallCapture {
                 try fm.createDirectory(at: dir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
                 try Self.write(Self.wav(payload.0), to: dir.appendingPathComponent("caller.wav"))
                 try Self.write(Self.wav(payload.1), to: dir.appendingPathComponent("assistant.wav"))
+                try Self.write(Self.wav(Self.mix(payload.0, payload.1)), to: dir.appendingPathComponent("mixed.wav"))
                 try Self.write(Data(text.utf8), to: dir.appendingPathComponent("transcript.txt"))
                 statuses.append("双向录音和识别文字已保存")
             } catch { statuses.append("本地保存失败，请检查存储权限或空间") }
@@ -87,6 +94,22 @@ final class LocalCallCapture {
     private static func write(_ data: Data, to url: URL) throws {
         try data.write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+    private static func mix(_ incoming: Data, _ outgoing: Data) -> Data {
+        let a = [UInt8](incoming), b = [UInt8](outgoing)
+        let count = max(a.count, b.count)
+        var result = Data(); result.reserveCapacity(count)
+        func sample(_ bytes: [UInt8], _ offset: Int) -> Int32 {
+            guard offset + 1 < bytes.count else { return 0 }
+            return Int32(Int16(bitPattern: UInt16(bytes[offset]) | (UInt16(bytes[offset + 1]) << 8)))
+        }
+        for offset in stride(from: 0, to: count - count % 2, by: 2) {
+            let sum = sample(a, offset) + sample(b, offset)
+            let bits = UInt16(bitPattern: Int16(clamping: sum))
+            result.append(UInt8(truncatingIfNeeded: bits))
+            result.append(UInt8(truncatingIfNeeded: bits >> 8))
+        }
+        return result
     }
     private static func wav(_ pcm: Data) -> Data {
         var d = Data()

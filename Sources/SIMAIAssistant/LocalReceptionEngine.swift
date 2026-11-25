@@ -31,6 +31,7 @@ final class LocalReceptionEngine {
     private var ignoreAfterGoodbye = false
     private var capture: LocalCallCapture?
     private var consentPending = false
+    private var noticePending = false
     init(customPhrases: [LocalReceptionPolicy.Reply: String] = [:], onEvent: @escaping (Event) -> Void) {
         self.customPhrases = customPhrases
         self.onEvent = onEvent
@@ -139,7 +140,8 @@ final class LocalReceptionEngine {
         gate.lock()
         guard ready, !disposed, !active, let greeting = replyPCM[capture?.greeting ?? .greeting], !greeting.isEmpty else { gate.unlock(); return false }
         self.capture = capture
-        consentPending = capture != nil
+        consentPending = capture != nil && capture?.noticeOnly != true
+        noticePending = capture?.noticeOnly == true
         generation += 1; let epoch = generation
         active = true; policy = LocalReceptionPolicy(); ignoreAfterGoodbye = false
         speaking = greeting; cursor = 0; quietUntil = .distantPast
@@ -152,7 +154,7 @@ final class LocalReceptionEngine {
         gate.lock()
         if !active { gate.unlock(); return }
         active = false; generation += 1; let epoch = generation
-        capture = nil; consentPending = false
+        capture = nil; consentPending = false; noticePending = false
         speaking.removeAll(); cursor = 0
         gate.unlock()
         enqueueReset(epoch)
@@ -200,7 +202,10 @@ final class LocalReceptionEngine {
         let n = min(640, speaking.count - cursor)
         bytes.replaceSubrange(0..<n, with: speaking[cursor..<(cursor+n)])
         cursor += n
-        if cursor == speaking.count { quietUntil = Date().addingTimeInterval(0.25) }
+        if cursor == speaking.count {
+            quietUntil = Date().addingTimeInterval(0.25)
+            if noticePending { noticePending = false; capture?.authorize() }
+        }
         return bytes
     }
     func stop() { dispose(error: nil) }
