@@ -13,6 +13,7 @@ final class LocalReceptionEngine {
     private let writeQueue = DispatchQueue(label: "simai.local.asr.write")
     private let prepareQueue = DispatchQueue(label: "simai.local.prepare", qos: .userInitiated)
     private let onEvent: (Event) -> Void
+    private let customPhrases: [LocalReceptionPolicy.Reply: String]
     private var process: Process?
     private var input: Pipe?
     private var output: Pipe?
@@ -30,7 +31,10 @@ final class LocalReceptionEngine {
     private var ignoreAfterGoodbye = false
     private var capture: LocalCallCapture?
     private var consentPending = false
-    init(onEvent: @escaping (Event) -> Void) { self.onEvent = onEvent }
+    init(customPhrases: [LocalReceptionPolicy.Reply: String] = [:], onEvent: @escaping (Event) -> Void) {
+        self.customPhrases = customPhrases
+        self.onEvent = onEvent
+    }
     var isReady: Bool { gate.lock(); defer { gate.unlock() }; return ready && !disposed }
     func prepare() {
         prepareQueue.async { [weak self] in self?.load() }
@@ -46,7 +50,8 @@ final class LocalReceptionEngine {
         for phrase in LocalReceptionPolicy.Reply.allCases {
             gate.lock(); let canceled = disposed; gate.unlock()
             if canceled { return }
-            guard let bytes = Self.renderFixedPhrase(phrase.text) else {
+            let text = customPhrases[phrase]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard let bytes = Self.renderFixedPhrase(text.isEmpty ? phrase.text : String(text.prefix(100))) else {
                 fail("LOCAL_CHINESE_VOICE_UNAVAILABLE"); return
             }
             rendered[phrase] = bytes
@@ -117,7 +122,7 @@ final class LocalReceptionEngine {
                     reply = .consentDeclined
                 } else {
                     reply = policy.reply(to: text)
-                    capture?.addTurn(text, reply: reply)
+                    capture?.addTurn(text, reply: reply, spokenText: customPhrases[reply])
                 }
                 speaking = replyPCM[reply] ?? []
                 cursor = 0

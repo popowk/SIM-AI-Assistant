@@ -15,6 +15,7 @@ enum LiveAudioEvent {
     case metrics(received: Int, sent: Int, dropped: Int, micUnderflows: Int, micOverflows: Int, txLate: Int, micBufferedMs: Int, voiceRouteDropped: Int, monitorRendered: Int, virtualRendered: Int)
     case aiReturnMetrics(captured: Int, monitorDropped: Int, uplinkUnderflow: Int, peakRMS: Double)
     case downlinkSignal(peakRMS: Double)
+    case callerSilenceLimit
     case finished(String)
 }
 
@@ -515,6 +516,7 @@ final class PhoneAudioStream {
     private let physicalMonitorOutput: AudioDeviceID?
     private let localReception: LocalReceptionEngine?
     private let localCapture: LocalCallCapture?
+    private let silenceSeconds: Int
     private var setup: ADBAudioStreamSetup?
     private var active = false
     private let onEvent: (LiveAudioEvent) -> Void
@@ -523,10 +525,12 @@ final class PhoneAudioStream {
     init(physicalMonitorOutput: AudioDeviceID? = nil,
          localReception: LocalReceptionEngine? = nil,
          localCapture: LocalCallCapture? = nil,
+         silenceSeconds: Int = 0,
          onEvent: @escaping (LiveAudioEvent) -> Void) {
         self.physicalMonitorOutput = physicalMonitorOutput
         self.localReception = localReception
         self.localCapture = localCapture
+        self.silenceSeconds = max(0, min(60, silenceSeconds))
         self.onEvent = onEvent
         self.microphone = LiveMacMicrophone(queue: microphoneQueue)
     }
@@ -885,6 +889,8 @@ final class PhoneAudioStream {
         }
         var received = 0
         var downlinkPeakRMS = 0.0
+        var quietFrames = 0
+        var audibleFrames = 0
         while !isClosed && Date().timeIntervalSince(started) < maxDuration {
             guard let frame = Self.readExact(fd, count: 640) else {
                 reason = "AUDIO_REMOTE_CLOSED"
@@ -898,7 +904,16 @@ final class PhoneAudioStream {
                 let normalized = Double(Int16(bitPattern: sample)) / 32768.0
                 power += normalized * normalized
             }
-            downlinkPeakRMS = max(downlinkPeakRMS, sqrt(power / 320.0))
+            let rms = sqrt(power / 320.0)
+            downlinkPeakRMS = max(downlinkPeakRMS, rms)
+            // PCM level heuristic (not semantic VAD). Count received 20ms frames,
+            // not network downtime, and require consecutive audible frames to reset.
+            if silenceSeconds > 0 {
+                quietFrames += 1
+                audibleFrames = rms >= 0.008 ? audibleFrames + 1 : 0
+                if audibleFrames >= 5 { quietFrames = 0 }
+                if quietFrames == silenceSeconds * 50 { report(.callerSilenceLimit) }
+            }
             gate.lock()
             let callerMonitor = callerMonitorEnabled
             let virtualMic = chatGPTVirtualMic

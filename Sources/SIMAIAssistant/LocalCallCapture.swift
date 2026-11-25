@@ -40,11 +40,12 @@ final class LocalCallCapture {
             if outgoing.count + bytes.count <= limit { outgoing.append(contentsOf: bytes) }
         } else if incoming.count + bytes.count <= limit { incoming.append(contentsOf: bytes) }
     }
-    func addTurn(_ heard: String, reply: LocalReceptionPolicy.Reply) {
+    func addTurn(_ heard: String, reply: LocalReceptionPolicy.Reply, spokenText: String? = nil) {
         gate.lock(); defer { gate.unlock() }
         guard allowed, !finalized, turns.count < 180 else { return }
         let clean = reply == .noSensitive ? "（涉及敏感信息，已省略）" : String(heard.prefix(600))
-        turns.append("来电者：" + clean + "\n助理：" + reply.text)
+        let custom = spokenText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        turns.append("来电者：" + clean + "\n助理：" + (custom.isEmpty ? reply.text : String(custom.prefix(100))))
     }
     static var directory: URL {
         (FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -69,8 +70,8 @@ final class LocalCallCapture {
             } catch { statuses.append("本地保存失败，请检查存储权限或空间") }
         }
         if let webhook {
-            if payload.2.isEmpty { statuses.append("无可发送文字") }
-            else { statuses.append(await Self.send(text, settings: webhook) ? "飞书文字发送成功" : "飞书发送失败（未自动重试）") }
+            let message = payload.2.isEmpty ? text + "（未识别到有效文字）" : text
+            statuses.append(await Self.sendWithRetry(message, settings: webhook) ? "飞书文字发送成功" : "飞书发送失败（已尝试重试）")
         }
         return statuses.joined(separator: "；")
     }
@@ -99,6 +100,14 @@ final class LocalCallCapture {
     }
     private final class NoRedirect: NSObject, URLSessionTaskDelegate {
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
+    }
+    private static func sendWithRetry(_ text: String, settings: FeishuWebhookSettings) async -> Bool {
+        for attempt in 0..<3 {
+            if attempt > 0 { try? await Task.sleep(nanoseconds: UInt64(attempt * 2) * 1_000_000_000) }
+            if Task.isCancelled { return false }
+            if await send(text, settings: settings) { return true }
+        }
+        return false
     }
     private static func send(_ text: String, settings: FeishuWebhookSettings) async -> Bool {
         guard FeishuWebhookSettings.validWebhook(settings.webhook), let url = URL(string: settings.webhook.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }

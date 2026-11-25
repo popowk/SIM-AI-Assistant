@@ -56,6 +56,15 @@ final class AssistantModel: ObservableObject {
     @Published private(set) var localReceptionText: [String] = []
     @Published private(set) var localReceptionPreparing = false
     @Published private(set) var localModelDownloading = false
+    @Published var localGreeting = UserDefaults.standard.string(forKey: "SIMAI_LOCAL_GREETING") ?? "喂，你好，有什么事情吗？" {
+        didSet { UserDefaults.standard.set(localGreeting, forKey: "SIMAI_LOCAL_GREETING") }
+    }
+    @Published var localGoodbye = UserDefaults.standard.string(forKey: "SIMAI_LOCAL_GOODBYE") ?? "好的，我会帮你转告王先生，再见。" {
+        didSet { UserDefaults.standard.set(localGoodbye, forKey: "SIMAI_LOCAL_GOODBYE") }
+    }
+    @Published var silenceHangupSeconds = max(0, min(60, UserDefaults.standard.object(forKey: "SIMAI_SILENCE_HANGUP") as? Int ?? 0)) {
+        didSet { UserDefaults.standard.set(silenceHangupSeconds, forKey: "SIMAI_SILENCE_HANGUP") }
+    }
     @Published private(set) var localModelStatus = LocalModelStore.filesPresent ? "模型已缓存" : "模型未下载"
     @Published var localRecordAudio = UserDefaults.standard.bool(forKey: "SIMAI_LOCAL_RECORD_AUDIO") {
         didSet { UserDefaults.standard.set(localRecordAudio, forKey: "SIMAI_LOCAL_RECORD_AUDIO") }
@@ -1192,7 +1201,7 @@ final class AssistantModel: ObservableObject {
         localReceptionReady = false
         localReceptionPreparing = true
         localReceptionStatus = "正在加载本地语音引擎…"
-        let engine = LocalReceptionEngine { [weak self] event in
+        let engine = LocalReceptionEngine(customPhrases: [.greeting: localGreeting, .goodbye: localGoodbye]) { [weak self] event in
             Task { @MainActor in
                 guard let self, self.localEngineGeneration == generation, self.localReceptionEnabled else { return }
                 switch event {
@@ -2463,7 +2472,8 @@ final class AssistantModel: ObservableObject {
                 : (capture == nil ? "未开启录音或文字推送" : "等待来电者同意")
         }
         let stream = PhoneAudioStream(physicalMonitorOutput: UInt32(selectedVoiceMonitorOutputID),
-                                      localReception: localEngine, localCapture: capture) { [weak self] update in
+                                      localReception: localEngine, localCapture: capture,
+                                      silenceSeconds: silenceHangupSeconds) { [weak self] update in
             Task { @MainActor in
                 guard let self, self.voiceSessionID == id else { return }
                 switch update {
@@ -2505,6 +2515,10 @@ final class AssistantModel: ObservableObject {
                     self.chatGPTVoiceRouteDropped = voiceRouteDropped
                     self.livePhysicalRenderFrames = monitorRendered
                     self.liveVirtualRenderFrames = virtualRendered
+                case .callerSilenceLimit:
+                    if self.automaticAnswerAcknowledged && self.livePhoneState == "OFFHOOK" {
+                        self.requestAutomaticHangup(reason: "CALLER_PCM_SILENCE")
+                    }
                 case .downlinkSignal(let peakRMS):
                     self.liveDownlinkPeakRMS = peakRMS
                 case .aiReturnMetrics(let captured, let monitorDropped, let uplinkUnderflow, let peakRMS):

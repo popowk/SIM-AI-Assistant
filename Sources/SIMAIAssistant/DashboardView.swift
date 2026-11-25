@@ -192,8 +192,16 @@ struct DashboardView: View {
                     }.disabled(model.localModelDownloading || model.localReceptionPreparing || model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
                     Text(model.localModelStatus).font(.caption)
                 }
+                Stepper(value: $model.silenceHangupSeconds, in: 0...60, step: 5) {
+                    Text(model.silenceHangupSeconds == 0 ? "静默挂机：关闭" : "静默挂机：\(model.silenceHangupSeconds) 秒")
+                }.disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                Text("按来电 PCM 电平判断静默（实验功能），仅自动接听的通话生效。")
+                    .font(.caption).foregroundStyle(.secondary)
                 if model.localReceptionEnabled {
                     Text(model.localReceptionStatus).font(.caption)
+                    TextField("本地接待开场话术", text: $model.localGreeting)
+                    TextField("本地接待结束话术", text: $model.localGoodbye)
+                    Text("修改后点击准备 / 重新自检生效；录音与转发确认话术不受影响。").font(.caption).foregroundStyle(.secondary)
                     Toggle("保存本地双向录音和识别文字", isOn: $model.localRecordAudio)
                         .disabled(model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK" || model.liveVoiceActive || model.liveVoiceStarting)
                     Toggle("挂断后通过已配置的飞书 Webhook 推送文字", isOn: $model.localSendTranscript)
