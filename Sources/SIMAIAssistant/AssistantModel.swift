@@ -55,6 +55,32 @@ final class AssistantModel: ObservableObject {
     private var localFallbackForCurrentRing = false
     @Published private(set) var gptCaptureEnabled = UserDefaults.standard.bool(forKey: "SIMAI_GPT_CAPTURE")
     private var gptCapturePreludePending = false
+    @Published private(set) var gptCaptureAwaitingApproval = false
+    @Published private(set) var gptCaptureApproved = false
+    @Published private(set) var approvedLocalSpeech = UserDefaults.standard.string(forKey: "SIMAI_APPROVED_LOCAL_SPEECH_V1") ?? ""
+    var localSpeechReview: String {
+        LocalReceptionPolicy.Reply.allCases.map { phrase in
+            let custom = (phrase == .greeting ? localGreeting : phrase == .goodbye ? localGoodbye : "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return custom.isEmpty ? phrase.text : String(custom.prefix(100))
+        }.joined(separator: "\n")
+    }
+    var localSpeechApproved: Bool { !approvedLocalSpeech.isEmpty && approvedLocalSpeech == localSpeechReview }
+    func approveLocalSpeech() {
+        guard !liveVoiceActive, !liveVoiceStarting, livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
+        approvedLocalSpeech = localSpeechReview
+        UserDefaults.standard.set(approvedLocalSpeech, forKey: "SIMAI_APPROVED_LOCAL_SPEECH_V1")
+        if localReceptionEnabled || localFallbackEnabled { prepareLocalReception() }
+    }
+    func revokeLocalSpeechApproval() {
+        approvedLocalSpeech = ""
+        UserDefaults.standard.removeObject(forKey: "SIMAI_APPROVED_LOCAL_SPEECH_V1")
+    }
+    func setCurrentGPTCaptureApproval(_ enabled: Bool) {
+        guard gptCaptureAwaitingApproval, liveVoiceActive, livePhoneState == "OFFHOOK",
+              voiceStream?.setGPTCaptureAuthorization(enabled) == true else { return }
+        gptCaptureApproved = enabled
+        localCaptureStatus = enabled ? "已明确确认本次录音 / 转写" : "已撤回本次保存与推送，记录已清除"
+    }
     @Published private(set) var localReceptionReady = false
     @Published private(set) var localReceptionStatus = "未准备本地接待引擎"
     @Published private(set) var localReceptionText: [String] = []
@@ -165,6 +191,8 @@ final class AssistantModel: ObservableObject {
     private var recentReplySignalAt = Date.distantPast
     private var voiceRecovery = VoiceRecoveryPolicy()
     private var voiceRecoveryDeadline: Date?
+    private var gptInputRebindAttempted = false
+    private var gptInputRebindAt = Date.distantPast
     private var nextCallWebhookDrainAt = Date.distantPast
     private var voiceRecoveryStartedAt = Date.distantPast
     private var ranBlackHoleInputProbe = false
@@ -193,8 +221,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.46"
-    let buildNumber = "63"
+    let version = "0.4.47"
+    let buildNumber = "64"
     @Published private(set) var phoneDiagnosticsCollecting = false
     @Published private(set) var phoneDiagnosticsStatus = "导出时自动读取手机日志"
     @Published private(set) var phoneDiagnosticsPreview = ""
@@ -754,7 +782,7 @@ final class AssistantModel: ObservableObject {
     /// At most one restart per auto-answered call. Keep the Android PCM stream
     /// and the call identity; never recover a manually answered or muted call.
     private func tryLocalFallbackDuringCall() -> Bool {
-        guard localFallbackEnabled, !localFallbackForCurrentRing, autoCallEnabled,
+        guard localSpeechApproved, localFallbackEnabled, !localFallbackForCurrentRing, autoCallEnabled,
               automaticAnswerAcknowledged, autoCallAudioRequested, livePhoneState == "OFFHOOK",
               automaticAnswerSession == bridgeCursor.session,
               automaticOffhookSequence == bridgeCursor.lastSequence,
@@ -816,8 +844,9 @@ final class AssistantModel: ObservableObject {
         }
         guard aiReplyMonitorEnabled || chatGPTVoiceRouteEnabled || voiceRecovery.hasAttempted == false else { return }
         let speakingRecently = now.timeIntervalSince(recentCallerSignalAt) <= 2
+        let persistentInputFailure = gptInputRebindAttempted && now.timeIntervalSince(gptInputRebindAt) >= 5 && recentReplySignalAt < gptInputRebindAt
         let replyingRecently = now.timeIntervalSince(recentReplySignalAt) <= 3
-        guard voiceRecovery.observe(routeReady: ready, callerRecentlyAudible: speakingRecently,
+        guard voiceRecovery.observe(routeReady: ready && !persistentInputFailure, callerRecentlyAudible: speakingRecently,
                                     replyRecentlyAudible: replyingRecently, now: now) else { return }
         if aiReplyToPhoneEnabled { setAIReplyToPhone(false) }
         voiceStopCheckGeneration += 1
@@ -1281,7 +1310,7 @@ final class AssistantModel: ObservableObject {
     /// on the strength of an earlier call or an unprepared offline engine.
     @discardableResult
     private func tryLocalFallbackBeforeAnswer(reason: String) -> Bool {
-        guard localFallbackEnabled, !localReceptionEnabled, !localFallbackForCurrentRing,
+        guard localSpeechApproved, localFallbackEnabled, !localReceptionEnabled, !localFallbackForCurrentRing,
               autoCallEnabled, localReceptionReady, localReceptionEngine?.isReady == true,
               adbWasAuthorized, livePhoneState == "RINGING", !answerCallBusy,
               !automaticAnswerRequested, !automaticAnswerAcknowledged,
@@ -1416,7 +1445,7 @@ final class AssistantModel: ObservableObject {
             }
             return
         }
-        guard autoCallEnabled, localReceptionReady, localReceptionEngine?.isReady == true,
+        guard autoCallEnabled, localSpeechApproved, localReceptionReady, localReceptionEngine?.isReady == true,
               !adbInstalling, !audioProbeBusy else { return }
         if state == "RINGING" {
             // ADB is still necessary for the existing cellular PCM helper,
@@ -1777,9 +1806,10 @@ final class AssistantModel: ObservableObject {
         adbChecking = true
         let path = selectedADBPath
         let scanGeneration = adbScanGeneration
+        let wirelessHost = wifiHost
         nextADBScanAt = Date().addingTimeInterval(bridgeLink == nil ? 2.5 : 12)
         Task.detached(priority: .userInitiated) { [weak self] in
-            let found = ADBInspector.inspect(at: path)
+            let found = ADBInspector.inspect(at: path, wirelessHost: wirelessHost)
             let description = ADBInspector.discoveryLabel(at: path)
             await MainActor.run {
                 guard let self else { return }
@@ -2613,7 +2643,7 @@ final class AssistantModel: ObservableObject {
             return
         }
         let localEngine = localCallAudioRequested ? localReceptionEngine : nil
-        if localCallAudioRequested && localEngine?.isReady != true {
+        if localCallAudioRequested && (!localSpeechApproved || localEngine?.isReady != true) {
             autoCallStatus = "本地接待尚未就绪，不建立 AI 电话音频"
             return
         }
@@ -2640,6 +2670,8 @@ final class AssistantModel: ObservableObject {
         recentCallerSignalAt = .distantPast
         recentReplySignalAt = .distantPast
         ranBlackHoleInputProbe = false
+        gptInputRebindAttempted = false
+        gptInputRebindAt = .distantPast
         blackHoleActualInputStatus = "正在等待实际电话下行 PCM"
         liveVoiceRxFrames = 0
         livePhysicalRenderFrames = 0
@@ -2660,11 +2692,15 @@ final class AssistantModel: ObservableObject {
         let gptEngine = wantsGPTCapture && localReceptionReady && localReceptionEngine?.isReady == true && (localRecordAudio || validWebhook != nil) ? localReceptionEngine : nil
         let capture = (localEngine != nil || gptEngine != nil) && (localRecordAudio || validWebhook != nil)
             ? LocalCallCapture(recordAudio: localRecordAudio, webhook: validWebhook, noticeOnly: localNoticeOnly, gptMode: gptEngine != nil) : nil
-        gptCapturePreludePending = gptEngine != nil
+        gptCapturePreludePending = false
+        gptCaptureAwaitingApproval = gptEngine != nil
+        gptCaptureApproved = false
         if wantsGPTCapture && gptEngine == nil && (localRecordAudio || localSendTranscript) {
             localCaptureStatus = "本地识别模型或飞书配置未就绪，本次 GPT 不录音 / 推送"
         }
-        if localEngine != nil || gptEngine != nil {
+        if gptEngine != nil {
+            localCaptureStatus = "GPT 直接接听，不播放本地告知；本次录音 / 转写须明确确认后才开始"
+        } else if localEngine != nil {
             localCaptureStatus = localSendTranscript && validWebhook == nil
                 ? "飞书地址未配置；不发送文字"
                 : (capture == nil ? "未开启录音或文字推送" : (localNoticeOnly ? "等待播放录音 / 转发告知" : "等待来电者同意"))
@@ -2767,6 +2803,16 @@ final class AssistantModel: ObservableObject {
                                         : report.code == "BLACKHOLE2_LOOPBACK_SILENT"
                                                 ? "BlackHole 2ch 真实输入仍静音，请检查虚拟声卡回环"
                                                 : "虚拟声卡输入检测不可用：" + report.code
+                                    if report.code != "BLACKHOLE2_LOOPBACK_PRESENT", !self.gptInputRebindAttempted,
+                                       self.autoCallAudioRequested, self.automaticAnswerAcknowledged,
+                                       self.liveVoiceActive, self.chatGPTVoiceRouteEnabled {
+                                        self.gptInputRebindAttempted = true
+                                        self.gptInputRebindAt = Date()
+                                        self.setChatGPTVoiceRoute(false)
+                                        self.setChatGPTVoiceRoute(true)
+                                        self.embeddedVoiceBrowser.checkActualMicrophoneRouting(force: true)
+                                        self.log(.warn, .audio, "BlackHole 实测异常，已重建电话输入 HAL 路由", details: ["stage": "GPT_INPUT_HAL_REBOUND"])
+                                    }
                                     self.log(report.code == "BLACKHOLE2_LOOPBACK_PRESENT"
                                                  ? .info : .warn, .audio,
                                         "BlackHole 2ch 实际输入端电平核验结果",
@@ -2780,6 +2826,8 @@ final class AssistantModel: ObservableObject {
                         }
                     }
                 case .finished(let reason):
+                    self.gptCaptureAwaitingApproval = false
+                    self.gptCaptureApproved = false
                     self.gptCapturePreludePending = false
                     self.voiceRecoveryDeadline = nil
                     // The Android PCM helper independently watches the real
@@ -3047,6 +3095,9 @@ final class AssistantModel: ObservableObject {
     }
 
     func stopGPTTwoWayPhoneBridge() {
+        voiceRecoveryDeadline = nil
+        voiceRecovery = VoiceRecoveryPolicy()
+        autoCallAudioRequested = false
         resumeAIForwardAfterIsolationRestored = false
         resumeAIForwardAfterMicrophoneRestored = false
         resumeAIForwardAfterVoicePause = false
@@ -3154,7 +3205,7 @@ final class AssistantModel: ObservableObject {
               !bridgeCursor.session.isEmpty, bridgeCursor.lastSequence > 0 else { return }
         if automatic {
             let engineReady = (localReceptionEnabled || localFallbackForCurrentRing)
-                ? (localReceptionReady && localReceptionEngine?.isReady == true &&
+                ? (localSpeechApproved && localReceptionReady && localReceptionEngine?.isReady == true &&
                    localRingSession == bridgeCursor.session && localRingSequence == bridgeCursor.lastSequence)
                 : (voiceSessionPrepared && incomingPreflightPassed && useEmbeddedVoiceBrowser &&
                    embeddedVoiceBrowser.microphoneActive && embeddedVoiceBrowser.isolatedMicrophoneReady &&

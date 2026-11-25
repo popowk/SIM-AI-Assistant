@@ -530,7 +530,7 @@ final class PhoneAudioStream {
     }
     private let localCapture: LocalCallCapture?
     private let gptCaptureEngine: LocalReceptionEngine?
-    private var gptCapturePassThrough = false
+    private var gptCapturePassThrough = true
     private let silenceSeconds: Int
     private var setup: ADBAudioStreamSetup?
     private var active = false
@@ -582,6 +582,11 @@ final class PhoneAudioStream {
         return success
     }
 
+    func setGPTCaptureAuthorization(_ enabled: Bool) -> Bool {
+        guard isActive, let gptCaptureEngine, gptCaptureEngine.isReady, let localCapture else { return false }
+        if enabled { localCapture.authorize() } else { localCapture.revoke() }
+        return true
+    }
     func setCallerMonitorEnabled(_ enabled: Bool) {
         gate.lock()
         callerMonitorEnabled = enabled
@@ -922,16 +927,16 @@ final class PhoneAudioStream {
             } catch { reason = "MAC_SPEAKER_START"; return }
         }
         defer { speaker?.stop() }
-        if let gptCaptureEngine, !gptCaptureEngine.beginCall(capture: localCapture, transcriptOnly: true) {
-            localCapture?.revoke()
-            gate.lock(); gptCapturePassThrough = true; gate.unlock()
+        if let gptCaptureEngine, let localCapture,
+           !gptCaptureEngine.beginPassiveGPTCapture(localCapture) {
+            localCapture.revoke()
         }
 
         gate.lock()
         active = true
         gate.unlock()
         report(.active)
-        if gptCaptureEngine != nil && gptCapturePassThrough { report(.gptCapturePreludeFinished) }
+
 
         let started = Date()
         DispatchQueue.global(qos: .userInitiated).async { [self] in
@@ -975,19 +980,11 @@ final class PhoneAudioStream {
             gate.lock()
             let callerMonitor = callerMonitorEnabled
             let virtualMic = chatGPTVirtualMic
-            var passThrough = gptCapturePassThrough
+            let passThrough = gptCapturePassThrough
             gate.unlock()
             if currentLocal == nil && !switching, let gptCaptureEngine {
                 if !gptCaptureEngine.isReady { localCapture?.revoke() }
-                if !passThrough {
-                    if Date().timeIntervalSince(started) >= 18 { gptCaptureEngine.skipPendingConsentForGPT() }
-                    if gptCaptureEngine.readyForGPT || !gptCaptureEngine.isReady {
-                        gate.lock(); gptCapturePassThrough = true; gate.unlock()
-                        passThrough = true
-                        report(.gptCapturePreludeFinished)
-                    }
-                }
-                if gptCaptureEngine.isReady {
+                if gptCaptureEngine.isReady && localCapture?.isAuthorized == true {
                     localCapture?.append(frame, uplink: false)
                     gptCaptureEngine.feed(frame)
                 }

@@ -171,6 +171,19 @@ final class LocalReceptionEngine {
     }
 
     /// Invoked only after the Android PCM handshake. No desktop audio output.
+    func beginPassiveGPTCapture(_ capture: LocalCallCapture) -> Bool {
+        gate.lock()
+        guard ready, !disposed, !active else { gate.unlock(); return false }
+        self.capture = capture
+        transcriptOnly = true; passThroughStarted = true
+        consentPending = false; noticePending = false
+        generation += 1; let epoch = generation
+        active = true; policy = LocalReceptionPolicy(); ignoreAfterGoodbye = false
+        speaking.removeAll(); cursor = 0; quietUntil = .distantPast
+        gate.unlock()
+        enqueueReset(epoch)
+        return true
+    }
     func beginCall(capture: LocalCallCapture? = nil, transcriptOnly: Bool = false) -> Bool {
         gate.lock()
         guard ready, !disposed, !active, let greeting = replyPCM[capture?.greeting ?? .greeting], !greeting.isEmpty else { gate.unlock(); return false }
@@ -214,7 +227,8 @@ final class LocalReceptionEngine {
         guard pcm.count == 640 else { return }
         gate.lock()
         // First release uses half-duplex; no microphone and no echo path.
-        guard active, ready, !disposed, !ignoreAfterGoodbye, cursor >= speaking.count,
+        guard active, ready, !disposed, !ignoreAfterGoodbye,
+              (!transcriptOnly || capture?.isAuthorized == true), cursor >= speaking.count,
               Date() >= quietUntil, pending < 30 else { gate.unlock(); return }
         pending += 1; let epoch = generation
         gate.unlock()
