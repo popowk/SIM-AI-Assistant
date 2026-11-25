@@ -77,7 +77,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.42" : "AI 电话自动值守 · 全双工音频 · v0.4.42")
+                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.43" : "AI 电话自动值守 · 全双工音频 · v0.4.43")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -563,10 +563,11 @@ struct DashboardView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("查看日志目录") { model.openLogFolder() }
-                Button("一键导出诊断包") { previewExport = true }
-                    .buttonStyle(.borderedProminent)
+                Button(model.phoneDiagnosticsCollecting ? "读取手机日志中…" : "一键导出诊断包") { previewExport = true }
+                    .buttonStyle(.borderedProminent).disabled(model.phoneDiagnosticsCollecting)
             }
 
+            Text(model.phoneDiagnosticsStatus).font(.caption).foregroundStyle(.secondary)
             HStack {
                 Picker("清理范围", selection: $cleanupDays) {
                     Text("最近 1 天").tag(1)
@@ -591,7 +592,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.42 (Build 58)").font(.caption.monospaced())
+            Text("v0.4.43 (Build 60)").font(.caption.monospaced())
         }
     }
 
@@ -614,9 +615,9 @@ private struct ExportPreviewView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
             Text("脱敏诊断包预览").font(.title3.bold())
-            Text("将打包以下文件（不包含录音与个人信息）。设备名称在导出文件中使用序号替代。")
+            Text("同时读取已授权手机的专用日志及电源、屏幕和休眠状态；断开时仍可导出，并注明读取失败。不包含录音、号码、短信或凭据。")
                 .foregroundStyle(.secondary)
-            Text("app-info.json · system-info.json · audio-devices.json · events.jsonl · errors.log · reproduce.txt")
+            Text("app-info.json · system-info.json · audio-devices.json · events.jsonl · errors.log · reproduce.txt · android-diagnostics.json")
                 .font(.caption.monospaced()).textSelection(.enabled)
             Text("近几条日志预览").font(.subheadline.bold())
             ScrollView {

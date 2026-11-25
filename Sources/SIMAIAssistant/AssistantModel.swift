@@ -161,8 +161,10 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.42"
-    let buildNumber = "59"
+    let version = "0.4.43"
+    let buildNumber = "60"
+    @Published private(set) var phoneDiagnosticsCollecting = false
+    @Published private(set) var phoneDiagnosticsStatus = "导出时自动读取手机日志"
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -1778,6 +1780,9 @@ final class AssistantModel: ObservableObject {
                 self.log(requested ? .info : .warn,
                          .call, "已检查 Android 电话监听服务自动恢复",
                          details: ["recovery": code])
+                if !requested && code != "PHONE_MONITOR_USER_DISABLED" {
+                    self.nextPhoneMonitorWakeAt = Date().addingTimeInterval(60)
+                }
                 if requested {
                     // ADB remains authorized. Prefer fresh file snapshots
                     // while the phone's HTTP listener is starting.
@@ -3488,6 +3493,7 @@ final class AssistantModel: ObservableObject {
     }
 
     func exportDiagnostics() {
+        guard !phoneDiagnosticsCollecting else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.zip]
         panel.canCreateDirectories = true
@@ -3497,14 +3503,34 @@ final class AssistantModel: ObservableObject {
         let context = ExportContext(system: system, audio: audio,
             sessionID: sessionID, recentError: lastError, callState: livePhoneState,
             userReproductionNotes: reproductionNotes)
-        do {
-            try DiagnosticsExporter(logs: logs).export(context: context, to: destination)
-            log(.info, .diagnostic, "诊断 ZIP 已在用户选定路径生成（未上传）")
-            alertText = "诊断包已生成。请先自行查看内容，再决定是否发送。"
-        } catch {
-            log(.error, .diagnostic, "导出诊断 ZIP 失败", code: .exportFailed,
-                details: ["errorCode": "\((error as NSError).code)"])
-            alertText = "诊断包导出失败，请查看日志。"
+        let path = selectedADBPath
+        let serial = bridgeLink?.serial
+        let safeToRead = !liveVoiceActive && !liveVoiceStarting && !adbInstalling &&
+                         !answerCallBusy && livePhoneState != "RINGING" && livePhoneState != "OFFHOOK"
+        phoneDiagnosticsCollecting = true
+        phoneDiagnosticsStatus = "正在收集手机诊断信息…"
+        Task { [weak self] in
+            let report: AndroidDiagnosticReport
+            if safeToRead {
+                report = await Task.detached(priority: .utility) {
+                    ADBInspector.collectPhoneDiagnostics(at: path, expectedSerial: serial)
+                }.value
+            } else {
+                report = AndroidDiagnosticReport(status: "SKIPPED_ACTIVE_CALL_OR_INSTALL")
+            }
+            guard let self else { return }
+            self.phoneDiagnosticsCollecting = false
+            self.phoneDiagnosticsStatus = "手机日志：\(report.events.count) 条 · \(report.collection["status"] ?? "UNKNOWN")"
+            do {
+                try DiagnosticsExporter(logs: self.logs).export(context: context, to: destination, android: report)
+                self.log(.info, .diagnostic, "诊断 ZIP 已在用户选定路径生成（未上传）",
+                    details: ["androidEvents": String(report.events.count), "androidStatus": report.collection["status"] ?? "UNKNOWN"])
+                self.alertText = "诊断包已生成。\(self.phoneDiagnosticsStatus)。请检查后再发送。"
+            } catch {
+                self.log(.error, .diagnostic, "导出诊断 ZIP 失败", code: .exportFailed,
+                    details: ["errorCode": "\((error as NSError).code)"])
+                self.alertText = "诊断包导出失败，请查看日志。"
+            }
         }
     }
 }

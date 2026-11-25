@@ -945,14 +945,10 @@ enum ADBInspector {
         switch run(adb, args: ["-s", serial, "shell", "am",
                                "start-foreground-service", "-n",
                                "com.popowk.simai.companion/.CallMonitorService"], timeout: 8) {
-        case .completed(0, _): return "PHONE_MONITOR_WAKE_REQUESTED"
+        case .completed(let exit, let output):
+            return AndroidWakeResult.classify(exit: exit, output: output)
         case .timedOut: return "PHONE_MONITOR_WAKE_TIMEOUT"
-        default:
-            // Quiet background start-service; NEVER launch MainActivity into user's foreground!
-            _ = run(adb, args: ["-s", serial, "shell", "am", "start-service",
-                                "-n", "com.popowk.simai.companion/.CallMonitorService"],
-                    timeout: 6)
-            return "PHONE_MONITOR_WAKE_DENIED"
+        case .launchFailed: return "PHONE_MONITOR_WAKE_ADB_LAUNCH_FAILED"
         }
     }
 
@@ -1191,6 +1187,99 @@ enum ADBInspector {
             guard !serial.isEmpty else { return nil }
             return (serial: serial, state: state)
         }
+    }
+
+    /// Read only the private app diagnostics and allowlisted current system
+    /// power/display fields. No wake/unlock or device configuration changes.
+    static func collectPhoneDiagnostics(at selected: String?, expectedSerial: String?) -> AndroidDiagnosticReport {
+        var report = AndroidDiagnosticReport(status: "ADB_UNAVAILABLE")
+        guard let adb = executable(at: selected) else { return report }
+        let devices: [(serial: String, state: String)]
+        switch run(adb, args: ["devices"], timeout: 4) {
+        case .completed(0, let output): devices = parseDevices(output)
+        case .timedOut: report.collection["status"] = "ADB_ENUMERATION_TIMEOUT"; return report
+        default: report.collection["status"] = "ADB_ENUMERATION_FAILED"; return report
+        }
+        let authorized = devices.filter { $0.state == "device" }
+        guard authorized.count == 1, expectedSerial == nil || expectedSerial == authorized[0].serial else {
+            report.collection["status"] = "NO_UNIQUE_AUTHORIZED_PHONE"; return report
+        }
+        let serial = authorized[0].serial
+        report.collection["status"] = "ADB_AUTHORIZED"
+        let prefix = ["-s", serial]
+        let app = "com.popowk.simai.companion"
+        for (key, file) in [("previousLog", "phone-diagnostics.previous.jsonl"), ("currentLog", "phone-diagnostics.jsonl")] {
+            switch runDiagnostic(adb, args: prefix + ["exec-out", "run-as", app, "cat", "files/" + file], timeout: 4) {
+            case .completed(0, let output):
+                let entries = AndroidDiagnosticEntry.parse(output)
+                report.events.append(contentsOf: entries)
+                report.collection[key] = entries.isEmpty ? "NO_VALID_EVENTS" : "OK"
+            case .timedOut: report.collection[key] = "TIMEOUT"
+            default: report.collection[key] = "UNAVAILABLE_OR_OLD_APK"
+            }
+        }
+        // These exact fields, not the raw dumpsys output, are retained.
+        let powerKeys: Set<String> = ["mWakefulness","mWakefulnessChanging","mIsPowered","mBatteryLevel","mDeviceIdleMode","mLightDeviceIdleMode","mStayOn","mProximityPositive","mDisplayReady","mHoldingWakeLockSuspendBlocker","mHoldingDisplaySuspendBlocker","mHalAutoSuspendModeEnabled","mHalInteractiveModeEnabled","mLastWakeTime","mLastSleepTime","mLastUserActivityTime","mWakeLockSummary","mUserActivitySummary","mLastWakeReason","mLastSleepReason"]
+        let idleKeys: Set<String> = ["mState","mLightState","mScreenOn","mCharging","mForceIdle","mDeepEnabled","mLightEnabled"]
+        let displayKeys: Set<String> = ["mScreenState","mDisplayState","mActualDisplayState","mScreenOn","mPendingScreenOn","mProximity","mScreenOffBecauseOfProximity"]
+        func dump(_ service: String, keys: Set<String>) -> [String:String] {
+            let pattern = "^[[:space:]]*(" + keys.sorted().joined(separator: "|") + ")="
+            // Constant developer-supplied command: filtering on device bounds the output.
+            let command = "dumpsys " + service + " | grep -E '" + pattern + "' | head -n 60"
+            switch runDiagnostic(adb, args: prefix + ["shell", command], timeout: 4) {
+            case .completed(0, let output):
+                let fields = AndroidDiagnosticReport.extractFields(output, keys: keys)
+                report.collection[service] = fields.isEmpty ? "NO_SUPPORTED_FIELDS" : "OK"
+                return fields
+            case .timedOut: report.collection[service] = "TIMEOUT"
+            default: report.collection[service] = "UNAVAILABLE"
+            }
+            return [:]
+        }
+        report.power = dump("power", keys: powerKeys)
+        report.idle = dump("deviceidle", keys: idleKeys)
+        report.display = dump("display", keys: displayKeys)
+        switch run(adb, args: prefix + ["shell", "pidof", app], timeout: 3) {
+        case .completed(0, let output):
+            report.collection["appProcess"] = output.split(whereSeparator: \.isWhitespace).allSatisfy { Int($0) != nil } && !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "RUNNING" : "UNKNOWN"
+        case .completed(1, _): report.collection["appProcess"] = "NOT_RUNNING"
+        case .timedOut: report.collection["appProcess"] = "TIMEOUT"
+        default: report.collection["appProcess"] = "UNAVAILABLE"
+        }
+        report.events.sort { $0.wallMs < $1.wallMs }
+        return report
+    }
+
+    /// Drain into an owner-only temporary file: the legacy Pipe runner waits
+    /// for exit before reading and could block on a larger diagnostic log.
+    private static func runDiagnostic(_ adb: URL, args: [String], timeout: TimeInterval) -> CommandResult {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent("simai-phone-diag-" + UUID().uuidString, isDirectory: true)
+        let file = dir.appendingPathComponent("stdout")
+        do { try fm.createDirectory(at: dir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]) }
+        catch { return .launchFailed }
+        defer { try? fm.removeItem(at: dir) }
+        guard fm.createFile(atPath: file.path, contents: nil, attributes: [.posixPermissions: 0o600]),
+              let handle = try? FileHandle(forWritingTo: file) else { return .launchFailed }
+        defer { try? handle.close() }
+        let process = Process()
+        process.executableURL = adb; process.arguments = args
+        process.standardOutput = handle
+        process.standardError = FileHandle.nullDevice
+        let done = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in done.signal() }
+        do { try process.run() } catch { return .launchFailed }
+        if done.wait(timeout: .now() + timeout) == .timedOut {
+            if process.isRunning {
+                process.terminate()
+                if done.wait(timeout: .now() + 0.3) == .timedOut && process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            }
+            return .timedOut
+        }
+        guard let info = try? fm.attributesOfItem(atPath: file.path),
+              let count = info[.size] as? NSNumber, count.intValue <= 131_072,
+              let data = try? Data(contentsOf: file), let output = String(data: data, encoding: .utf8) else { return .launchFailed }
+        return .completed(process.terminationStatus, output)
     }
 
     private static func run(_ executable: URL, args: [String], timeout: TimeInterval) -> CommandResult {

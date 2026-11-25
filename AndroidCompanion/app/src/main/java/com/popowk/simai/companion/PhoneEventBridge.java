@@ -57,6 +57,8 @@ final class PhoneEventBridge {
     private ScheduledExecutorService privateAnswerPoller;
     private ScheduledExecutorService stateQueryWorker;
     private final Object snapshotWriteLock = new Object();
+    private long lastSnapshotDiagnostic = 0;
+    private long lastSnapshotErrorDiagnostic = 0;
     private final java.util.concurrent.atomic.AtomicBoolean snapshotQueued = new java.util.concurrent.atomic.AtomicBoolean();
     private final NsdHelper nsdHelper = new NsdHelper();
     private volatile long lastRealPhoneStateAt = 0;
@@ -166,6 +168,7 @@ final class PhoneEventBridge {
         worker.setDaemon(true);
         worker.start();
         Log.i("SIMAICompanion", "Loopback call-state bridge listening (no phone identifiers)");
+        AndroidDiagnostics.event(context, "BRIDGE_STARTED", "");
     }
 
     void stop() {
@@ -365,6 +368,7 @@ final class PhoneEventBridge {
             }
         }
         Log.i("SIMAICompanion", "Answer result via " + transport + ": " + result);
+        AndroidDiagnostics.event(context, "ANSWER_RESULT", "transport=" + transport + " result=" + result);
         return result;
     }
 
@@ -640,8 +644,18 @@ final class PhoneEventBridge {
                 out = snapshotFile.startWrite();
                 out.write(bytes);
                 snapshotFile.finishWrite(out);
+                long now = android.os.SystemClock.elapsedRealtime();
+                if (lastSnapshotDiagnostic == 0 || now - lastSnapshotDiagnostic >= 30_000) {
+                    lastSnapshotDiagnostic = now;
+                    AndroidDiagnostics.event(context, "SNAPSHOT_HEARTBEAT", "active=" + active + " state=" + lastState + " actual=" + lastRealPhoneState);
+                }
             } catch (Exception error) {
                 if (out != null) snapshotFile.failWrite(out);
+                long now = android.os.SystemClock.elapsedRealtime();
+                if (lastSnapshotErrorDiagnostic == 0 || now - lastSnapshotErrorDiagnostic >= 30_000) {
+                    lastSnapshotErrorDiagnostic = now;
+                    AndroidDiagnostics.event(context, "SNAPSHOT_WRITE_FAILED", "error=" + error.getClass().getSimpleName());
+                }
                 Log.w("SIMAICompanion", "Anonymous state snapshot failed: "
                         + error.getClass().getSimpleName());
             }

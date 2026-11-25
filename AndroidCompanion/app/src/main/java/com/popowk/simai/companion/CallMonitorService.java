@@ -35,12 +35,36 @@ public final class CallMonitorService extends Service {
     private final Handler wakeHandler = new Handler(Looper.getMainLooper());
     private PowerManager.WakeLock lock;
     private android.net.wifi.WifiManager.WifiLock wifiLock;
+    private boolean powerReceiverRegistered;
+    private final android.content.BroadcastReceiver powerReceiver = new android.content.BroadcastReceiver() {
+        @Override public void onReceive(android.content.Context context, Intent intent) {
+            String action = intent.getAction();
+            String event = Intent.ACTION_SCREEN_ON.equals(action) ? "SCREEN_ON"
+                : Intent.ACTION_SCREEN_OFF.equals(action) ? "SCREEN_OFF"
+                : Intent.ACTION_USER_PRESENT.equals(action) ? "USER_PRESENT"
+                : PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED.equals(action) ? "DEVICE_IDLE_CHANGED"
+                : PowerManager.ACTION_POWER_SAVE_MODE_CHANGED.equals(action) ? "POWER_SAVE_CHANGED" : null;
+            if (event != null) recordPower(event);
+        }
+    };
+    private final Runnable diagnosticTick = new Runnable() {
+        @Override public void run() {
+            recordPower("SERVICE_HEARTBEAT");
+            wakeHandler.postDelayed(this, 30_000);
+        }
+    };
+    private void recordPower(String event) {
+        AndroidDiagnostics.event(this, event,
+            "running=" + running + " " + AndroidDiagnostics.power(this,
+                lock != null && lock.isHeld(), wifiLock != null && wifiLock.isHeld()));
+    }
     private final Runnable renewLock = new Runnable() {
         @Override public void run() {
             if (!running || !getSharedPreferences(PREFS, MODE_PRIVATE)
                     .getBoolean(KEEP_AWAKE, true)) return;
             if (lock != null) {
                 lock.acquire(WAKELOCK_TIMEOUT);
+                recordPower("CPU_LOCK_RENEWED");
                 wakeHandler.postDelayed(this, WAKELOCK_RENEWAL);
             }
         }
@@ -69,19 +93,38 @@ public final class CallMonitorService extends Service {
 
     @Override public void onCreate() {
         super.onCreate();
+        AndroidDiagnostics.init(this);
+        recordPower("SERVICE_CREATE");
+        android.content.IntentFilter filter = new android.content.IntentFilter();
+        filter.addAction(Intent.ACTION_SCREEN_ON);
+        filter.addAction(Intent.ACTION_SCREEN_OFF);
+        filter.addAction(Intent.ACTION_USER_PRESENT);
+        filter.addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED);
+        filter.addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED);
+        try {
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(powerReceiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED);
+            else registerReceiver(powerReceiver, filter);
+            powerReceiverRegistered = true;
+        } catch (Exception error) {
+            AndroidDiagnostics.event(this, "POWER_RECEIVER_FAILED", "error=" + error.getClass().getSimpleName());
+        }
+        wakeHandler.postDelayed(diagnosticTick, 30_000);
         NotificationManager nm = getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel(CHANNEL,
                 "电话状态监听", NotificationManager.IMPORTANCE_LOW));
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
+        AndroidDiagnostics.event(this, "SERVICE_START", "flags=" + flags + " startId=" + startId);
         if (!getSharedPreferences("simai_initial_setup", MODE_PRIVATE)
                 .getBoolean("phone_state_monitor_desired", true)) {
+            AndroidDiagnostics.event(this, "SERVICE_USER_DISABLED", "");
             stopSelf(); return START_NOT_STICKY;
         }
         if (checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
             lastState = "缺少电话状态权限";
             note("权限不足，监听服务未启动");
+            AndroidDiagnostics.event(this, "SERVICE_PERMISSION_MISSING", "");
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -91,7 +134,13 @@ public final class CallMonitorService extends Service {
                 .setSmallIcon(android.R.drawable.ic_menu_call)
                 .setOngoing(true)
                 .build();
-        startForeground(90, notification);
+        try {
+            startForeground(90, notification);
+            recordPower("FOREGROUND_STARTED");
+        } catch (Exception error) {
+            AndroidDiagnostics.event(this, "FOREGROUND_FAILED", "error=" + error.getClass().getSimpleName());
+            stopSelf(); return START_NOT_STICKY;
+        }
         if (!running) {
             try {
                 bridge = new PhoneEventBridge(this);
@@ -134,8 +183,10 @@ public final class CallMonitorService extends Service {
                 running = true;
                 applyKeepAwakeSetting();
                 note("监听已启动，等待实际来电");
+                recordPower("MONITOR_READY");
             } catch (Exception error) {
                 note("监听启动失败：" + error.getClass().getSimpleName());
+                AndroidDiagnostics.event(this, "MONITOR_INIT_FAILED", "error=" + error.getClass().getSimpleName());
                 lastState = "监听初始化失败";
                 activeAnswerBridge = null;
                 if (bridge != null) { bridge.stop(); bridge = null; }
@@ -167,6 +218,7 @@ public final class CallMonitorService extends Service {
             wakeHandler.postDelayed(renewLock, WAKELOCK_RENEWAL);
         } catch (Exception failed) {
             note("锁屏运行增强不可用：" + failed.getClass().getSimpleName());
+            AndroidDiagnostics.event(this, "CPU_LOCK_FAILED", "error=" + failed.getClass().getSimpleName());
             releaseWakeLock();
         }
         try {
@@ -184,6 +236,7 @@ public final class CallMonitorService extends Service {
             }
         } catch (Exception e) {
             note("Wi-Fi 后台常驻锁异常：" + e.getClass().getSimpleName());
+            AndroidDiagnostics.event(this, "WIFI_LOCK_FAILED", "error=" + e.getClass().getSimpleName());
         }
     }
 
@@ -212,6 +265,7 @@ public final class CallMonitorService extends Service {
         if (!next.equals(lastState)) {
             lastState = next;
             note("电话状态：" + next);
+            AndroidDiagnostics.event(this, "CALL_STATE", "state=" + next);
             if (bridge != null) bridge.recordState(next);
         }
     }
@@ -231,7 +285,20 @@ public final class CallMonitorService extends Service {
         return bridge.acceptAndRecordGuardedShellRequest(session, sequence);
     }
 
+    @Override public void onTaskRemoved(Intent rootIntent) {
+        recordPower("TASK_REMOVED");
+        super.onTaskRemoved(rootIntent);
+    }
+    @Override public void onTrimMemory(int level) {
+        AndroidDiagnostics.event(this, "TRIM_MEMORY", "level=" + level);
+        super.onTrimMemory(level);
+    }
     @Override public void onDestroy() {
+        recordPower("SERVICE_DESTROY");
+        wakeHandler.removeCallbacks(diagnosticTick);
+        if (powerReceiverRegistered) {
+            try { unregisterReceiver(powerReceiver); } catch (Exception ignored) {}
+        }
         activeMonitor = null;
         activeAnswerBridge = null;
         releaseWakeLock();

@@ -12,6 +12,7 @@ import android.telephony.TelephonyManager;
 public final class PhoneStateWakeReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context context, Intent intent) {
         if (!TelephonyManager.ACTION_PHONE_STATE_CHANGED.equals(intent.getAction())) return;
+        AndroidDiagnostics.init(context);
         if (!context.getSharedPreferences("simai_initial_setup", Context.MODE_PRIVATE)
                 .getBoolean("phone_state_monitor_desired", true)) return;
         if (context.checkSelfPermission(Manifest.permission.READ_PHONE_STATE)
@@ -22,6 +23,7 @@ public final class PhoneStateWakeReceiver extends BroadcastReceiver {
         else if (TelephonyManager.EXTRA_STATE_OFFHOOK.equals(state)) value = TelephonyManager.CALL_STATE_OFFHOOK;
         else if (TelephonyManager.EXTRA_STATE_IDLE.equals(state)) value = TelephonyManager.CALL_STATE_IDLE;
         else return;
+        AndroidDiagnostics.event(context, "PHONE_BROADCAST", "state=" + state + " running=" + CallMonitorService.running);
         if (CallMonitorService.running) {
             CallMonitorService.deliverSystemPhoneState(value);
             return;
@@ -34,8 +36,10 @@ public final class PhoneStateWakeReceiver extends BroadcastReceiver {
             start.putExtra("system_phone_state_elapsed", android.os.SystemClock.elapsedRealtime());
             context.startForegroundService(start);
             CallMonitorService.note("系统电话广播请求恢复前台监听");
+            AndroidDiagnostics.event(context, "BROADCAST_WAKE_REQUESTED", "");
         } catch (Exception denied) {
             CallMonitorService.note("系统电话广播恢复被系统拒绝：" + denied.getClass().getSimpleName());
+            AndroidDiagnostics.event(context, "BROADCAST_WAKE_DENIED", "error=" + denied.getClass().getSimpleName());
         }
     }
 }

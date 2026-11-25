@@ -52,6 +52,8 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle stateBundle) {
         super.onCreate(stateBundle);
+        AndroidDiagnostics.init(this);
+        AndroidDiagnostics.event(this, "ACTIVITY_CREATE", "");
         ScrollView scroller = new ScrollView(this);
         LinearLayout column = new LinearLayout(this);
         column.setOrientation(LinearLayout.VERTICAL);
@@ -123,6 +125,7 @@ public final class MainActivity extends Activity {
         stop.setLayoutParams(new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.0f));
         stop.setOnClickListener(v -> {
             setMonitorDesired(false);
+            AndroidDiagnostics.event(this, "USER_STOP_MONITOR", "");
             stopService(new Intent(this, CallMonitorService.class));
             refresh();
         });
@@ -428,6 +431,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        AndroidDiagnostics.event(this, "ACTIVITY_RESUME", "");
         handler.removeCallbacks(update);
         handler.post(update);
         if (monitorDesired() && !CallMonitorService.running && hasCorePermissions()) {
@@ -436,6 +440,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onPause() {
+        AndroidDiagnostics.event(this, "ACTIVITY_PAUSE", "");
         handler.removeCallbacks(update);
         super.onPause();
     }

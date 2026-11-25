@@ -40,7 +40,7 @@ public final class DiagnosticsExporter {
         return "SIM-AI-Diagnostics-\(formatter.string(from: date)).zip"
     }
 
-    public func export(context: ExportContext, to destination: URL) throws {
+    public func export(context: ExportContext, to destination: URL, android: AndroidDiagnosticReport? = nil) throws {
         let temporary = fileManager.temporaryDirectory.appendingPathComponent("sim-ai-\(UUID().uuidString)", isDirectory: true)
         let root = temporary.appendingPathComponent("SIM-AI-Diagnostics", isDirectory: true)
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
@@ -49,6 +49,7 @@ public final class DiagnosticsExporter {
         try writeJSON(["appVersion": context.system.appVersion, "build": context.system.build], name: "app-info.json", root: root)
         try writeJSON(context.system, name: "system-info.json", root: root)
         try writeJSON(context.audio.exportSafe(), name: "audio-devices.json", root: root)
+        if let android { try writeJSON(android, name: "android-diagnostics.json", root: root) }
         try logs.readAllSafeLines().write(to: root.appendingPathComponent("events.jsonl"), atomically: true, encoding: .utf8)
         let errors = try logs.readRecent(limit: 5_000).filter { $0.level == .error }
         let errorsText = errors.map { "\($0.timestamp.ISO8601Format()) \($0.code ?? "UNKNOWN") \(PrivacyRedactor.clean($0.message)) [\($0.sessionID)]" }.joined(separator: "\n")
