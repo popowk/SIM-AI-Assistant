@@ -161,10 +161,34 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.43"
-    let buildNumber = "60"
+    let version = "0.4.44"
+    let buildNumber = "61"
     @Published private(set) var phoneDiagnosticsCollecting = false
     @Published private(set) var phoneDiagnosticsStatus = "导出时自动读取手机日志"
+    @Published private(set) var phoneDiagnosticsPreview = ""
+    func readPhoneDiagnostics() {
+        guard !phoneDiagnosticsCollecting, !liveVoiceActive, !liveVoiceStarting, !adbInstalling,
+              !answerCallBusy, livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else {
+            phoneDiagnosticsStatus = "通话中或正在执行其他诊断，暂不可读取"; return
+        }
+        phoneDiagnosticsCollecting = true
+        phoneDiagnosticsStatus = "正在读取手机诊断…"
+        let path = selectedADBPath, serial = bridgeLink?.serial
+        Task { [weak self] in
+            let report = await Task.detached(priority: .utility) {
+                ADBInspector.collectPhoneDiagnostics(at: path, expectedSerial: serial)
+            }.value
+            guard let self else { return }
+            self.phoneDiagnosticsCollecting = false
+            self.phoneDiagnosticsStatus = "手机日志：\(report.events.count) 条 · \(report.collection["status"] ?? "UNKNOWN")"
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            if let data = try? encoder.encode(report) {
+                self.phoneDiagnosticsPreview = String(decoding: data, as: UTF8.self)
+            }
+        }
+    }
     private let logger = Logger(subsystem: "com.simai.assistant", category: "diagnostics")
     private let logs: LogStore
     private var audioInspector = AudioInspector()
@@ -3117,13 +3141,14 @@ final class AssistantModel: ObservableObject {
     }
 
     func prepareLogCleanup(days: Int) -> Bool {
+        guard !phoneDiagnosticsCollecting else { return false }
         do {
             let preview = try (days == 0
                 ? logs.previewAllLogs()
                 : logs.previewCleanup(olderThanDays: days))
             let size = ByteCountFormatter.string(fromByteCount: preview.totalBytes, countStyle: .file)
             cleanupPreviewText = days == 0
-                ? "将删除全部 \(preview.fileCount) 个应用日志文件（包括今天），共 \(size)。"
+                ? "将删除全部 \(preview.fileCount) 个 Mac 应用日志文件（含今天），共 \(size)，并尝试清空已授权手机的应用日志。录音、设置和系统日志不受影响。"
                 : "将删除 \(preview.fileCount) 个旧日志文件，共 \(size)。今天及最近 \(days) 天的日志保留。"
             return true
         } catch {
@@ -3133,6 +3158,7 @@ final class AssistantModel: ObservableObject {
     }
 
     func cleanOldLogs(days: Int) {
+        guard !phoneDiagnosticsCollecting else { return }
         do {
             let deleted = try (days == 0
                 ? logs.clearAllLogs()
@@ -3143,7 +3169,28 @@ final class AssistantModel: ObservableObject {
             if days == 0 {
                 // Do not immediately recreate an events-*.jsonl file after a clear-all.
                 logger.info("用户主动清空本应用全部本地 JSONL 日志（系统 OSLog 不可由应用删除）")
-                alertText = "已清空本应用全部 \(deleted.fileCount) 个 JSONL 日志文件（含今天）。macOS 系统 OSLog 不在清理范围。"
+                phoneDiagnosticsPreview = ""
+                liveCallEvents.removeAll()
+                let safeToClear = !liveVoiceActive && !liveVoiceStarting && !adbInstalling &&
+                                  !answerCallBusy && livePhoneState != "RINGING" && livePhoneState != "OFFHOOK"
+                guard safeToClear else {
+                    phoneDiagnosticsStatus = "手机正在通话或安装中，未清理手机日志"
+                    alertText = "Mac 应用日志已清空；手机日志未清理。"
+                    return
+                }
+                phoneDiagnosticsCollecting = true
+                phoneDiagnosticsStatus = "正在清空手机应用日志…"
+                let path = selectedADBPath, serial = bridgeLink?.serial
+                Task { [weak self] in
+                    let result = await Task.detached(priority: .utility) {
+                        ADBInspector.clearPhoneDiagnostics(at: path, expectedSerial: serial)
+                    }.value
+                    guard let self else { return }
+                    self.phoneDiagnosticsCollecting = false
+                    self.phoneDiagnosticsStatus = result == "CLEARED"
+                        ? "手机应用日志已清空" : "手机日志未确认清空：" + result
+                    self.alertText = "Mac 全部应用日志已清空（\(deleted.fileCount) 个文件）。\n" + self.phoneDiagnosticsStatus + "\n系统日志、录音、设置及此前导出的 ZIP 保留；新事件会正常记录。"
+                }
             } else {
                 log(.info, .diagnostic, "用户手动清理旧日志",
                     details: ["retentionDays": "\(days)",
@@ -3489,7 +3536,6 @@ final class AssistantModel: ObservableObject {
 
     func openLogFolder() {
         NSWorkspace.shared.open(logs.directory)
-        log(.info, .diagnostic, "用户打开本地日志文件夹")
     }
 
     func exportDiagnostics() {

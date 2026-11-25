@@ -80,6 +80,12 @@ public final class CallMonitorService extends Service {
     private java.util.concurrent.ExecutorService callStateExecutor;
     private PhoneStateListener legacyListener;
 
+    static synchronized boolean clearDiagnosticHistory(android.content.Context context) {
+        if (!AndroidDiagnostics.clear(context)) return false;
+        history.clear();
+        return true;
+    }
+
     public static synchronized List<String> eventSnapshot() {
         return new ArrayList<>(history);
     }

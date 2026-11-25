@@ -46,6 +46,8 @@
                 <action android:name="com.popowk.simai.companion.REQUEST_GUARDED_ANSWER"/>
             </intent-filter>
         </receiver>
+        <receiver android:name=".DiagnosticCommandReceiver" android:exported="true"
+            android:permission="android.permission.DUMP"/>
         <receiver android:name=".SmsWebhookForwarder" android:exported="true"
             android:permission="android.permission.BROADCAST_SMS">
             <intent-filter>

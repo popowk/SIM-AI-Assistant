@@ -34,9 +34,7 @@ final class AndroidDiagnostics {
                     ActivityManager am = app.getSystemService(ActivityManager.class);
                     if (am == null) return;
                     for (ApplicationExitInfo e : am.getHistoricalProcessExitReasons(null, 0, 5)) {
-                        event(app, "PREVIOUS_EXIT", "reason=" + e.getReason() +
-                                " status=" + e.getStatus() + " importance=" + e.getImportance() +
-                                " exitWallMs=" + e.getTimestamp());
+                        recordPreviousExit(app, e);
                     }
                 } catch (Exception failure) {
                     event(app, "EXIT_HISTORY_UNAVAILABLE", "error=" + failure.getClass().getSimpleName());
@@ -46,6 +44,43 @@ final class AndroidDiagnostics {
             worker.start();
         }
     }
+    // Serialize with clear() so a queued exit-history scan cannot restore
+    // entries that predate an explicitly requested clear.
+    private static synchronized void recordPreviousExit(Context app, ApplicationExitInfo e) {
+        android.content.SharedPreferences prefs = app.getSharedPreferences("simai_diagnostic_meta", Context.MODE_PRIVATE);
+        if (e.getTimestamp() <= prefs.getLong("clearedAt", 0)) return;
+        event(app, "PREVIOUS_EXIT", "reason=" + e.getReason() +
+                " status=" + e.getStatus() + " importance=" + e.getImportance() +
+                " exitWallMs=" + e.getTimestamp());
+    }
+
+    static synchronized boolean clear(Context context) {
+        File current = new File(context.getFilesDir(), "phone-diagnostics.jsonl");
+        File previous = new File(context.getFilesDir(), "phone-diagnostics.previous.jsonl");
+        boolean currentOK = !current.exists() || current.delete();
+        boolean previousOK = !previous.exists() || previous.delete();
+        if (!currentOK || !previousOK || current.exists() || previous.exists()) return false;
+        return context.getSharedPreferences("simai_diagnostic_meta", Context.MODE_PRIVATE)
+                .edit().putLong("clearedAt", System.currentTimeMillis()).commit();
+    }
+
+    static synchronized String recent(Context context) {
+        StringBuilder out = new StringBuilder();
+        File current = new File(context.getFilesDir(), "phone-diagnostics.jsonl");
+        if (!current.exists()) return "暂无新日志";
+        try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                new java.io.InputStreamReader(new java.io.FileInputStream(current), StandardCharsets.UTF_8))) {
+            java.util.ArrayDeque<String> lines = new java.util.ArrayDeque<>();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                lines.addLast(line);
+                if (lines.size() > 100) lines.removeFirst();
+            }
+            for (String item : lines) out.append(item).append('\n');
+            return out.toString();
+        } catch (Exception e) { return "读取手机日志失败"; }
+    }
+
     private static String safe(String value) {
         if (value == null || !value.matches("[A-Za-z0-9_.-]{1,80}")) return "unknown";
         return value;

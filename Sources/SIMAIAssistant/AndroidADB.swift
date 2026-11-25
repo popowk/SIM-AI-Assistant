@@ -1189,6 +1189,25 @@ enum ADBInspector {
         }
     }
 
+    static func clearPhoneDiagnostics(at selected: String?, expectedSerial: String?) -> String {
+        guard let adb = executable(at: selected),
+              case .completed(0, let raw) = run(adb, args: ["devices"], timeout: 4) else { return "ADB_NOT_READY" }
+        let authorized = parseDevices(raw).filter { $0.state == "device" }
+        guard authorized.count == 1, expectedSerial == nil || expectedSerial == authorized[0].serial else {
+            return "NO_UNIQUE_AUTHORIZED_PHONE"
+        }
+        let serial = authorized[0].serial
+        switch run(adb, args: ["-s", serial, "shell", "am", "broadcast", "--receiver-foreground",
+                              "-n", "com.popowk.simai.companion/.DiagnosticCommandReceiver",
+                              "-a", "com.popowk.simai.companion.CLEAR_DIAGNOSTICS"], timeout: 8) {
+        case .completed(0, let output):
+            return output.contains("result=1") && output.contains("SIMAI_DIAGNOSTICS_CLEARED")
+                ? "CLEARED" : "NOT_CONFIRMED_OR_OLD_APK"
+        case .timedOut: return "TIMEOUT"
+        default: return "CLEAR_FAILED"
+        }
+    }
+
     /// Read only the private app diagnostics and allowlisted current system
     /// power/display fields. No wake/unlock or device configuration changes.
     static func collectPhoneDiagnostics(at selected: String?, expectedSerial: String?) -> AndroidDiagnosticReport {

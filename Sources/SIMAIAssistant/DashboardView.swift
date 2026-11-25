@@ -7,7 +7,8 @@ struct DashboardView: View {
     @EnvironmentObject private var model: AssistantModel
 
     @State private var previewExport = false
-    @State private var cleanupDays = 7
+    @State private var cleanupDays = 0
+    @State private var showPhoneDiagnostics = false
     @State private var confirmLogCleanup = false
     @State private var confirmAPKReset = false
     @State private var showFeishuWebhook = false
@@ -59,6 +60,29 @@ struct DashboardView: View {
         } message: {
             Text("仅针对 SIM AI Companion。此操作会通过 ADB 卸载 APK（清除应用私有数据和权限）并重装。重装后请在手机上确认系统授权。")
         }
+        .confirmationDialog("确认清理应用日志？", isPresented: $confirmLogCleanup, titleVisibility: .visible) {
+            Button(cleanupDays == 0 ? "确认清空全部日志" : "确认清理旧日志", role: .destructive) {
+                model.cleanOldLogs(days: cleanupDays)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(model.cleanupPreviewText)
+        }
+        .sheet(isPresented: $showPhoneDiagnostics) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("手机端诊断日志").font(.headline)
+                Text(model.phoneDiagnosticsStatus).font(.caption)
+                ScrollView {
+                    Text(model.phoneDiagnosticsPreview).font(.caption.monospaced())
+                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack {
+                    Button("重新读取") { model.readPhoneDiagnostics() }.disabled(model.phoneDiagnosticsCollecting)
+                    Spacer()
+                    Button("关闭") { showPhoneDiagnostics = false }
+                }
+            }.padding(20).frame(width: 680, height: 480)
+        }
         .sheet(isPresented: $previewExport) {
             ExportPreviewView()
                 .environmentObject(model)
@@ -77,7 +101,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.43" : "AI 电话自动值守 · 全双工音频 · v0.4.43")
+                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.44" : "AI 电话自动值守 · 全双工音频 · v0.4.44")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -563,6 +587,8 @@ struct DashboardView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("查看日志目录") { model.openLogFolder() }
+                Button("读取手机日志") { showPhoneDiagnostics = true; model.readPhoneDiagnostics() }
+                    .disabled(model.phoneDiagnosticsCollecting || model.liveVoiceActive || model.liveVoiceStarting)
                 Button(model.phoneDiagnosticsCollecting ? "读取手机日志中…" : "一键导出诊断包") { previewExport = true }
                     .buttonStyle(.borderedProminent).disabled(model.phoneDiagnosticsCollecting)
             }
@@ -570,17 +596,17 @@ struct DashboardView: View {
             Text(model.phoneDiagnosticsStatus).font(.caption).foregroundStyle(.secondary)
             HStack {
                 Picker("清理范围", selection: $cleanupDays) {
-                    Text("最近 1 天").tag(1)
-                    Text("最近 7 天").tag(7)
-                    Text("最近 14 天").tag(14)
                     Text("全部日志").tag(0)
+                    Text("保留最近 1 天").tag(1)
+                    Text("保留最近 7 天").tag(7)
+                    Text("保留最近 14 天").tag(14)
                 }
                 .frame(width: 160)
                 Button(cleanupDays == 0 ? "清空全部日志" : "清理旧日志") {
                     if model.prepareLogCleanup(days: cleanupDays) {
                         confirmLogCleanup = true
                     }
-                }
+                }.disabled(model.phoneDiagnosticsCollecting)
                 Text("当前会话：\(model.sessionID)")
                     .font(.caption2.monospaced()).foregroundStyle(.secondary)
             }
@@ -592,7 +618,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.43 (Build 60)").font(.caption.monospaced())
+            Text("v0.4.44 (Build 61)").font(.caption.monospaced())
         }
     }
 

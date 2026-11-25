@@ -254,6 +254,26 @@ public final class MainActivity extends Activity {
         logTitle.setTypeface(null, android.graphics.Typeface.BOLD);
         column.addView(logTitle);
 
+        Button diagnostics = new Button(this);
+        diagnostics.setText("查看手机持久诊断日志");
+        diagnostics.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                .setTitle("手机诊断（最近100条）")
+                .setMessage(AndroidDiagnostics.recent(this))
+                .setPositiveButton("关闭", null).show());
+        column.addView(diagnostics);
+        Button clearLogs = new Button(this);
+        clearLogs.setText("清空全部应用日志");
+        clearLogs.setOnClickListener(v -> new android.app.AlertDialog.Builder(this)
+                .setTitle("清空全部应用日志？")
+                .setMessage("不会删除录音、短信设置或 Android 系统日志。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("清空", (dialog, which) -> {
+                    boolean ok = CallMonitorService.clearDiagnosticHistory(this);
+                    android.widget.Toast.makeText(this, ok ? "全部应用日志已清空" : "清理失败",
+                            android.widget.Toast.LENGTH_SHORT).show();
+                    refresh();
+                }).show());
+        column.addView(clearLogs);
         log = new TextView(this);
         log.setTextIsSelectable(true);
         log.setTextSize(13f);
