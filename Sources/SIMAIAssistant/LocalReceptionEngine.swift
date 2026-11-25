@@ -40,6 +40,7 @@ final class LocalReceptionEngine {
               FileManager.default.isExecutableFile(atPath: root.appendingPathComponent("simai-local-asr").path) else {
             fail("LOCAL_ASR_NOT_BUNDLED"); return
         }
+        guard LocalModelStore.validate() else { fail("LOCAL_MODEL_MISSING_OR_INVALID"); return }
         onEvent(.status("正在准备系统中文语音及本地识别模型…"))
         var rendered: [LocalReceptionPolicy.Reply: [UInt8]] = [:]
         for phrase in LocalReceptionPolicy.Reply.allCases {
@@ -52,7 +53,7 @@ final class LocalReceptionEngine {
         }
         let child = Process(), stdin = Pipe(), stdout = Pipe()
         child.executableURL = root.appendingPathComponent("simai-local-asr")
-        child.arguments = [root.appendingPathComponent("models").path]
+        child.arguments = [LocalModelStore.directory.path]
         child.standardInput = stdin; child.standardOutput = stdout
         child.standardError = FileHandle.nullDevice
         // Do not let a dead helper send SIGPIPE to the host app.

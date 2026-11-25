@@ -55,6 +55,8 @@ final class AssistantModel: ObservableObject {
     @Published private(set) var localReceptionStatus = "未准备本地接待引擎"
     @Published private(set) var localReceptionText: [String] = []
     @Published private(set) var localReceptionPreparing = false
+    @Published private(set) var localModelDownloading = false
+    @Published private(set) var localModelStatus = LocalModelStore.filesPresent ? "模型已缓存" : "模型未下载"
     @Published var localRecordAudio = UserDefaults.standard.bool(forKey: "SIMAI_LOCAL_RECORD_AUDIO") {
         didSet { UserDefaults.standard.set(localRecordAudio, forKey: "SIMAI_LOCAL_RECORD_AUDIO") }
     }
@@ -1155,9 +1157,35 @@ final class AssistantModel: ObservableObject {
         }
     }
 
+    func downloadLocalModel() {
+        guard !localModelDownloading, !liveVoiceActive, !liveVoiceStarting,
+              livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
+        localModelDownloading = true
+        localModelStatus = "正在下载并校验模型…"
+        Task { [weak self] in
+            do {
+                try await LocalModelStore.download()
+                guard let self else { return }
+                self.localModelDownloading = false
+                self.localModelStatus = "模型已下载并校验，升级时保留"
+                if self.localReceptionEnabled { self.prepareLocalReception() }
+            } catch {
+                guard let self else { return }
+                self.localModelDownloading = false
+                self.localModelStatus = "模型下载或校验失败，请手动重试"
+            }
+        }
+    }
+
     func prepareLocalReception() {
         guard localReceptionEnabled, !liveVoiceActive, !liveVoiceStarting,
               livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
+        guard !localModelDownloading, LocalModelStore.filesPresent else {
+            localReceptionReady = false; localReceptionPreparing = false
+            localReceptionStatus = "请手动下载本地识别模型"
+            autoCallStatus = "本地模型未下载，暂停自动接待"
+            return
+        }
         localEngineGeneration = UUID()
         let generation = localEngineGeneration
         localReceptionEngine?.stop()
@@ -1186,6 +1214,9 @@ final class AssistantModel: ObservableObject {
                     self.localReceptionStatus = code == "LOCAL_CHINESE_VOICE_UNAVAILABLE"
                         ? "未能生成中文系统语音。请在系统设置→辅助功能→朗读内容中安装 Tingting 中文语音，再点准备。"
                         : "本地引擎不可用：" + code
+                    if code == "LOCAL_MODEL_MISSING_OR_INVALID" {
+                        self.localModelStatus = "模型缺失或校验失败，请手动重新下载"
+                    }
                     self.autoCallStatus = "本地引擎不可用，暂停自动接待"
                     self.log(.warn, .audio, "本地接待引擎预检或执行失败", details: ["reason": code])
                     if self.liveVoiceActive || self.liveVoiceStarting { self.stopLiveVoice() }

@@ -186,6 +186,12 @@ struct DashboardView: View {
                     set: { model.setLocalReceptionEnabled($0) }
                 ))
                 .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                HStack {
+                    Button(model.localModelDownloading ? "正在下载模型…" : "下载 / 校验本地模型") {
+                        model.downloadLocalModel()
+                    }.disabled(model.localModelDownloading || model.localReceptionPreparing || model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                    Text(model.localModelStatus).font(.caption)
+                }
                 if model.localReceptionEnabled {
                     Text(model.localReceptionStatus).font(.caption)
                     Toggle("保存本地双向录音和识别文字", isOn: $model.localRecordAudio)

@@ -6,7 +6,7 @@ test "$(uname -s)" = Darwin
 test "$(uname -m)" = arm64
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-mkdir -p "$OUT/lib" "$OUT/models" "$WORK/runtime"
+mkdir -p "$OUT/lib" "$WORK/models" "$WORK/runtime"
 RUNTIME="https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-osx-arm64-shared-no-tts-lib.tar.bz2"
 MODEL="https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23/resolve/204ad334e2e683fd295359930cc16fc0432a23ac"
 download() { curl --fail --location --retry 3 --connect-timeout 20 --max-time 240 "$1" -o "$2"; }
@@ -23,10 +23,12 @@ if [[ -z "$HEADER" ]]; then
   HEADER="$WORK/c-api.h"
 fi
 for filename in encoder-epoch-99-avg-1.int8.onnx decoder-epoch-99-avg-1.int8.onnx joiner-epoch-99-avg-1.int8.onnx tokens.txt; do
-  download "$MODEL/$filename" "$OUT/models/$filename"
-  test -s "$OUT/models/$filename"
+  download "$MODEL/$filename" "$WORK/models/$filename"
+  test -s "$WORK/models/$filename"
 done
-download "$MODEL/README.md" "$OUT/models/MODEL-README.md"
+download "$MODEL/README.md" "$OUT/MODEL-README.md"
+# Only the checksum manifest is bundled; model weights stay outside the app.
+(cd "$WORK/models" && shasum -a 256 *.onnx tokens.txt) > "$OUT/model-sha256.txt"
 download "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/v1.13.8/LICENSE" "$OUT/LICENSE-sherpa-onnx.txt"
 printf '%s\n' 'Model: csukuangfj/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23 (Apache-2.0), revision 204ad334e2e683fd295359930cc16fc0432a23ac; runtime: sherpa-onnx v1.13.8.' > "$OUT/THIRD-PARTY.txt"
 # Library bundle may ship copyright/third-party notices.
@@ -57,7 +59,7 @@ codesign --force --sign - "$OUT/simai-local-asr"
 # Exercise real bundled weights and 16-kHz PCM, not only linking/launch.
 download "$MODEL/test_wavs/0.wav" "$WORK/source.wav"
 afconvert -f WAVE -d LEI16@16000 -c 1 "$WORK/source.wav" "$WORK/test.wav"
-python3 - "$OUT" "$WORK/test.wav" <<'PY'
+python3 - "$OUT" "$WORK/test.wav" "$WORK/models" <<'PY'
 import pathlib, subprocess, sys, wave
 root = pathlib.Path(sys.argv[1])
 with wave.open(sys.argv[2], 'rb') as f:
@@ -66,10 +68,11 @@ with wave.open(sys.argv[2], 'rb') as f:
 audio += b'\0' * (16000 * 2 * 4)
 audio += b'\0' * (-len(audio) % 640)
 data = b''.join(b'\0' + audio[i:i+640] for i in range(0,len(audio),640))
-p = subprocess.run([str(root/'simai-local-asr'), str(root/'models')], input=data, capture_output=True, timeout=60)
+p = subprocess.run([str(root/'simai-local-asr'), sys.argv[3]], input=data, capture_output=True, timeout=60)
 assert p.returncode == 0, f"ASR exited {p.returncode}: {p.stderr[-500:]}"
 assert b'SIMAI_READY' in p.stdout and b'SIMAI_TEXT ' in p.stdout, 'ASR did not recognize fixture'
 print('LOCAL_ASR_PCM_FIXTURE_OK')
-print('LOCAL_MODEL_BYTES=' + str(sum(x.stat().st_size for x in (root/'models').glob('*') if x.is_file())))
+print('LOCAL_MODEL_BYTES=' + str(sum(x.stat().st_size for x in pathlib.Path(sys.argv[3]).glob('*') if x.is_file())))
 PY
+test ! -e "$OUT/models"
 du -sh "$OUT"
