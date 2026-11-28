@@ -113,7 +113,8 @@ final class AssistantModel: ObservableObject {
             self.closeLiveBridge(); self.bridgeCursor = PhoneBridgeCursor()
             self.consecutivePollFailures = 0
             self.wifiHost = ip ?? ""
-            self.wifiPairStatus = "手机信任已自动保存，可拔掉数据线"
+            self.wifiPairStatus = "手机信任已自动保存，等待无线连接验证"
+            self.log(.info, .call, "已通过授权 USB 建立手机无线信任")
             self.resetBridgeRetry()
             self.autoDiscoverWiFiCompanionIfNeeded()
             self.pollLiveBridge()
@@ -299,8 +300,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.51"
-    let buildNumber = "68"
+    let version = "0.4.52"
+    let buildNumber = "69"
     @Published private(set) var phoneDiagnosticsCollecting = false
     @Published private(set) var phoneDiagnosticsStatus = "导出时自动读取手机日志"
     @Published private(set) var phoneDiagnosticsPreview = ""
@@ -2393,7 +2394,10 @@ final class AssistantModel: ObservableObject {
                     let (status, data) = try await transport.request("/events?since=\(since)")
                     guard self.liveSyncEnabled, generation == self.bridgeGeneration, self.useShizukuWiFi else { return }
                     guard status == 200 else {
-                        if status == 403 { self.wifiPairStatus = "手机已撤销信任；可连接 USB 并重新建立信任" }
+                        if status == 403 {
+                            self.wifiPairStatus = "手机已撤销信任；可连接 USB 并重新建立信任"
+                            self.log(.warn, .call, "手机拒绝无线设备认证", details: ["diagnosis": "WIFI_AUTH_REJECTED"])
+                        }
                         throw URLError(.userAuthenticationRequired)
                     }
                     let snapshot = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: data)
@@ -2409,7 +2413,11 @@ final class AssistantModel: ObservableObject {
                     self.bridgeBusy = false
                     self.consecutivePollFailures += 1
                     self.wifiDirectActive = false; self.shizukuAudioReady = false; self.isShizukuReady = false
-                    self.liveBridgeStatus = "无线连接中断，正在重新发现已信任手机；检查手机 Shizuku 是否运行"
+                    let reason = (error as? WiFiControlError)?.rawValue ?? "HTTP_OR_SNAPSHOT"
+                    self.liveBridgeStatus = (error as? WiFiControlError)?.errorDescription ?? "无线状态同步失败，请检查手机服务"
+                    if self.consecutivePollFailures == 1 || self.consecutivePollFailures % 15 == 0 {
+                        self.log(.warn, .call, "Shizuku Wi-Fi 状态连接失败", details: ["diagnosis": reason])
+                    }
                     if self.consecutivePollFailures >= 3 {
                         self.connectionTransport = "DISCONNECTED"; self.livePhoneState = "未连接"
                     }
@@ -2552,7 +2560,11 @@ final class AssistantModel: ObservableObject {
             do {
                 let (status, _) = try await transport.request("/ping")
                 self.wifiPingStatus = status == 200 ? "手机安全连接成功，正在检测 Shizuku 音频" : "手机信任已失效；请通过 USB 重新建立信任"
-            } catch { self.wifiPingStatus = "安全连接失败；确认手机已授权 Shizuku 并与 Mac 位于同一网络" }
+                self.log(status == 200 ? .info : .warn, .call, "Shizuku Wi-Fi 安全连接测试", details: ["httpStatus": "\(status)"])
+            } catch {
+                self.wifiPingStatus = (error as? WiFiControlError)?.errorDescription ?? "无线连接失败，请检查手机服务"
+                self.log(.warn, .call, "Shizuku Wi-Fi 安全连接测试失败", details: ["diagnosis": (error as? WiFiControlError)?.rawValue ?? "UNKNOWN"])
+            }
             self.resetBridgeRetry(); self.pollLiveBridge()
         }
     }

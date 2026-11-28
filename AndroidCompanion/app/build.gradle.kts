@@ -22,8 +22,8 @@ android {
         applicationId = "com.popowk.simai.companion"
         minSdk = 26
         targetSdk = 32
-        versionCode = 30
-        versionName = "0.3.25"
+        versionCode = 31
+        versionName = "0.3.26"
     }
     signingConfigs {
         if (hasStableSigning) {

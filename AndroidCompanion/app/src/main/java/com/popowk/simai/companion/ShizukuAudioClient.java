@@ -12,6 +12,7 @@ import rikka.shizuku.Shizuku;
 
 /** Companion side of the private Binder audio service. No ADB process on Mac. */
 final class ShizukuAudioClient {
+    private final Context context;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Shizuku.UserServiceArgs args;
     private volatile IShizukuAudio service;
@@ -19,8 +20,11 @@ final class ShizukuAudioClient {
     private volatile boolean enabled;
     private boolean binding;
     private long lastBind;
+    private long lastProbe;
+    private volatile boolean probing;
 
     ShizukuAudioClient(Context context) {
+        this.context = context.getApplicationContext();
         args = new Shizuku.UserServiceArgs(new ComponentName(context.getPackageName(),
                 ShizukuAudioUserService.class.getName()))
                 .daemon(false).processNameSuffix("simai_audio").version(1).debuggable(false);
@@ -32,16 +36,27 @@ final class ShizukuAudioClient {
             if (!enabled) return;
             IShizukuAudio candidate = IShizukuAudio.Stub.asInterface(binder);
             service = candidate;
-            new Thread(() -> {
-                boolean ok = false;
-                try { ok = candidate != null && candidate.probe() == 1; } catch (Throwable ignored) {}
-                if (service == candidate && enabled) verified = ok;
-            }, "SIMAI-Shizuku-AudioProbe").start();
+            verified = false;
+            probe(candidate);
         }
         @Override public void onServiceDisconnected(ComponentName name) {
             service = null; verified = false; binding = false;
         }
     };
+
+    private void probe(IShizukuAudio candidate) {
+        if (candidate == null || probing) return;
+        probing = true; lastProbe = SystemClock.elapsedRealtime();
+        new Thread(() -> {
+            int result = -1;
+            try { result = candidate.probe(); } catch (Throwable ignored) {}
+            if (service == candidate && enabled) {
+                verified = result == 1;
+                AndroidDiagnostics.event(context, "SHIZUKU_AUDIO_PROBE", "result=" + result);
+            }
+            probing = false;
+        }, "SIMAI-Shizuku-AudioProbe").start();
+    }
 
     void reconcile(boolean wanted) {
         enabled = wanted;
@@ -51,14 +66,20 @@ final class ShizukuAudioClient {
                 return;
             }
             IShizukuAudio current = service;
-            if (current != null && current.asBinder().isBinderAlive()) return;
+            if (current != null && current.asBinder().isBinderAlive()) {
+                if (!verified && SystemClock.elapsedRealtime() - lastProbe >= 10000) probe(current);
+                return;
+            }
             if (current != null) unbind();
             long now = SystemClock.elapsedRealtime();
             if (binding && now - lastBind < 12000) return;
             if (now - lastBind < 3000) return;
             binding = true; lastBind = now;
             try { Shizuku.bindUserService(args, connection); }
-            catch (Throwable failure) { binding = false; verified = false; }
+            catch (Throwable failure) {
+                binding = false; verified = false;
+                AndroidDiagnostics.event(context, "SHIZUKU_AUDIO_BIND_FAILURE", "error=" + failure.getClass().getSimpleName());
+            }
         });
     }
     private void unbind() {

@@ -427,6 +427,7 @@ final class PhoneEventBridge {
 
         boolean authorized = secure ? secureBridge.authorize(accessToken) : accessToken.equals(token);
         if (!authorized) {
+            if (secure) AndroidDiagnostics.event(context, "WIFI_AUTH_REJECTED", "authorized=false");
             reply(client, 403, "{\"error\":\"forbidden\"}");
             return;
         }

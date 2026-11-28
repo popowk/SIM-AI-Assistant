@@ -23,6 +23,9 @@ final class SecurePhoneBridge {
     private static final String ALIAS = "simai_wifi_server_v1";
     private static final String BOOTSTRAP = "wifi-trust-private";
     private volatile String serverPin = "";
+    private volatile String stage = "WAITING";
+    private long nextStatusLog;
+    private long nextHandshakeLog;
     interface Handler { void handle(Socket socket) throws Exception; }
     private final Context context;
     private final Handler handler;
@@ -105,16 +108,65 @@ final class SecurePhoneBridge {
     boolean audioReady() { return enabled() && server != null && audio.ready(); }
     boolean listening() { return server != null && enabled(); }
 
+    private void reportStatus() {
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (now < nextStatusLog) return;
+        nextStatusLog = now + 15000;
+        AndroidDiagnostics.event(context, "WIFI_TLS_STATUS", "enabled=" + isEnabled(context) +
+            " shizuku=" + ShizukuTelephonyBridge.isReady() + " listening=" + listening() +
+            " audio=" + audioReady() + " trust=" + new File(context.getFilesDir(), BOOTSTRAP).isFile() +
+            " stage=" + stage);
+    }
+
+    // Keep the existing AndroidKeyStore certificate and private key. Some
+    // Android TLS providers cannot enumerate AndroidKeyStore with a generic
+    // KeyManagerFactory; select the exact non-exportable key explicitly.
+    private static X509ExtendedKeyManager serverKeyManager() throws Exception {
+        KeyStore ks = keyStore();
+        PrivateKey key = (PrivateKey) ks.getKey(ALIAS, null);
+        Certificate[] raw = ks.getCertificateChain(ALIAS);
+        if (key == null || raw == null || raw.length == 0) throw new KeyStoreException("NO_SERVER_KEY");
+        java.security.cert.X509Certificate[] chain =
+            Arrays.copyOf(raw, raw.length, java.security.cert.X509Certificate[].class);
+        return new X509ExtendedKeyManager() {
+            private boolean supported(String type) {
+                return "RSA".equalsIgnoreCase(type) || "RSASSA-PSS".equalsIgnoreCase(type);
+            }
+            @Override public String[] getClientAliases(String t, Principal[] i) { return null; }
+            @Override public String chooseClientAlias(String[] t, Principal[] i, Socket socket) { return null; }
+            @Override public String[] getServerAliases(String t, Principal[] i) {
+                return supported(t) ? new String[]{ALIAS} : null;
+            }
+            @Override public String chooseServerAlias(String t, Principal[] i, Socket socket) {
+                return supported(t) ? ALIAS : null;
+            }
+            @Override public String chooseEngineServerAlias(String t, Principal[] i, SSLEngine engine) {
+                return supported(t) ? ALIAS : null;
+            }
+            @Override public java.security.cert.X509Certificate[] getCertificateChain(String alias) {
+                return ALIAS.equals(alias) ? chain.clone() : null;
+            }
+            @Override public PrivateKey getPrivateKey(String alias) { return ALIAS.equals(alias) ? key : null; }
+        };
+    }
+
     synchronized void reconcile() {
-        if (!enabled()) { stop(); return; }
+        if (!enabled()) {
+            stage = isEnabled(context) ? "WAIT_SHIZUKU" : "DISABLED";
+            if (server != null) stop();
+            else audio.stop();
+            reportStatus(); return;
+        }
         audio.reconcile(true);
-        if (server != null) return;
+        if (server != null && !server.isClosed()) { reportStatus(); return; }
+        if (server != null) stop();
         try {
+            stage = "TRUST";
             serverPin = prepareTrust(context);
-            KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-            kmf.init(keyStore(), null);
+            stage = "KEY_MANAGER";
             SSLContext tls = SSLContext.getInstance("TLS");
-            tls.init(kmf.getKeyManagers(), null, new SecureRandom());
+            tls.init(new KeyManager[]{serverKeyManager()}, null, new SecureRandom());
+            stage = "BIND";
             SSLServerSocket listener = (SSLServerSocket) tls.getServerSocketFactory().createServerSocket(PORT, 8);
             listener.setEnabledProtocols(new String[]{"TLSv1.2", "TLSv1.3"});
             listener.setNeedClientAuth(false);
@@ -123,6 +175,7 @@ final class SecurePhoneBridge {
                 Thread t = new Thread(job, "SIMAI-TLS-Client"); t.setDaemon(true); return t;
             });
             pool = executor; server = listener;
+            stage = "LISTENING"; nextStatusLog = 0; reportStatus();
             Thread accept = new Thread(() -> {
                 while (server == listener && enabled()) {
                     try {
@@ -134,16 +187,36 @@ final class SecurePhoneBridge {
                                     client.setSoTimeout(5000); client.setTcpNoDelay(true);
                                     client.startHandshake();
                                     if (enabled() && server == listener) handler.handle(client);
-                                } catch (Exception ignored) {} finally { clients.remove(socket); }
+                                } catch (Exception failure) {
+                                    long now = android.os.SystemClock.elapsedRealtime();
+                                    synchronized (SecurePhoneBridge.this) {
+                                        if (now >= nextHandshakeLog) {
+                                            nextHandshakeLog = now + 5000;
+                                            AndroidDiagnostics.event(context, "WIFI_TLS_CLIENT_FAILURE",
+                                                "error=" + failure.getClass().getSimpleName());
+                                        }
+                                    }
+                                } finally { clients.remove(socket); }
                             });
                         } catch (RejectedExecutionException rejected) {
                             clients.remove(socket); socket.close();
                         }
                     } catch (IOException closed) { break; }
                 }
+                synchronized (SecurePhoneBridge.this) {
+                    if (server == listener) {
+                        stage = "ACCEPT_STOPPED"; stop();
+                        nextStatusLog = 0; reportStatus();
+                    }
+                }
             }, "SIMAI-TLS-Listener");
             accept.setDaemon(true); accept.start();
-        } catch (Exception failed) { stop(); }
+        } catch (Exception failed) {
+            String failedStage = stage;
+            stop();
+            stage = failedStage + "_" + failed.getClass().getSimpleName();
+            reportStatus();
+        }
     }
 
     synchronized void stop() {
