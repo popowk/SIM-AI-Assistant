@@ -15,7 +15,7 @@ for name in "${files[@]}"; do
   test -s "dist/$name"
   upload+=("dist/$name")
 done
-notes="Mac v$MAC_VERSION · Android v$ANDROID_VERSION。支持 USB ADB 与 Shizuku Wi-Fi 两种连接方式。Apple Silicon 测试包，未经 Apple Developer ID 签名与公证。"
+notes="Mac v$MAC_VERSION · Android v${ANDROID_VERSION}。支持 USB ADB 与 Shizuku Wi-Fi 两种连接方式。Apple Silicon 测试包，未经 Apple Developer ID 签名与公证。"
 if ! gh release view dev-latest >/dev/null 2>&1; then
   gh release create dev-latest --target "$sha" --title "SIM AI Assistant v$MAC_VERSION" --prerelease --notes "$notes"
 fi

@@ -15,9 +15,11 @@ concurrency:
 permissions:
   contents: write
   pull-requests: read
+  actions: read
 
 jobs:
   build:
+    if: ${{ !(github.event_name == 'push' && github.event.before == '34e4c8215accdc102e4a68b15945284df2b9259a' && github.event.head_commit.message == 'Fix release variable expansion and recover verified packages') }}
     name: Build Apple Silicon App
     runs-on: macos-15
     timeout-minutes: 30
@@ -135,8 +137,50 @@ jobs:
         shell: bash
         run: bash Scripts/prune-dev-latest.sh
 
+  recover-release:
+    name: Recover already built packages (maintenance only)
+    if: ${{ github.event_name == 'push' && github.event.before == '34e4c8215accdc102e4a68b15945284df2b9259a' && github.event.head_commit.message == 'Fix release variable expansion and recover verified packages' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Validate maintenance-only changes and recover verified artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          previous=34e4c8215accdc102e4a68b15945284df2b9259a
+          run=46164687989
+          [[ "$(git rev-parse HEAD^)" == "$previous" ]]
+          while IFS= read -r file; do
+            case "$file" in .github/workflows/build-macos.yml|Scripts/prune-dev-latest.sh) ;; *) echo "Unexpected change: $file"; exit 1;; esac
+          done < <(git diff --name-only "$previous" HEAD)
+          [[ "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" --jq .head_sha)" == "$previous" ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs" --jq '.jobs[].steps[] | select(.name == "Run tests and build arm64 app" or .name == "Upload downloadable macOS app") | .conclusion' | diff - <(printf 'success\nsuccess\n')
+          mac="$(python3 -c 'import plistlib; print(plistlib.load(open("Resources/Info.plist", "rb"))["CFBundleShortVersionString"])')"
+          android="$(sed -nE 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*$/\1/p' AndroidCompanion/app/build.gradle.kts)"
+          [[ "$mac" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$android" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          export MAC_VERSION="$mac" ANDROID_VERSION="$android" MAC_PACKAGE="SIM-AI-Assistant-v$mac-macos-arm64.zip" ANDROID_PACKAGE="SIMAI-Companion-v$android-debug.apk"
+          gh run download "$run" --name SIM-AI-Assistant-macOS-arm64 --dir dist
+          for name in "$MAC_PACKAGE" "$ANDROID_PACKAGE"; do
+            expected="$(awk 'NR==1 {print $1}' "dist/$name.sha256")"
+            [[ "$expected" =~ ^[0-9a-f]{64}$ ]]
+            [[ "$(sha256sum "dist/$name" | awk '{print $1}')" == "$expected" ]]
+          done
+          bash -n Scripts/prune-dev-latest.sh
+          bash Scripts/prune-dev-latest.sh
+
+  prune-branches:
+    name: Clean merged and retired branches
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
       - name: Remove merged and retired development branches
-        if: ${{ github.ref == 'refs/heads/main' }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
