@@ -147,6 +147,7 @@ public final class CallMonitorService extends Service {
             AndroidDiagnostics.event(this, "FOREGROUND_FAILED", "error=" + error.getClass().getSimpleName());
             stopSelf(); return START_NOT_STICKY;
         }
+        boolean alreadyRunning = running;
         if (!running) {
             try {
                 bridge = new PhoneEventBridge(this);
@@ -210,7 +211,7 @@ public final class CallMonitorService extends Service {
         if (running) {
             // A second fresh protected broadcast can arrive while startup
             // is queued; do not discard it merely because the service is running.
-            if (intent != null) {
+            if (alreadyRunning && intent != null) {
                 long at = intent.getLongExtra("system_phone_state_elapsed", -1);
                 long age = android.os.SystemClock.elapsedRealtime() - at;
                 int state = intent.getIntExtra("system_phone_state", -1);
