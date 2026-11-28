@@ -70,39 +70,49 @@ jobs:
 
       - name: Build Android Companion test APK
         env:
-          SIMAI_ANDROID_KEYSTORE_B64: ${{ secrets.SIMAI_ANDROID_KEYSTORE_B64 }}
-          SIMAI_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.SIMAI_ANDROID_KEYSTORE_PASSWORD }}
-          SIMAI_ANDROID_KEY_ALIAS: ${{ secrets.SIMAI_ANDROID_KEY_ALIAS }}
-          SIMAI_ANDROID_KEY_PASSWORD: ${{ secrets.SIMAI_ANDROID_KEY_PASSWORD }}
+          SIMAI_PUBLISH_ANDROID: ${{ github.ref == 'refs/heads/main' }}
+          SIMAI_ANDROID_SIGNER_SHA256: 'e6f10388db0f8a161ed678aed6c02e7f61b1abba86f0208d23bcdaabe53edbc5'
+          SIMAI_ANDROID_KEYSTORE_B64: ${{ github.ref == 'refs/heads/main' && secrets.SIMAI_ANDROID_KEYSTORE_B64 || '' }}
+          SIMAI_ANDROID_KEYSTORE_PASSWORD: ${{ github.ref == 'refs/heads/main' && secrets.SIMAI_ANDROID_KEYSTORE_PASSWORD || '' }}
+          SIMAI_ANDROID_KEY_ALIAS: ${{ github.ref == 'refs/heads/main' && secrets.SIMAI_ANDROID_KEY_ALIAS || '' }}
+          SIMAI_ANDROID_KEY_PASSWORD: ${{ github.ref == 'refs/heads/main' && secrets.SIMAI_ANDROID_KEY_PASSWORD || '' }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
-          signing_fields=0
-          for field in "$SIMAI_ANDROID_KEYSTORE_B64" "$SIMAI_ANDROID_KEYSTORE_PASSWORD" "$SIMAI_ANDROID_KEY_ALIAS" "$SIMAI_ANDROID_KEY_PASSWORD"; do
-            if [[ -n "$field" ]]; then signing_fields=$((signing_fields + 1)); fi
-          done
-          if [[ "$signing_fields" == 4 ]]; then
+          if [[ "$SIMAI_PUBLISH_ANDROID" == true ]]; then
+            for field in SIMAI_ANDROID_KEYSTORE_B64 SIMAI_ANDROID_KEYSTORE_PASSWORD SIMAI_ANDROID_KEY_ALIAS SIMAI_ANDROID_KEY_PASSWORD; do
+              if [[ -z "${!field}" ]]; then
+                echo "::error::Missing GitHub Actions secret $field. Publishing requires the permanent Android signer."
+                exit 1
+              fi
+            done
+            umask 077
             KEYSTORE_PATH="$(mktemp "$RUNNER_TEMP/simai-android-XXXXXXXX")"
             trap 'rm -f "$KEYSTORE_PATH"' EXIT
-            chmod 600 "$KEYSTORE_PATH"
             printf '%s' "$SIMAI_ANDROID_KEYSTORE_B64" | base64 -D > "$KEYSTORE_PATH"
             test -s "$KEYSTORE_PATH"
+            unset SIMAI_ANDROID_KEYSTORE_B64
             export SIMAI_ANDROID_KEYSTORE_PATH="$KEYSTORE_PATH"
-            printf 'STABLE_SECRET_SIGNING\n' > dist/SIMAI-Android-Signing.txt
-            echo "Android debug APK signed with private GitHub Secrets keystore."
-          elif [[ "$signing_fields" == 0 ]]; then
-            printf 'EPHEMERAL_DEBUG_SIGNING\n' > dist/SIMAI-Android-Signing.txt
-            echo "::warning::Fixed signing secrets are absent. Runner debug APK may not upgrade the current phone app without a signing migration."
-          else
-            echo "::error::Only some of the four signing secrets are set. Refusing to build an ambiguously signed APK."
-            exit 1
+            umask 022
           fi
+
           gradle -p AndroidCompanion :app:assembleDebug --no-daemon
-          cp AndroidCompanion/app/build/outputs/apk/debug/app-debug.apk dist/$ANDROID_PACKAGE
-          test -s dist/$ANDROID_PACKAGE
-          shasum -a 256 dist/$ANDROID_PACKAGE > dist/$ANDROID_PACKAGE.sha256
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose dist/$ANDROID_PACKAGE
+          apk="dist/$ANDROID_PACKAGE"
+          cp AndroidCompanion/app/build/outputs/apk/debug/app-debug.apk "$apk"
+          report="$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$apk")"
+          printf '%s\n' "$report"
+          if [[ "$SIMAI_PUBLISH_ANDROID" == true ]]; then
+            actual_signer="$(printf '%s\n' "$report" | awk '/^Signer #[0-9]+ certificate SHA-256 digest: / {print tolower($NF)}')"
+            if [[ "$actual_signer" != "$SIMAI_ANDROID_SIGNER_SHA256" ]]; then
+              echo "::error::Android APK certificate does not match the permanent Android signer."
+              exit 1
+            fi
+            printf 'STABLE_SECRET_SIGNING\n' > dist/SIMAI-Android-Signing.txt
+          else
+            printf 'EPHEMERAL_DEBUG_SIGNING\n' > dist/SIMAI-Android-Signing.txt
+          fi
+          shasum -a 256 "$apk" > "$apk.sha256"
 
 
       - name: Build Android 13 audio capability helper
