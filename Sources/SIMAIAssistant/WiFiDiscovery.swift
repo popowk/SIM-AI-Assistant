@@ -3,7 +3,6 @@ import Network
 
 @MainActor
 final class BonjourWiFiScanner: ObservableObject {
-    @Published var discoveredDeviceName: String? = nil
     @Published var discoveredIP: String? = nil
     private var browser: NWBrowser?
     private var resolverConnection: NWConnection?
@@ -21,8 +20,7 @@ final class BonjourWiFiScanner: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self = self else { return }
                 for result in results {
-                    if case let .service(name, _, _, _) = result.endpoint {
-                        self.discoveredDeviceName = name
+                    if case .service = result.endpoint {
                         // 1. Prefer IPv4 advertised in Bonjour TXT record
                         if case let .bonjour(txt) = result.metadata {
                             let dict = txt.dictionary
@@ -90,50 +88,5 @@ final class BonjourWiFiScanner: ObservableObject {
     deinit {
         browser?.cancel()
         resolverConnection?.cancel()
-    }
-}
-
-enum LocalNetworkScanner {
-    static func extractLocalIPs() -> [String] {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/arp")
-        task.arguments = ["-an"]
-        let pipe = Pipe()
-        task.standardOutput = pipe
-        do {
-            try task.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            task.waitUntilExit()
-            guard let text = String(data: data, encoding: .utf8) else { return [] }
-            let pattern = #"\(([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})\)"#
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
-            let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-            var results: [String] = []
-            for match in matches {
-                if let range = Range(match.range(at: 1), in: text) {
-                    let ip = String(text[range])
-                    if !ip.hasPrefix("127.") && !ip.hasPrefix("169.254.") && !ip.hasPrefix("224.") && !ip.hasPrefix("239.") && !ip.hasSuffix(".255") {
-                        results.append(ip)
-                    }
-                }
-            }
-            return results
-        } catch {
-            return []
-        }
-    }
-
-    static func probeCompanion(on ip: String) async -> Bool {
-        guard let url = URL(string: "http://\(ip):18764/ping") else { return false }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 0.6
-        req.cachePolicy = .reloadIgnoringLocalCacheData
-        do {
-            let (data, response) = try await URLSession.shared.data(for: req)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
-            return String(data: data, encoding: .utf8)?.contains("pong") == true
-        } catch {
-            return false
-        }
     }
 }

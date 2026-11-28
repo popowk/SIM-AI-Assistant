@@ -592,9 +592,9 @@ final class PhoneAudioStream {
         gate.unlock()
     }
 
-    func start(adb: String?, jar: URL) {
+    func start(adb: String?, jar: URL, wifi: ShizukuWiFiTransport? = nil, callSession: String = "", callSequence: Int = 0) {
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            run(adb: adb, jar: jar)
+            run(adb: adb, jar: jar, wifi: wifi, callSession: callSession, callSequence: callSequence)
         }
     }
 
@@ -767,7 +767,7 @@ final class PhoneAudioStream {
 
     private func report(_ event: LiveAudioEvent) { onEvent(event) }
 
-    private func run(adb: String?, jar: URL) {
+    private func run(adb: String?, jar: URL, wifi: ShizukuWiFiTransport?, callSession: String, callSequence: Int) {
         var reason = "STREAM_DISCONNECTED"
         defer {
             gate.lock()
@@ -801,6 +801,32 @@ final class PhoneAudioStream {
             report(.finished(reason))
         }
 
+        var fd: Int32 = -1
+        var attempts = 0
+        var ready = false
+        if let wifi {
+            report(.status("正在通过 Shizuku 安全 Wi-Fi 建立电话音频……"))
+            guard !isClosed, let (candidate, header) = wifi.openAudio(session: callSession, sequence: callSequence) else {
+                reason = "SHIZUKU_TLS_CONNECT_FAILED"; return
+            }
+            gate.lock(); socketFD = candidate; gate.unlock()
+            attempts = 1
+            guard !isClosed, Self.sendAll(candidate, header) else {
+                reason = "SHIZUKU_AUDIO_REQUEST_FAILED"; return
+            }
+            var partial: [UInt8] = []
+            let deadline = Date().addingTimeInterval(16)
+            wifiHandshake: while Date() < deadline && !isClosed {
+                switch Self.readHandshake(candidate, partial: &partial) {
+                case .line(let response):
+                    reason = PhoneAudioProtocol.handshakeStatus(response)
+                    if reason == "OK" { fd = candidate; ready = true; reason = "STREAM_DISCONNECTED" }
+                    break wifiHandshake
+                case .timeout: continue
+                case .closed, .invalid: reason = "SHIZUKU_AUDIO_HANDSHAKE_FAILED"; break wifiHandshake
+                }
+            }
+        } else {
         report(.status("准备独立 ADB 音频通道……"))
         let prepared = ADBInspector.prepareAudioStream(at: adb, jar: jar)
         guard let target = prepared.setup else {
@@ -831,9 +857,6 @@ final class PhoneAudioStream {
         report(.status("Android 音频进程已启动，正在等待服务就绪……"))
         let hello = Array("SIMAI_AUDIO_1 \(target.secret)\n".utf8)
         let deadline = Date().addingTimeInterval(16)
-        var fd: Int32 = -1
-        var attempts = 0
-        var ready = false
         reason = "AUDIO_HANDSHAKE_NO_RESPONSE"
 
         // An ADB forward can accept a local TCP connection *before* the Android
@@ -903,6 +926,7 @@ final class PhoneAudioStream {
                 report(.status("Android 音频服务尚未就绪，重试握手（\(attempts) 次）……"))
             }
             usleep(250_000)
+        }
         }
         report(.handshakeAttempts(attempts))
         guard ready && fd >= 0 else {

@@ -22,8 +22,8 @@ android {
         applicationId = "com.popowk.simai.companion"
         minSdk = 26
         targetSdk = 32
-        versionCode = 28
-        versionName = "0.3.23"
+        versionCode = 29
+        versionName = "0.3.24"
     }
     signingConfigs {
         if (hasStableSigning) {
@@ -43,6 +43,8 @@ android {
         }
         getByName("release") { isMinifyEnabled = false }
     }
+    buildFeatures { aidl = true }
+    sourceSets.getByName("main").java.srcDir("../../AudioProbe/src")
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

@@ -101,7 +101,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.48" : "AI 电话自动值守 · 全双工音频 · v0.4.48")
+                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.50" : "AI 电话自动值守 · 全双工音频 · v0.4.50")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -124,7 +124,7 @@ struct DashboardView: View {
             )
             statusPill(
                 title: "传输通道",
-                value: model.connectionTransport == "WIFI_DIRECT" ? "Wi-Fi 局域网直连" : (model.connectionTransport == "ADB_HTTP" ? "USB 数据线 (ADB)" : (model.connectionTransport == "ADB_FILE" ? "ADB 快照备用" : "未连接")),
+                value: model.connectionTransport == "WIFI_DIRECT" ? "Shizuku 安全 Wi-Fi" : (model.connectionTransport == "ADB_HTTP" ? "USB 数据线 (ADB)" : (model.connectionTransport == "ADB_FILE" ? "ADB 快照备用" : "未连接")),
                 symbol: model.connectionTransport == "WIFI_DIRECT" ? "wifi" : (model.connectionTransport == "ADB_HTTP" ? "cable.connector" : "wifi.slash"),
                 tint: model.connectionTransport == "WIFI_DIRECT" ? .green : (model.connectionTransport == "ADB_HTTP" ? .blue : .secondary)
             )
@@ -525,60 +525,32 @@ struct DashboardView: View {
     private var adbPanel: some View {
         panel("Android · 手机连接与维护", symbol: "network") {
             VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Wi-Fi 局域网全自动发现与直连（免 USB 数据线 · 延迟 <5ms）")
-                        .font(.subheadline.bold())
-                    Spacer()
-                    if model.wifiDirectActive || model.connectionTransport == "WIFI_DIRECT" {
-                        Text("● 局域网已直连")
-                            .font(.caption.bold())
-                            .foregroundColor(.green)
-                    } else if model.connectionTransport.starts(with: "ADB") {
-                        Text("● USB 数据线中")
-                            .font(.caption.bold())
-                            .foregroundColor(.blue)
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    TextField("自动嗅探手机 IP", text: $model.wifiHost)
+                Picker("电话连接方式", selection: Binding(get: { model.useShizukuWiFi }, set: { model.selectPhoneTransport($0) })) {
+                    Text("USB ADB").tag(false)
+                    Text("Shizuku Wi-Fi").tag(true)
+                }.pickerStyle(.segmented)
+                    .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.answerCallBusy || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                if model.useShizukuWiFi {
+                    TextField("手机局域网 IPv4 地址", text: $model.wifiHost)
                         .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 220)
-
-                    Button("自动扫描发现") {
-                        model.triggerFullWiFiDiscovery()
+                        .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                    SecureField("Companion 安全 Wi-Fi 配对码", text: $model.wifiPairingDraft)
+                        .textFieldStyle(.roundedBorder)
+                    HStack {
+                        Button("保存配对") { model.saveWiFiPairing() }
+                        Button("测试安全连接") { model.testWiFiConnection() }.disabled(model.wifiPingTesting)
+                        Button("清除配对") { model.clearWiFiPairing() }
                     }
-                    .buttonStyle(.borderedProminent)
-
-                    Button("测试连接") {
-                        model.testWiFiConnection()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(model.wifiPingTesting || model.wifiHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                    if model.wifiPingTesting {
-                        ProgressView().controlSize(.small)
-                    }
-                }
-
-                if !model.wifiPingStatus.isEmpty {
-                    Text(model.wifiPingStatus)
+                    Text(model.wifiPairStatus).font(.caption)
+                    Text(model.shizukuAudioReady ? "Shizuku 音频已就绪" : "Shizuku 音频尚未就绪")
+                        .foregroundColor(model.shizukuAudioReady ? .green : .secondary)
                         .font(.caption)
-                        .foregroundColor(model.wifiDirectActive ? .green : .secondary)
+                    if !model.wifiPingStatus.isEmpty { Text(model.wifiPingStatus).font(.caption) }
+                    Text("手机端启动 Shizuku 并授权 Companion，点击「启用 Shizuku Wi-Fi / 显示配对码」。Mac 无需 ADB 配对。证书和配对码仅保存在本机钥匙串。")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    Text("USB ADB 继续使用原有状态、接听和 PCM 音频 Helper；不依赖 Shizuku。").font(.caption).foregroundStyle(.secondary)
                 }
-
-                if let discovered = model.wifiDiscovery.discoveredDeviceName {
-                    HStack(spacing: 6) {
-                        Image(systemName: "bonjour")
-                        Text("mDNS 广播已捕捉设备：\(discovered) \(model.wifiHost.isEmpty ? "" : "(\(model.wifiHost))")")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Text("提示：系统已开启三重全自动探测（USB 快速协商、局域网 mDNS 广播、ARP 自动寻址），手机开机即自动连接，无需手动输入 IP。\n注意：若手机开启了梯子/VPN (如 v2rayNG)，请在 VPN 设置中开启「绕过局域网地址」或排除 Companion，否则局域网直连流量会被 VPN 拦截；USB 模式不受 VPN 影响。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
             }
             .padding(10)
             .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
@@ -677,7 +649,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.48 (Build 65)").font(.caption.monospaced())
+            Text("v0.4.50 (Build 67)").font(.caption.monospaced())
         }
     }
 
