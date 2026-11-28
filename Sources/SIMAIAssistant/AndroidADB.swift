@@ -166,7 +166,7 @@ enum ADBInspector {
         return false
     }
 
-    static func inspect(at selected: String? = nil, allowRestart: Bool = true, wirelessHost: String? = nil) -> ADBInspection {
+    static func inspect(at selected: String? = nil, allowRestart: Bool = true) -> ADBInspection {
         guard let executable = executable(at: selected) else {
             let message = (selected?.isEmpty == false)
                 ? "所选 ADB 路径无效或无执行权限；请重新选择 adb 文件"
@@ -198,34 +198,6 @@ enum ADBInspector {
                     unauthorized = items.filter { $0.state == "unauthorized" }.count
                     offline = items.filter { $0.state == "offline" }.count
                 }
-            }
-            if authorized == 0, let wirelessHost, !wirelessHost.isEmpty {
-                // Only reconnect a previously paired TLS wireless-debug service
-                // matching the configured Companion host. Never enable tcpip 5555.
-                let host = wirelessHost.split(separator: ":").first.map(String.init) ?? ""
-                var candidates: [String] = []
-                if let saved = UserDefaults.standard.string(forKey: "SIMAI_LAST_AUTHORIZED_WIFI_ADB"),
-                   BridgeRetryPolicy.validWirelessEndpoint(saved), saved.hasPrefix(host + ":") { candidates.append(saved) }
-                if case .completed(0, let discovered) = run(executable, args: ["mdns", "services"], timeout: 4) {
-                    for line in discovered.split(separator: "\n") where line.contains("_adb-tls-connect._tcp") {
-                        if let endpoint = line.split(whereSeparator: { $0.isWhitespace }).last.map(String.init),
-                           endpoint.hasPrefix(host + ":"), BridgeRetryPolicy.validWirelessEndpoint(endpoint), !candidates.contains(endpoint) { candidates.append(endpoint) }
-                    }
-                }
-                for endpoint in candidates.prefix(3) {
-                    _ = run(executable, args: ["connect", endpoint], timeout: 5)
-                    if case .completed(0, let refreshed) = run(executable, args: ["devices"], timeout: 5) {
-                        items = parseDevices(refreshed)
-                        authorized = items.filter { $0.state == "device" }.count
-                        unauthorized = items.filter { $0.state == "unauthorized" }.count
-                        offline = items.filter { $0.state == "offline" }.count
-                        if authorized > 0 { break }
-                    }
-                }
-            }
-            if authorized == 1, let serial = items.first(where: { $0.state == "device" })?.serial,
-               BridgeRetryPolicy.validWirelessEndpoint(serial) {
-                UserDefaults.standard.set(serial, forKey: "SIMAI_LAST_AUTHORIZED_WIFI_ADB")
             }
             let status: String
             if authorized > 0 {
@@ -465,10 +437,7 @@ enum ADBInspector {
     }
 
     /// Requires exactly one authorized device and a running, user-started companion service.
-    /// Reopens a previously authorized wireless ADB transport when it drops out
-    /// of `adb devices`. The endpoint is the IP:port reported by ADB, not a
-    /// phone serial, and is never included in logs or exported diagnostics.
-    /// A revoked authorization or disabled Wi-Fi debugging still needs user action.
+    /// Opens the authorized ADB phone's private loopback state bridge.
     static func openBridge(at selected: String?) -> ADBBridgeResult {
         guard let adb = executable(at: selected) else {
             return .init(link: nil, message: "ADB 不可用；请重新选择可执行文件")
@@ -486,31 +455,16 @@ enum ADBInspector {
                 authorized = parseDevices(refreshed).filter { $0.state == "device" }
             }
         }
-        if authorized.isEmpty,
-           let saved = UserDefaults.standard.string(forKey: "SIMAI_LAST_AUTHORIZED_WIFI_ADB"),
-           BridgeRetryPolicy.validWirelessEndpoint(saved) {
-            // Never use a general adb kill-server/reconnect command: it would
-            // disrupt unrelated development devices. Reconnect this one endpoint.
-            _ = run(adb, args: ["connect", saved], timeout: 8)
-            if case .completed(0, let refreshed) = run(adb, args: ["devices"], timeout: 12) {
-                authorized = parseDevices(refreshed).filter { $0.state == "device" }
-            }
-        }
         guard authorized.count == 1 else {
             let offlineRemaining = devices.filter { $0.state == "offline" }.count
             let msg = authorized.count > 1
                 ? "检测到多台已授权设备；为避免误连，请仅保留一台"
                 : (offlineRemaining > 0
                     ? "手机连接处于离线 (offline) 状态，已自动触发重新协商……若仍无法连接请检查 USB 数据线"
-                    : "未发现已授权手机；将自动重试。若手机重启或无线调试关闭，请重新启用/授权")
+                    : "未发现已授权手机；将自动重试。请检查 USB 连接及调试授权")
             return .init(link: nil, message: msg)
         }
         let serial = authorized[0].serial
-        if BridgeRetryPolicy.validWirelessEndpoint(serial) {
-            // Store only a previously authorized network endpoint to allow
-            // automatic ADB reconnection after Mac app restarts.
-            UserDefaults.standard.set(serial, forKey: "SIMAI_LAST_AUTHORIZED_WIFI_ADB")
-        }
         var token: String = ""
         let tokenCheck = run(adb, args: ["-s", serial, "shell", "run-as",
                                          "com.popowk.simai.companion", "cat", "files/bridge-token"], timeout: 6)
@@ -847,15 +801,7 @@ enum ADBInspector {
         case .completed(0, let output): devices = parseDevices(output)
         default: return fail("ADB_UNAVAILABLE")
         }
-        var authorized = devices.filter { $0.state == "device" }
-        if authorized.isEmpty,
-           let saved = UserDefaults.standard.string(forKey: "SIMAI_LAST_AUTHORIZED_WIFI_ADB"),
-           BridgeRetryPolicy.validWirelessEndpoint(saved) {
-            _ = run(adb, args: ["connect", saved], timeout: 8)
-            if case .completed(0, let refreshed) = run(adb, args: ["devices"], timeout: 10) {
-                authorized = parseDevices(refreshed).filter { $0.state == "device" }
-            }
-        }
+        let authorized = devices.filter { $0.state == "device" }
         guard authorized.count == 1 else { return fail("ADB_DEVICE_COUNT") }
         let serial = authorized[0].serial
         let remote = "/data/local/tmp/simai-audio-probe.jar"
@@ -1159,7 +1105,7 @@ enum ADBInspector {
         let devices: [(serial: String, state: String)]
         switch run(adb, args: ["devices"], timeout: 12) {
         case .completed(0, let output): devices = parseDevices(output)
-        default: return failed("ADB 无法列出手机，请检查已配对的 USB / 无线 ADB")
+        default: return failed("ADB 无法列出手机，请检查 USB 连接与调试授权")
         }
         let ready = devices.filter { $0.state == "device" }
         guard ready.count == 1 else {

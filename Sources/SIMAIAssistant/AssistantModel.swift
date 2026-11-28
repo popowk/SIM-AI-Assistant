@@ -92,14 +92,6 @@ final class AssistantModel: ObservableObject {
     private var consecutivePollFailures: Int = 0
     private let maxPollFailuresBeforeDisconnect: Int = 3
 
-    var wifiDirectEndpoint: String? {
-        let clean = wifiHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty, !clean.contains("%"), !clean.hasPrefix("fe80") else { return nil }
-        if clean.contains(":") {
-            return clean
-        }
-        return "\(clean):18764"
-    }
     @Published var answerCallBusy = false
     @Published var answerCallStatus = "尚未请求接听；需手机授予「接听电话」权限"
     @Published var autoCallEnabled =
@@ -2539,19 +2531,7 @@ final class AssistantModel: ObservableObject {
         }
     }
 
-    private var nextNetworkScanAt = Date.distantPast
-    private var networkScanInProgress = false
-
-    func triggerFullWiFiDiscovery() {
-        wifiDiscovery.stop()
-        wifiDiscovery.start()
-        nextNetworkScanAt = .distantPast
-        networkScanInProgress = false
-        wifiPingStatus = "正在全网自动扫描手机伴侣……"
-        autoDiscoverWiFiCompanionIfNeeded(force: true)
-    }
-
-    func autoDiscoverWiFiCompanionIfNeeded(force: Bool = false) {
+    private func autoDiscoverWiFiCompanionIfNeeded() {
         guard useShizukuWiFi, !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
               wifiHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let ip = wifiDiscovery.discoveredIP, BridgeRetryPolicy.validWirelessEndpoint(ip + ":18766") else { return }

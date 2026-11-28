@@ -1,14 +1,11 @@
 import XCTest
 @testable import SIMAICore
+
 final class LocalCaptureConsentTests: XCTestCase {
-    func testExplicitConsent() {
-        XCTAssertTrue(LocalCaptureConsent.accepts("同意。"))
-        XCTAssertFalse(LocalCaptureConsent.accepts("不同意"))
-        XCTAssertFalse(LocalCaptureConsent.accepts("可以，但是不要转发"))
-        XCTAssertFalse(LocalCaptureConsent.accepts("你好"))
-        XCTAssertFalse(LocalCaptureConsent.accepts("同意录音", recording: true, forwarding: true))
-        XCTAssertTrue(LocalCaptureConsent.accepts("同意录音", recording: true, forwarding: false))
-        XCTAssertFalse(LocalCaptureConsent.accepts("同意录音", recording: false, forwarding: true))
+    func testRevocationRemainsAvailableWithoutSpokenConsentPrompts() {
         XCTAssertTrue(LocalCaptureConsent.revokes("请停止录音"))
+        XCTAssertTrue(LocalCaptureConsent.revokes("不要发送文字"))
+        XCTAssertTrue(LocalCaptureConsent.revokes("我不同意"))
+        XCTAssertFalse(LocalCaptureConsent.revokes("你好"))
     }
 }

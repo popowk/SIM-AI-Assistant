@@ -1,8 +1,8 @@
 # Android Companion 固定签名与无损升级迁移说明
 
-当前签名流程适用于 Mac V0.4.8 Build 25 / Android Companion V0.3.5 (versionCode 10)。
+适用于当前 Android Companion Debug APK 的固定签名与覆盖升级流程。
 
-## 本次代码已实现
+## 签名机制
 
 - `AndroidCompanion/app/build.gradle.kts` 在 4 项环境变量全部存在时，为 Debug APK 使用固定开发者签名（仍保持 debuggable，以支持 ADB `run-as` 私有配置同步）。
 - GitHub Actions 从**仓库 Secrets** 读取 Base64 keystore 和口令，临时存放在 Runner 的受限临时文件，编译后删除；不公开签名私钥、口令或手机的飞书配置。
@@ -28,12 +28,6 @@
 
 ## 迁移限制和安全升级
 
-Android 核验新旧 APK 签名。**如果手机中当前 V0.3.3 安装包是旧 CI Runner 随机 debug key 签的，且旧密钥无法找回，不能靠新密钥直接无损覆盖。** Android 更新失败会保护旧数据。此时应先在现有手机和 Mac 备份用户可合法备份的配置/核对钥匙串，做好最终一次受控的重新授权与迁移，再切换固定签名；不能声称换证书后无需重装。
+Android 核验新旧 APK 签名。**如果手机中已安装的 APK 使用临时 debug key 签名，且旧密钥无法找回，不能靠新密钥直接无损覆盖。** Android 更新失败会保护旧数据。此时应先在现有手机和 Mac 备份用户可合法备份的配置/核对钥匙串，做好最终一次受控的重新授权与迁移，再切换固定签名；不能声称换证书后无需重装。
 
 不要利用 `adb uninstall` 自动排错、跳过系统权限或对手机设备序列号进行模糊匹配。清空数据的「签名不一致？确认清空后重装」入口必须保持二次确认。完成迁移后只用同一 keystore 对所有未来 APK 进行签名，版本码单调递增，再执行 `adb install -r` 安装并验证短信权限、飞书发送、电话监听和私有 ADB 配置同步。
-
-## 下一步未实现
-
-- 新密钥保存到 GitHub Secrets 之前**并未解决实际固定签名**。这一点由 Mac 安装面板的状态直接反映。
-- 正式可发布的 Android 非 debug / 非 `run-as` 版本需要重构认证配置接口，不能直接将当前 Debug APK 切换 `release` 并期待 ADB `run-as` 正常。
-- 签名迁移完成后，再逐步增加网络发送队列、后台稳定性及 24 小时回归测试。

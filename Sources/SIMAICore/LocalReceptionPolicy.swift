@@ -59,17 +59,6 @@ public struct LocalReceptionPolicy {
 
 /// Strict opt-in. Unknown or negative answers never authorize persistence or forwarding.
 public enum LocalCaptureConsent {
-    public static func accepts(_ text: String, recording: Bool = true, forwarding: Bool = true) -> Bool {
-        let clean = text.replacingOccurrences(of: "[\\s，。！？、,.!?]", with: "", options: .regularExpression)
-        if ["不","别","拒绝","取消","停止","没同意"].contains(where: { clean.contains($0) }) { return false }
-        if ["同意","我同意","好的同意"].contains(clean) { return true }
-        if recording && forwarding {
-            return ["同意录音和转发","同意录音并转发","同意录音和发送文字"].contains(clean)
-        }
-        if recording { return ["可以录音","同意录音"].contains(clean) }
-        if forwarding { return ["同意转发","同意发送文字"].contains(clean) }
-        return false
-    }
     public static func revokes(_ text: String) -> Bool {
         ["停止录音","不要录音","别录音","取消录音","不同意录音","不要转发","停止转发","取消转发","不要发送文字","撤回同意","不同意","不希望记录","不要记录","别记录","不希望录音","不希望转达","不要转达"].contains(where: { text.contains($0) })
     }
