@@ -7,10 +7,8 @@ import SIMAICore
 /// actually read/written by the telephone bridge is captured, not desktop audio.
 final class LocalCallCapture {
     let recordAudio: Bool
-    let noticeOnly: Bool
     let gptMode: Bool
     private let webhook: FeishuWebhookSettings?
-    var requestsForwarding: Bool { webhook != nil }
     private let gate = NSLock()
     private let began = Date()
     private let identifier = UUID().uuidString
@@ -22,19 +20,10 @@ final class LocalCallCapture {
     // Existing phone audio helper enforces 180 seconds. A little headroom.
     private let limit = 16_000 * 2 * 185
 
-    init(recordAudio: Bool, webhook: FeishuWebhookSettings?, noticeOnly: Bool = false, gptMode: Bool = false) {
+    init(recordAudio: Bool, webhook: FeishuWebhookSettings?, gptMode: Bool = false) {
         self.recordAudio = recordAudio
-        self.noticeOnly = noticeOnly
         self.gptMode = gptMode
         self.webhook = webhook
-    }
-    var greeting: LocalReceptionPolicy.Reply {
-        if noticeOnly {
-            if recordAudio && webhook != nil { return .noticeBoth }
-            return recordAudio ? .noticeRecording : .noticeWebhook
-        }
-        if recordAudio && webhook != nil { return .consentBoth }
-        return recordAudio ? .consentRecording : .consentWebhook
     }
     var isAuthorized: Bool { gate.lock(); defer { gate.unlock() }; return allowed && !finalized }
     func authorize() { gate.lock(); if !finalized { allowed = true }; gate.unlock() }

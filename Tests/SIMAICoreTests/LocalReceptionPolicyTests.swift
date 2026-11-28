@@ -2,6 +2,14 @@ import XCTest
 @testable import SIMAICore
 
 final class LocalReceptionPolicyTests: XCTestCase {
+    func testSpokenRepliesContainNoRecordingPrompts() {
+        let forbidden = ["录音", "同意", "不同意", "飞书", "转发", "记录授权"]
+        for reply in LocalReceptionPolicy.Reply.allCases {
+            for word in forbidden {
+                XCTAssertFalse(reply.text.contains(word), "Unexpected recording prompt in \(reply.rawValue)")
+            }
+        }
+    }
     func testDeliveryAndDetails() {
         var p = LocalReceptionPolicy()
         XCTAssertEqual(p.reply(to: "我是送快递的"), .delivery)
