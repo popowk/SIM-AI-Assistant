@@ -1,4 +1,11 @@
-# SIM AI Assistant · V0.4.48（通话接待与录音提示分离）
+# SIM AI Assistant · V0.4.50（USB ADB + Shizuku Wi-Fi 双通道实验版）
+
+- 保留 USB ADB 原有状态、接听、挂断、PCM 路由；默认 USB 模式。
+- 无线模式：Android 0.3.24 内置 PCM Helper，通过 Shizuku UserService 与 Companion Binder socket pair 传输，不在 Mac 使用无线 ADB。
+- 手机先启动 Shizuku、授权 Companion，点击「启用 Shizuku Wi-Fi / 显示配对码」，Mac 选择 Shizuku Wi-Fi 并填写手机 IP 与配对码。配对码含 TLS 证书 SHA256 指纹和随机密钥，保存在 Mac 钥匙串；不要上传或公开。手机可撤销配对。
+- Wi-Fi 控制和 PCM 使用 TCP 18766 上的 TLS；旧 USB HTTP 18764 和 ADB PCM 18765 保持 loopback，移除旧版公开固定令牌。SMS 配置继续通过 USB。
+- Shizuku 音频服务就绪仅证明 Binder/系统 API 检查成功；vivo 上的实际下行录音和上行注入需双端实测。非 root 手机重启后可能需要重新启动 Shizuku。
+
 
 - 本地及 GPT 接待不再自动播报录音、转写、转发告知或同意应答；本地接待使用已审核的常规话术。录音与推送保留独立的本次通话授权控制。
 

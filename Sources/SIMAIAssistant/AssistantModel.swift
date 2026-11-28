@@ -29,6 +29,53 @@ final class AssistantModel: ObservableObject {
         }
     }
     @Published var wifiDirectActive = false
+    @Published private(set) var useShizukuWiFi = UserDefaults.standard.bool(forKey: "SIMAI_SHIZUKU_WIFI_MODE")
+    @Published private(set) var shizukuAudioReady = false
+    @Published private(set) var wifiPairStatus = ShizukuWiFiCredentials.load() == nil ? "未配对" : "已保存配对码，等待手机连接"
+    @Published var wifiPairingDraft = ""
+    private var wifiCredentials = ShizukuWiFiCredentials.load()
+    private var shizukuTransport: ShizukuWiFiTransport? {
+        ShizukuWiFiTransport(host: wifiHost, credentials: wifiCredentials)
+    }
+    private var phoneAudioTransportReady: Bool {
+        useShizukuWiFi ? (wifiDirectActive && shizukuAudioReady && isShizukuReady) : adbWasAuthorized
+    }
+    func selectPhoneTransport(_ wifi: Bool) {
+        guard wifi != useShizukuWiFi, !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
+              livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
+        closeLiveBridge()
+        bridgeCursor = PhoneBridgeCursor()
+        livePhoneState = "未连接"
+        connectionTransport = "DISCONNECTED"
+        wifiDirectActive = false; shizukuAudioReady = false; isShizukuReady = false
+        resetBridgeRetry()
+        useShizukuWiFi = wifi
+        UserDefaults.standard.set(wifi, forKey: "SIMAI_SHIZUKU_WIFI_MODE")
+        if !wifi { autoInspectADBIfNeeded(force: true) }
+        pollLiveBridge()
+    }
+    func saveWiFiPairing() {
+        guard !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
+              livePhoneState != "RINGING", livePhoneState != "OFFHOOK",
+              let credential = ShizukuWiFiCredentials(code: wifiPairingDraft), credential.save() else {
+            wifiPairStatus = "配对码无效或无法保存"; return
+        }
+        wifiCredentials = credential
+        wifiPairingDraft = ""
+        wifiPairStatus = "已保存，正在核验手机证书及音频服务"
+        closeLiveBridge(); bridgeCursor = PhoneBridgeCursor()
+        wifiDirectActive = false; shizukuAudioReady = false
+        resetBridgeRetry(); pollLiveBridge()
+    }
+    func clearWiFiPairing() {
+        guard !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
+              livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
+        ShizukuWiFiCredentials.clear(); wifiCredentials = nil; wifiPairingDraft = ""
+        wifiPairStatus = "已清除本机配对；可在手机撤销配对"
+        closeLiveBridge(); bridgeCursor = PhoneBridgeCursor()
+        wifiDirectActive = false; shizukuAudioReady = false; isShizukuReady = false
+        livePhoneState = "未连接"; connectionTransport = "DISCONNECTED"
+    }
     @Published var isShizukuReady = false
     @Published var wifiPingStatus = ""
     @Published var wifiPingTesting = false
@@ -217,8 +264,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.48"
-    let buildNumber = "65"
+    let version = "0.4.50"
+    let buildNumber = "67"
     @Published private(set) var phoneDiagnosticsCollecting = false
     @Published private(set) var phoneDiagnosticsStatus = "导出时自动读取手机日志"
     @Published private(set) var phoneDiagnosticsPreview = ""
@@ -1199,6 +1246,20 @@ final class AssistantModel: ObservableObject {
             details: ["trigger": reason, "guard": "AUTO_ANSWER_SESSION_SEQUENCE"])
         Task { [weak self] in
             guard let self else { return }
+            if self.useShizukuWiFi {
+                defer { self.autoHangupBusy = false }
+                guard self.automaticAnswerAcknowledged, self.livePhoneState == "OFFHOOK",
+                      self.automaticAnswerSession == expectedSession,
+                      self.automaticOffhookSequence == expectedSequence,
+                      let transport = self.shizukuTransport else { return }
+                do {
+                    let (status, data) = try await transport.request("/call/hangup", method: "POST", session: expectedSession, sequence: expectedSequence)
+                    let result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                    self.autoCallStatus = status == 200 && result?["result"] as? String == "hangup_requested"
+                        ? "Shizuku 自动挂断请求成功" : "Shizuku 自动挂断未确认"
+                } catch { self.autoCallStatus = "Shizuku 自动挂断请求失败" }
+                return
+            }
             var link = existingLink
             var temporary = false
             if link == nil {
@@ -1307,7 +1368,7 @@ final class AssistantModel: ObservableObject {
     private func tryLocalFallbackBeforeAnswer(reason: String) -> Bool {
         guard localSpeechApproved, localFallbackEnabled, !localReceptionEnabled, !localFallbackForCurrentRing,
               autoCallEnabled, localReceptionReady, localReceptionEngine?.isReady == true,
-              adbWasAuthorized, livePhoneState == "RINGING", !answerCallBusy,
+              phoneAudioTransportReady, livePhoneState == "RINGING", !answerCallBusy,
               !automaticAnswerRequested, !automaticAnswerAcknowledged,
               !liveVoiceActive, !liveVoiceStarting, !adbInstalling, !audioProbeBusy,
               bridgeCursor.session == observedRingingSession,
@@ -1445,7 +1506,7 @@ final class AssistantModel: ObservableObject {
         if state == "RINGING" {
             // ADB is still necessary for the existing cellular PCM helper,
             // even when call state is supplied by Wi-Fi.
-            guard adbWasAuthorized, bridgeCursor.lastSequence > 0,
+            guard phoneAudioTransportReady, bridgeCursor.lastSequence > 0,
                   !bridgeCursor.session.isEmpty,
                   !answerCallBusy, !liveVoiceActive, !liveVoiceStarting,
                   !automaticAnswerRequested, !automaticAnswerAcknowledged,
@@ -1545,11 +1606,11 @@ final class AssistantModel: ObservableObject {
     private func automaticVoiceReadinessIssues() -> [String] {
         var problems: [String] = []
         if !liveSyncEnabled { problems.append("请打开电话状态同步") }
-        if !adbWasAuthorized { problems.append("ADB 音频通道尚未授权") }
+        if !phoneAudioTransportReady { problems.append(useShizukuWiFi ? "Shizuku 安全 Wi-Fi 音频服务尚未就绪" : "ADB 音频通道尚未授权") }
         if !automaticGPTOutputEnabled {
             problems.append("无人值守必须开启 GPT 自动音频配置")
         }
-        if !embeddedAudioProbeAvailable { problems.append("缺少电话 PCM Helper") }
+        if !useShizukuWiFi && !embeddedAudioProbeAvailable { problems.append("缺少电话 PCM Helper") }
         if !audio.devices.contains(where: { $0.displayName.caseInsensitiveCompare("BlackHole 2ch") == .orderedSame }) {
             problems.append("缺少 BlackHole 2ch")
         }
@@ -1761,7 +1822,7 @@ final class AssistantModel: ObservableObject {
         // Never race two independent "adb devices" launches on startup.
         // Bridge connection begins once the initial authorized-device scan
         // returns, after the Android monitor gets one bounded warm-up.
-        if autoADBDetectionEnabled {
+        if autoADBDetectionEnabled && !useShizukuWiFi {
             autoInspectADBIfNeeded(force: true)
         } else {
             pollLiveBridge()
@@ -1795,7 +1856,7 @@ final class AssistantModel: ObservableObject {
     /// Android permissions or connects to multiple devices. Rate limits are
     /// deliberately long while live calls are streaming.
     private func autoInspectADBIfNeeded(force: Bool = false) {
-        guard autoADBDetectionEnabled, !adbChecking, !adbInstalling,
+        guard !useShizukuWiFi, autoADBDetectionEnabled, !adbChecking, !adbInstalling,
               !liveVoiceStarting, !liveVoiceActive,
               force || Date() >= nextADBScanAt else { return }
         adbChecking = true
@@ -2210,10 +2271,16 @@ final class AssistantModel: ObservableObject {
                 details: ["diagnosis": "TELEPHONY_CALLBACK_DELAYED",
                           "actual": real, "cache": snapshot.state])
         }
+        if source == "WIFI_DIRECT" {
+            wifiDirectActive = true
+            isShizukuReady = snapshot.shizukuReady == true
+            shizukuAudioReady = snapshot.shizukuAudioReady == true
+            wifiPairStatus = shizukuAudioReady ? "安全 Wi-Fi 与 Shizuku 音频已就绪" : "安全 Wi-Fi 已连接；等待手机 Shizuku 音频服务"
+        }
         reactToAutomaticCallState(snapshot.state)
-        adbTransportHealth = "ADB 已授权"
-        adbShellHealth = "命令正常"
-        adbForwardHealth = source == "ADB_FILE" ? "HTTP 备用路径" : "工作正常"
+        adbTransportHealth = source == "WIFI_DIRECT" ? "Shizuku Wi-Fi 模式不使用 ADB" : "ADB 已授权"
+        adbShellHealth = source == "WIFI_DIRECT" ? "手机端 Shizuku" : "命令正常"
+        adbForwardHealth = source == "WIFI_DIRECT" ? "TLS 局域网通道" : (source == "ADB_FILE" ? "HTTP 备用路径" : "工作正常")
         adbBridgeHealthDetail = source == "ADB_FILE"
             ? "HTTP 连接暂不可靠，已使用 ADB 私有状态快照"
             : (source == "WIFI_DIRECT" ? "Wi-Fi 局域网极速直连中" : "HTTP 状态桥接正常")
@@ -2227,7 +2294,7 @@ final class AssistantModel: ObservableObject {
         if source == "WIFI_DIRECT" {
             connectionTransport = "WIFI_DIRECT"
             wifiDirectActive = true
-            liveBridgeStatus = "已连接 · Wi-Fi 局域网直连 (极速\(isShizukuReady ? " + Shizuku 特权" : ""))"
+            liveBridgeStatus = shizukuAudioReady ? "Shizuku 安全 Wi-Fi · 状态与音频就绪" : "Shizuku 安全 Wi-Fi · 音频服务等待中"
         } else if source == "ADB_HTTP" {
             connectionTransport = "ADB_HTTP"
             liveBridgeStatus = "已连接 · USB ADB HTTP 自动同步"
@@ -2282,41 +2349,36 @@ final class AssistantModel: ObservableObject {
         let generation = bridgeGeneration
         let since = bridgeCursor.lastSequence
 
-        // Tier 1: Try Wi-Fi direct first ONLY if actively connected and verified
-        if let wifi = wifiDirectEndpoint, wifiDirectActive {
+        if useShizukuWiFi {
+            guard let transport = shizukuTransport else {
+                bridgeBusy = false
+                wifiDirectActive = false; shizukuAudioReady = false
+                liveBridgeStatus = "请输入手机 IP 和 Companion 安全 Wi-Fi 配对码"
+                return
+            }
             Task { [weak self] in
                 guard let self else { return }
-                guard let url = URL(string: "http://\(wifi)/events?since=\(since)") else {
-                    self.bridgeBusy = false
-                    return
-                }
-                var request = URLRequest(url: url)
-                request.httpMethod = "GET"
-                request.timeoutInterval = 1.8
-                request.setValue("simai-wifi", forHTTPHeaderField: "X-SIMAI-Token")
-                request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
                 do {
-                    let (data, response) = try await self.directBridgeSession.data(for: request)
-                    guard self.liveSyncEnabled, generation == self.bridgeGeneration else { return }
-                    let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                    guard status == 200 else {
-                        throw NSError(domain: "SIMAI.WiFiBridge.HTTP", code: status)
-                    }
+                    let (status, data) = try await transport.request("/events?since=\(since)")
+                    guard self.liveSyncEnabled, generation == self.bridgeGeneration, self.useShizukuWiFi else { return }
+                    guard status == 200 else { throw URLError(.userAuthenticationRequired) }
                     let snapshot = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: data)
-                    guard snapshot.schema == 1, snapshot.running,
+                    guard snapshot.schema == 1, snapshot.running, UUID(uuidString: snapshot.session) != nil,
                           ["IDLE", "RINGING", "OFFHOOK"].contains(snapshot.state),
                           snapshot.isFresh(referenceMilliseconds: Int64(Date().timeIntervalSince1970 * 1000), maxAgeMilliseconds: 20_000, maxFutureSkewMilliseconds: 5_000) else {
-                        throw NSError(domain: "SIMAI.WiFiBridge", code: 422)
+                        throw URLError(.badServerResponse)
                     }
-                    self.consecutivePollFailures = 0
                     self.applyBridgeSnapshot(snapshot, source: "WIFI_DIRECT")
                     self.bridgeBusy = false
                 } catch {
-                    guard self.liveSyncEnabled, generation == self.bridgeGeneration else { return }
+                    guard generation == self.bridgeGeneration, self.useShizukuWiFi else { return }
+                    self.bridgeBusy = false
                     self.consecutivePollFailures += 1
-                    self.wifiDirectActive = false
-                    // Wi-Fi poll failed: immediately fall back to USB ADB so USB is NEVER blocked!
-                    self.pollLiveBridgeViaADB(generation: generation, since: since)
+                    self.wifiDirectActive = false; self.shizukuAudioReady = false; self.isShizukuReady = false
+                    self.liveBridgeStatus = "安全 Wi-Fi 未就绪：核对手机 IP、配对码和 Companion 监听"
+                    if self.consecutivePollFailures >= 3 {
+                        self.connectionTransport = "DISCONNECTED"; self.livePhoneState = "未连接"
+                    }
                 }
             }
             return
@@ -2458,46 +2520,20 @@ final class AssistantModel: ObservableObject {
     }
 
     func testWiFiConnection() {
-        guard !wifiPingTesting else { return }
-        let clean = wifiHost.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty else {
-            wifiPingStatus = "请先输入手机 Wi-Fi IP 地址"
-            return
-        }
-        let target = clean.contains(":") ? clean : "\(clean):18764"
-        guard let url = URL(string: "http://\(target)/ping") else {
-            wifiPingStatus = "IP 格式无效"
-            return
+        guard useShizukuWiFi else { wifiPingStatus = "当前使用 ADB；请选择 Shizuku Wi-Fi 模式"; return }
+        guard !wifiPingTesting, let transport = shizukuTransport else {
+            wifiPingStatus = "请先输入手机 IP 和配对码"; return
         }
         wifiPingTesting = true
-        wifiPingStatus = "正在测试连接……"
-        let start = Date()
-        Task {
+        wifiPingStatus = "正在核验 TLS 证书及身份……"
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.wifiPingTesting = false }
             do {
-                var req = URLRequest(url: url)
-                req.timeoutInterval = 2.0
-                let (_, response) = try await self.directBridgeSession.data(for: req)
-                let elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
-                if (response as? HTTPURLResponse)?.statusCode == 200 {
-                    await MainActor.run {
-                        self.wifiPingTesting = false
-                        self.wifiDirectActive = true
-                        self.connectionTransport = "WIFI_DIRECT"
-                        self.wifiPingStatus = "✅ 局域网直连成功！响应延迟 \(elapsedMs) ms"
-                        self.pollLiveBridge()
-                    }
-                } else {
-                    await MainActor.run {
-                        self.wifiPingTesting = false
-                        self.wifiPingStatus = "❌ 响应异常 (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0))"
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    self.wifiPingTesting = false
-                    self.wifiPingStatus = "❌ 连接超时或失败，请确保手机与 Mac 在同一局域网"
-                }
-            }
+                let (status, _) = try await transport.request("/ping")
+                self.wifiPingStatus = status == 200 ? "手机安全连接成功，正在检测 Shizuku 音频" : "配对码被拒绝"
+            } catch { self.wifiPingStatus = "安全连接失败；请检查 IP、证书配对和手机服务" }
+            self.resetBridgeRetry(); self.pollLiveBridge()
         }
     }
 
@@ -2514,66 +2550,12 @@ final class AssistantModel: ObservableObject {
     }
 
     func autoDiscoverWiFiCompanionIfNeeded(force: Bool = false) {
-        guard !wifiDirectActive, !networkScanInProgress, !wifiPingTesting,
-              !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
-              force || Date() >= nextNetworkScanAt else { return }
-        nextNetworkScanAt = Date().addingTimeInterval(15)
-        // Recheck the already known endpoint even when its address has not changed.
-        if !wifiHost.isEmpty, wifiDirectEndpoint != nil {
-            testWiFiConnection()
-            // On later attempts continue discovery via ADB/mDNS.
-        }
-
-        // 1. Check if Bonjour discovered IP
-        if let ip = wifiDiscovery.discoveredIP, !ip.isEmpty,
-           !ip.contains(":"), !ip.contains("%"), wifiHost != ip {
-            log(.info, .system, "mDNS 自动发现手机伴侣 IPv4：\(ip)")
-            wifiHost = ip
-            testWiFiConnection()
-            return
-        }
-
-        // 2. If ADB is connected, query ADB for Wi-Fi IP
-        if let link = bridgeLink {
-            let path = selectedADBPath
-            let serial = link.serial
-            Task.detached(priority: .utility) { [weak self] in
-                if let ip = ADBInspector.fetchDeviceWiFiIP(at: path, serial: serial) {
-                    await MainActor.run {
-                        guard let self else { return }
-                        if self.wifiHost != ip {
-                            self.wifiHost = ip
-                            self.log(.info, .system, "通过 ADB 自动获取手机局域网 Wi-Fi IP：\(ip)")
-                            self.testWiFiConnection()
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. Scan local network ARP cache every 15 seconds if disconnected
-        if connectionTransport == "DISCONNECTED" || force {
-            nextNetworkScanAt = Date().addingTimeInterval(15)
-            networkScanInProgress = true
-            Task.detached(priority: .utility) { [weak self] in
-                let ips = LocalNetworkScanner.extractLocalIPs()
-                for ip in ips {
-                    if await LocalNetworkScanner.probeCompanion(on: ip) {
-                        await MainActor.run {
-                            guard let self else { return }
-                            self.log(.info, .system, "局域网 ARP 自动发现手机伴侣：\(ip)")
-                            self.wifiHost = ip
-                            self.networkScanInProgress = false
-                            self.testWiFiConnection()
-                        }
-                        return
-                    }
-                }
-                await MainActor.run {
-                    self?.networkScanInProgress = false
-                }
-            }
-        }
+        guard useShizukuWiFi, !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
+              wifiHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let ip = wifiDiscovery.discoveredIP, BridgeRetryPolicy.validWirelessEndpoint(ip + ":18766") else { return }
+        wifiHost = ip
+        wifiPingStatus = "已发现手机 IP；安全配对成功后才连接"
+        pollLiveBridge()
     }
 
     func launchShizukuOnPhone() {
@@ -2632,8 +2614,12 @@ final class AssistantModel: ObservableObject {
     func startLiveVoice() {
         guard !liveVoiceStarting, !liveVoiceActive, !adbInstalling,
               !audioProbeBusy else { return }
+        let wifiAudio = useShizukuWiFi ? shizukuTransport : nil
+        if useShizukuWiFi && (wifiAudio == nil || !phoneAudioTransportReady || livePhoneState != "OFFHOOK") {
+            liveVoiceStatus = "Shizuku Wi-Fi 音频服务或通话状态未就绪"; return
+        }
         guard let jar = Bundle.main.resourceURL?.appendingPathComponent("SIMAI-Audio-Probe.jar"),
-              FileManager.default.fileExists(atPath: jar.path) else {
+              useShizukuWiFi || FileManager.default.fileExists(atPath: jar.path) else {
             alertText = "未找到 Android 电话音频 Helper，请重新安装完整 Mac 包。"
             return
         }
@@ -2728,7 +2714,7 @@ final class AssistantModel: ObservableObject {
                                      details: ["reason": "GPT_RETURN_NOT_READY"])
                         }
                     }
-                    self.log(.info, .audio, "ADB 双向 PCM 通道已建立",
+                    self.log(.info, .audio, self.useShizukuWiFi ? "Shizuku 安全 Wi-Fi 双向 PCM 通道已建立" : "ADB 双向 PCM 通道已建立",
                         details: ["sampleRate": "16000", "channels": "1", "frameMs": "20"])
                 case .metrics(let received, let sent, let dropped,
                               let micUnderflows, let micOverflows,
@@ -2909,7 +2895,7 @@ final class AssistantModel: ObservableObject {
             }
         }
         voiceStream = stream
-        stream.start(adb: selectedADBPath, jar: jar)
+        stream.start(adb: selectedADBPath, jar: jar, wifi: wifiAudio, callSession: bridgeCursor.session, callSequence: bridgeCursor.lastSequence)
     }
 
     /// Local, opt-in PCM routing to BlackHole 2ch, without any ChatGPT API.
@@ -3194,8 +3180,8 @@ final class AssistantModel: ObservableObject {
                 : (voiceSessionPrepared && incomingPreflightPassed && useEmbeddedVoiceBrowser &&
                    embeddedVoiceBrowser.microphoneActive && embeddedVoiceBrowser.isolatedMicrophoneReady &&
                    (!isolatedChatGPTOutputEnabled || (embeddedVoiceBrowser.isolatedOutputReady && isSystemOutputSafeForIsolatedReturn())))
-            guard engineReady, adbWasAuthorized else {
-                autoCallStatus = "语音引擎或 ADB 未就绪，不自动接听"
+            guard engineReady, phoneAudioTransportReady else {
+                autoCallStatus = "语音引擎或所选电话音频通道未就绪，不自动接听"
                 return
             }
             automaticAnswerRequested = true
@@ -3217,36 +3203,28 @@ final class AssistantModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
 
-            // Wi-Fi direct instant answer (with Shizuku privilege)
-            if self.wifiDirectActive, let wifi = self.wifiDirectEndpoint,
-               let url = URL(string: "http://\(wifi)/call/answer") {
-                for attempt in 1...2 {
-                    var req = URLRequest(url: url)
-                    req.httpMethod = "POST"
-                    req.timeoutInterval = 1.8
-                    req.cachePolicy = .reloadIgnoringLocalCacheData
-                    req.setValue("simai-wifi", forHTTPHeaderField: "X-SIMAI-Token")
-                    req.setValue(expectedRingSession, forHTTPHeaderField: "X-SIMAI-Expected-Session")
-                    req.setValue(String(expectedRingSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
-                    req.setValue("0", forHTTPHeaderField: "Content-Length")
-                    if let (_, response) = try? await URLSession.shared.data(for: req),
-                       (response as? HTTPURLResponse)?.statusCode == 200 {
-                        self.log(.info, .call, "已通过 Wi-Fi 直连执行接听请求 (Shizuku)")
-                        self.answerCallBusy = false
-                        self.answerCallStatus = "已通过 Wi-Fi 发送接听请求"
-                        if automatic {
-                            self.automaticAnswerAcknowledged = true
-                            self.automaticAnswerSession = expectedRingSession
-                            self.autoCallState.markAnswerAttempted()
-                            self.autoVoiceCaptureObserved = self.autoVoiceCaptureObserved || self.embeddedVoiceCaptureActive
-                        }
-                        _ = self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession, expectedSequence: expectedRingSequence)
-                        return
+            if self.useShizukuWiFi {
+                defer { self.answerCallBusy = false }
+                guard let transport = self.shizukuTransport,
+                      self.bridgeCursor.session == expectedRingSession,
+                      self.bridgeCursor.lastSequence == expectedRingSequence,
+                      self.livePhoneState == "RINGING" else { return }
+                do {
+                    let (http, body) = try await transport.request("/call/answer", method: "POST", session: expectedRingSession, sequence: expectedRingSequence)
+                    let parsed = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+                    if http == 200 && parsed?["result"] as? String == "answer_requested" {
+                        if automatic { _ = self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession, expectedSequence: expectedRingSequence) }
+                        self.answerCallStatus = "Shizuku 接听请求成功，等待 OFFHOOK"
+                        self.log(.info, .call, "已通过安全 Wi-Fi 请求接听", details: ["result": "SHIZUKU_ANSWER_REQUESTED"])
+                    } else {
+                        if automatic { self.automaticAnswerRequested = http == 202 }
+                        self.answerCallStatus = "Shizuku 接听未确认（HTTP \(http)）"
                     }
-                    if attempt == 1 && existingLink == nil {
-                        try? await Task.sleep(nanoseconds: 300_000_000)
-                    }
+                } catch {
+                    if automatic { self.automaticAnswerRequested = false }
+                    self.answerCallStatus = "安全 Wi-Fi 接听请求失败"
                 }
+                return
             }
 
             // On the new Companion or when status uses ADB_FILE (e.g. during vivo ringing),
@@ -3700,16 +3678,18 @@ final class AssistantModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
 
-            // 0. Try Wi-Fi direct HTTP hangup (with Shizuku privilege)
-            if let wifi = self.wifiDirectEndpoint, let url = URL(string: "http://\(wifi)/call/hangup") {
-                var request = URLRequest(url: url)
-                request.httpMethod = "POST"
-                request.timeoutInterval = 2
-                request.setValue("simai-wifi", forHTTPHeaderField: "X-SIMAI-Token")
-                request.setValue(expectedSession, forHTTPHeaderField: "X-SIMAI-Expected-Session")
-                request.setValue(String(expectedSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
-                request.setValue("0", forHTTPHeaderField: "Content-Length")
-                _ = try? await URLSession.shared.data(for: request)
+            if self.useShizukuWiFi {
+                guard let transport = self.shizukuTransport, !expectedSession.isEmpty, expectedSequence > 0 else {
+                    self.autoCallStatus = "安全 Wi-Fi 尚未连接"; return
+                }
+                do {
+                    let (status, data) = try await transport.request("/call/hangup", method: "POST", session: expectedSession, sequence: expectedSequence)
+                    let result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                    self.autoCallStatus = status == 200 && result?["result"] as? String == "hangup_requested"
+                        ? "Shizuku 挂断请求成功" : "Shizuku 挂断未确认（HTTP \(status)）"
+                } catch { self.autoCallStatus = "Shizuku 挂断请求失败" }
+                self.pollLiveBridge()
+                return
             }
 
             // 1. Try HTTP hangup via ADB forward if link is available
