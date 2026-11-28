@@ -6,3 +6,9 @@ dist/
 *.app
 *.dmg
 *.zip
+
+# Local Android signing material; never commit credentials.
+/work/simai-android-signing/
+*.p12
+*.jks
+*.keystore

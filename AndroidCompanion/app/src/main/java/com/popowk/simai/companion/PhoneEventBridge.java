@@ -143,10 +143,16 @@ final class PhoneEventBridge {
         });
         writeSnapshot();
         heartbeat.scheduleWithFixedDelay(() -> {
-            if (active) { secureBridge.reconcile(); writeSnapshot(); }
+            if (active) {
+                secureBridge.reconcile();
+                if (secureBridge.listening()) {
+                    nsdHelper.register(context, SecurePhoneBridge.PORT, secureBridge.discoveryPin());
+                } else {
+                    nsdHelper.unregister();
+                }
+                writeSnapshot();
+            }
         }, 1, 1, TimeUnit.SECONDS);
-        // Register mDNS / Bonjour for zero-config Mac discovery over Wi-Fi
-        nsdHelper.register(context, SecurePhoneBridge.PORT);
         privateAnswerPoller = Executors.newSingleThreadScheduledExecutor(job -> {
             Thread thread = new Thread(job, "SIMAI-PrivateAnswer");
             thread.setDaemon(true);
@@ -441,9 +447,11 @@ final class PhoneEventBridge {
             }
             final String guardedSession = expectedSession;
             final int guardedSequence = expectedSequence;
+            final String guardedToken = accessToken;
             secureBridge.relayAudio(client, () -> {
                 synchronized (this) {
-                    return active && session.equals(guardedSession) && sequence == guardedSequence &&
+                    return active && secureBridge.authorize(guardedToken) &&
+                            session.equals(guardedSession) && sequence == guardedSequence &&
                             "OFFHOOK".equals(lastState);
                 }
             });

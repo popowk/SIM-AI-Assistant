@@ -15,13 +15,14 @@ import java.util.*;
 import java.util.concurrent.*;
 import javax.net.ssl.*;
 
-/** Dedicated opt-in TLS listener. A physical-phone pairing code pins the
- * non-exportable certificate and carries a random bearer secret. The old USB
- * HTTP service and shell helper remain on loopback only. */
+/** Shizuku-authorized TLS listener. Initial trust is provisioned only through
+ * the already-authorized physical USB ADB private app directory. */
 final class SecurePhoneBridge {
     static final int PORT = 18766;
     private static final String PREFS = "simai_secure_wifi";
     private static final String ALIAS = "simai_wifi_server_v1";
+    private static final String BOOTSTRAP = "wifi-trust-private";
+    private volatile String serverPin = "";
     interface Handler { void handle(Socket socket) throws Exception; }
     private final Context context;
     private final Handler handler;
@@ -61,7 +62,18 @@ final class SecurePhoneBridge {
         }
         return ks;
     }
-    static synchronized String enableAndCode(Context context) throws Exception {
+    static boolean isEnabled(Context context) {
+        return prefs(context).getBoolean("enabled", true);
+    }
+    static synchronized void enable(Context context) {
+        prefs(context).edit().putBoolean("enabled", true).commit();
+    }
+    static synchronized void disable(Context context) {
+        prefs(context).edit().putBoolean("enabled", false).remove("token").commit();
+        new android.util.AtomicFile(new File(context.getFilesDir(), BOOTSTRAP)).delete();
+    }
+    private static synchronized String prepareTrust(Context context) throws Exception {
+        if (!isEnabled(context) || !ShizukuTelephonyBridge.isReady()) throw new IOException("WIFI_NOT_READY");
         Certificate cert = keyStore().getCertificate(ALIAS);
         String pin = hex(MessageDigest.getInstance("SHA-256").digest(cert.getEncoded()));
         SharedPreferences p = prefs(context);
@@ -69,14 +81,21 @@ final class SecurePhoneBridge {
         if (token == null || !token.matches("[a-f0-9]{64}")) {
             byte[] random = new byte[32]; new SecureRandom().nextBytes(random); token = hex(random);
         }
-        if (!p.edit().putString("token", token).putBoolean("enabled", true).commit())
-            throw new IOException("PREFERENCE_WRITE");
-        return pin + ":" + token;
+        if (!p.edit().putString("token", token).commit()) throw new IOException("PREFERENCE_WRITE");
+        // Android private file; not exported by any HTTP endpoint, diagnostics, or NSD.
+        // The Mac reads it only via run-as on one explicitly authorized physical USB device.
+        android.util.AtomicFile file = new android.util.AtomicFile(new File(context.getFilesDir(), BOOTSTRAP));
+        FileOutputStream output = file.startWrite();
+        try {
+            output.write((pin + ":" + token).getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+            file.finishWrite(output);
+        } catch (IOException failure) {
+            file.failWrite(output); throw failure;
+        }
+        return pin;
     }
-    static void disable(Context context) {
-        prefs(context).edit().putBoolean("enabled", false).remove("token").apply();
-    }
-    private boolean enabled() { return prefs(context).getBoolean("enabled", false); }
+    private boolean enabled() { return isEnabled(context) && ShizukuTelephonyBridge.isReady(); }
+    String discoveryPin() { return listening() ? serverPin : ""; }
     boolean authorize(String presented) {
         String token = prefs(context).getString("token", "");
         return enabled() && token != null && token.matches("[a-f0-9]{64}") &&
@@ -91,6 +110,7 @@ final class SecurePhoneBridge {
         audio.reconcile(true);
         if (server != null) return;
         try {
+            serverPin = prepareTrust(context);
             KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
             kmf.init(keyStore(), null);
             SSLContext tls = SSLContext.getInstance("TLS");
@@ -127,7 +147,7 @@ final class SecurePhoneBridge {
     }
 
     synchronized void stop() {
-        SSLServerSocket old = server; server = null;
+        SSLServerSocket old = server; server = null; serverPin = "";
         if (old != null) try { old.close(); } catch (IOException ignored) {}
         for (Socket socket : clients) try { socket.close(); } catch (IOException ignored) {}
         clients.clear();

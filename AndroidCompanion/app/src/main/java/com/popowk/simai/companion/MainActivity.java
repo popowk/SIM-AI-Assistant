@@ -117,41 +117,25 @@ public final class MainActivity extends Activity {
         column.addView(shizukuGrant);
 
         Button secureWifi = new Button(this);
-        secureWifi.setText("启用 Shizuku Wi-Fi / 显示配对码");
+        secureWifi.setText("重新启用 Shizuku Wi-Fi");
         secureWifi.setOnClickListener(v -> {
-            if (!ShizukuTelephonyBridge.isReady()) {
-                android.widget.Toast.makeText(this, "请先在手机启动 Shizuku 并授权 Companion", android.widget.Toast.LENGTH_LONG).show();
-                return;
-            }
-            secureWifi.setEnabled(false);
-            new Thread(() -> {
-                try {
-                    String code = SecurePhoneBridge.enableAndCode(this);
-                    handler.post(() -> {
-                        secureWifi.setEnabled(true);
-                        setMonitorDesired(true);
-                        requestAllPermissionsAndAutoStart();
-                        TextView pairing = new TextView(this);
-                        pairing.setPadding(24, 16, 24, 16);
-                        pairing.setTextIsSelectable(true);
-                        pairing.setText("仅在你自己的 Mac 中输入此配对码；不要分享或上传诊断包。\n\n" + code);
-                        new android.app.AlertDialog.Builder(this).setTitle("Shizuku 安全 Wi-Fi 配对")
-                            .setView(pairing).setPositiveButton("关闭", null).show();
-                    });
-                } catch (Exception failure) {
-                    handler.post(() -> {
-                        secureWifi.setEnabled(true);
-                        android.widget.Toast.makeText(this, "无法初始化安全 Wi-Fi", android.widget.Toast.LENGTH_LONG).show();
-                    });
-                }
-            }, "SIMAI-WiFi-Pairing").start();
+            SecurePhoneBridge.enable(this);
+            setMonitorDesired(true);
+            requestAllPermissionsAndAutoStart();
+            refresh();
         });
         column.addView(secureWifi);
         Button disableSecureWifi = new Button(this);
-        disableSecureWifi.setText("关闭 Shizuku Wi-Fi 并撤销配对");
+        disableSecureWifi.setText("关闭 Shizuku Wi-Fi 并撤销信任");
         disableSecureWifi.setOnClickListener(v -> {
-            SecurePhoneBridge.disable(this);
-            android.widget.Toast.makeText(this, "已撤销无线配对；USB ADB 不受影响", android.widget.Toast.LENGTH_SHORT).show();
+            new android.app.AlertDialog.Builder(this)
+                .setTitle("关闭无线电话连接？")
+                .setMessage("已信任的 Mac 将不能再使用 Wi-Fi 通话。USB ADB 不受影响。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("关闭并撤销", (dialog, which) -> {
+                    SecurePhoneBridge.disable(this);
+                    refresh();
+                }).show();
         });
         column.addView(disableSecureWifi);
 
@@ -411,7 +395,10 @@ public final class MainActivity extends Activity {
 
         String ip = getLocalIpAddress();
         if (wifiStatus != null) {
-            wifiStatus.setText("📶 Wi-Fi 直连: http://" + ip + ":18764\n(Mac 端已支持自动扫描发现，免手动填写)");
+            wifiStatus.setText(!SecurePhoneBridge.isEnabled(this) ? "Wi-Fi 已关闭；可重新启用" :
+                ShizukuTelephonyBridge.isReady() ?
+                "Shizuku Wi-Fi 自动发现 · " + ip + "\n首次在 Mac 选择无线模式并连接已授权 USB；随后无需数据线。" :
+                "Wi-Fi 等待手机 Shizuku 启动并授权");
         }
 
         if (shizukuStatus != null) {

@@ -101,7 +101,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.50" : "AI 电话自动值守 · 全双工音频 · v0.4.50")
+                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.51" : "AI 电话自动值守 · 全双工音频 · v0.4.51")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -531,22 +531,18 @@ struct DashboardView: View {
                 }.pickerStyle(.segmented)
                     .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.answerCallBusy || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
                 if model.useShizukuWiFi {
-                    TextField("手机局域网 IPv4 地址", text: $model.wifiHost)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
-                    SecureField("Companion 安全 Wi-Fi 配对码", text: $model.wifiPairingDraft)
-                        .textFieldStyle(.roundedBorder)
                     HStack {
-                        Button("保存配对") { model.saveWiFiPairing() }
-                        Button("测试安全连接") { model.testWiFiConnection() }.disabled(model.wifiPingTesting)
-                        Button("清除配对") { model.clearWiFiPairing() }
+                        Button("测试连接") { model.testWiFiConnection() }.disabled(model.wifiPingTesting)
+                        Button("重新建立信任") { model.reestablishWiFiTrust() }
+                            .disabled(model.wifiTrustImporting || model.liveVoiceActive || model.liveVoiceStarting ||
+                                      model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
                     }
                     Text(model.wifiPairStatus).font(.caption)
                     Text(model.shizukuAudioReady ? "Shizuku 音频已就绪" : "Shizuku 音频尚未就绪")
                         .foregroundColor(model.shizukuAudioReady ? .green : .secondary)
                         .font(.caption)
                     if !model.wifiPingStatus.isEmpty { Text(model.wifiPingStatus).font(.caption) }
-                    Text("手机端启动 Shizuku 并授权 Companion，点击「启用 Shizuku Wi-Fi / 显示配对码」。Mac 无需 ADB 配对。证书和配对码仅保存在本机钥匙串。")
+                    Text("手机启动 Shizuku 并授权 Companion 即可自动开启无线服务。首次连接一台已授权 USB 手机自动建立信任，之后拔线自动发现，无需输入 IP 或配对码。")
                         .font(.caption2).foregroundStyle(.secondary)
                 } else {
                     Text("USB ADB 继续使用原有状态、接听和 PCM 音频 Helper；不依赖 Shizuku。").font(.caption).foregroundStyle(.secondary)
@@ -649,7 +645,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.50 (Build 67)").font(.caption.monospaced())
+            Text("v0.4.51 (Build 68)").font(.caption.monospaced())
         }
     }
 
