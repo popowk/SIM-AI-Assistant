@@ -23,11 +23,11 @@ final class AssistantModel: ObservableObject {
     @Published var liveBridgeStatus = "正在检查手机连接"
     @Published var livePhoneState = "未连接"
     @Published var connectionTransport = "DISCONNECTED" // "WIFI_DIRECT", "ADB_HTTP", "ADB_FILE", "DISCONNECTED"
-    @Published var wifiHost = UserDefaults.standard.string(forKey: "simai_companion_wifi_host") ?? "" {
+    @Published private(set) var wifiHost = UserDefaults.standard.string(forKey: "simai_companion_wifi_host") ?? "" {
         didSet {
             UserDefaults.standard.set(wifiHost, forKey: "simai_companion_wifi_host")
             if useShizukuWiFi && oldValue != wifiHost && !liveVoiceActive && !liveVoiceStarting {
-                closeLiveBridge(); bridgeCursor = PhoneBridgeCursor()
+                closeLiveBridge()
                 wifiDirectActive = false; shizukuAudioReady = false; isShizukuReady = false
                 livePhoneState = "未连接"; connectionTransport = "DISCONNECTED"
                 resetBridgeRetry()
@@ -37,8 +37,11 @@ final class AssistantModel: ObservableObject {
     @Published var wifiDirectActive = false
     @Published private(set) var useShizukuWiFi = UserDefaults.standard.bool(forKey: "SIMAI_SHIZUKU_WIFI_MODE")
     @Published private(set) var shizukuAudioReady = false
-    @Published private(set) var wifiPairStatus = ShizukuWiFiCredentials.load() == nil ? "未配对" : "已保存配对码，等待手机连接"
-    @Published var wifiPairingDraft = ""
+    @Published private(set) var wifiPairStatus = ShizukuWiFiCredentials.load() == nil ? "等待首次 USB 信任" : "已信任手机，自动发现中"
+    @Published private(set) var wifiTrustImporting = false
+    private var nextUSBTrustAttempt = Date.distantPast
+    private var nextWiFiDiscoveryAttempt = Date.distantPast
+    private var wifiTrustGeneration = 0
     private var wifiCredentials = ShizukuWiFiCredentials.load()
     private var shizukuTransport: ShizukuWiFiTransport? {
         ShizukuWiFiTransport(host: wifiHost, credentials: wifiCredentials)
@@ -57,31 +60,60 @@ final class AssistantModel: ObservableObject {
         resetBridgeRetry()
         adbScanGeneration += 1; adbChecking = false; initialPhoneMonitorWarmup = false
         useShizukuWiFi = wifi
+        wifiTrustGeneration += 1
+        nextUSBTrustAttempt = .distantPast
+        nextWiFiDiscoveryAttempt = .distantPast
         UserDefaults.standard.set(wifi, forKey: "SIMAI_SHIZUKU_WIFI_MODE")
         if !wifi { autoInspectADBIfNeeded(force: true) }
         pollLiveBridge()
     }
-    func saveWiFiPairing() {
-        guard !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
-              livePhoneState != "RINGING", livePhoneState != "OFFHOOK",
-              let credential = ShizukuWiFiCredentials(code: wifiPairingDraft), credential.save() else {
-            wifiPairStatus = "配对码无效或无法保存"; return
-        }
-        wifiCredentials = credential
-        wifiPairingDraft = ""
-        wifiPairStatus = "已保存，正在核验手机证书及音频服务"
-        closeLiveBridge(); bridgeCursor = PhoneBridgeCursor()
-        wifiDirectActive = false; shizukuAudioReady = false
-        resetBridgeRetry(); pollLiveBridge()
-    }
-    func clearWiFiPairing() {
-        guard !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
-              livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
-        ShizukuWiFiCredentials.clear(); wifiCredentials = nil; wifiPairingDraft = ""
-        wifiPairStatus = "已清除本机配对；可在手机撤销配对"
+    func reestablishWiFiTrust() {
+        guard useShizukuWiFi, !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
+              !wifiTrustImporting, livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
+        ShizukuWiFiCredentials.clear()
+        wifiCredentials = nil
+        wifiTrustGeneration += 1
         closeLiveBridge(); bridgeCursor = PhoneBridgeCursor()
         wifiDirectActive = false; shizukuAudioReady = false; isShizukuReady = false
+        wifiHost = ""
         livePhoneState = "未连接"; connectionTransport = "DISCONNECTED"
+        nextUSBTrustAttempt = .distantPast
+        wifiPairStatus = "请连接已授权 USB，手机启动并授权 Shizuku"
+        resetBridgeRetry()
+    }
+    private func importWiFiTrustIfNeeded() {
+        guard useShizukuWiFi, wifiCredentials == nil, !wifiTrustImporting, !adbInstalling,
+              !adbChecking, !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
+              livePhoneState != "RINGING", livePhoneState != "OFFHOOK",
+              Date() >= nextUSBTrustAttempt else { return }
+        wifiTrustImporting = true
+        nextUSBTrustAttempt = Date().addingTimeInterval(5)
+        let path = selectedADBPath
+        let generation = wifiTrustGeneration
+        Task { [weak self] in
+            let imported = await Task.detached(priority: .utility) {
+                ADBInspector.importUSBWiFiTrust(at: path)
+            }.value
+            guard let self else { return }
+            self.wifiTrustImporting = false
+            guard self.useShizukuWiFi, self.wifiCredentials == nil, generation == self.wifiTrustGeneration,
+                  self.selectedADBPath == path else { return }
+            guard let (credential, ip) = imported else {
+                self.wifiPairStatus = "首次需连接一台已授权 USB 手机，并在手机授权 Shizuku"
+                return
+            }
+            guard credential.save() else {
+                self.wifiPairStatus = "无法保存本机钥匙串信任，请检查系统权限"
+                return
+            }
+            self.wifiCredentials = credential
+            self.closeLiveBridge(); self.bridgeCursor = PhoneBridgeCursor()
+            self.wifiHost = ip ?? ""
+            self.wifiPairStatus = "手机信任已自动保存，可拔掉数据线"
+            self.resetBridgeRetry()
+            self.autoDiscoverWiFiCompanionIfNeeded()
+            self.pollLiveBridge()
+        }
     }
     @Published var isShizukuReady = false
     @Published var wifiPingStatus = ""
@@ -263,8 +295,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.50"
-    let buildNumber = "67"
+    let version = "0.4.51"
+    let buildNumber = "68"
     @Published private(set) var phoneDiagnosticsCollecting = false
     @Published private(set) var phoneDiagnosticsStatus = "导出时自动读取手机日志"
     @Published private(set) var phoneDiagnosticsPreview = ""
@@ -2348,7 +2380,7 @@ final class AssistantModel: ObservableObject {
             guard let transport = shizukuTransport else {
                 bridgeBusy = false
                 wifiDirectActive = false; shizukuAudioReady = false
-                liveBridgeStatus = "请输入手机 IP 和 Companion 安全 Wi-Fi 配对码"
+                liveBridgeStatus = wifiCredentials == nil ? "等待首次 USB 信任（无需输入配对码）" : "正在自动发现已信任的 Shizuku 手机"
                 return
             }
             Task { [weak self] in
@@ -2370,7 +2402,7 @@ final class AssistantModel: ObservableObject {
                     self.bridgeBusy = false
                     self.consecutivePollFailures += 1
                     self.wifiDirectActive = false; self.shizukuAudioReady = false; self.isShizukuReady = false
-                    self.liveBridgeStatus = "安全 Wi-Fi 未就绪：核对手机 IP、配对码和 Companion 监听"
+                    self.liveBridgeStatus = "无线连接中断，正在重新发现已信任手机；检查手机 Shizuku 是否运行"
                     if self.consecutivePollFailures >= 3 {
                         self.connectionTransport = "DISCONNECTED"; self.livePhoneState = "未连接"
                     }
@@ -2493,7 +2525,7 @@ final class AssistantModel: ObservableObject {
                                 guard let self, !self.useShizukuWiFi else { return }
                                 if self.wifiHost != ip {
                                     self.wifiHost = ip
-                                    self.log(.info, .system, "通过 ADB 自动获取手机局域网 Wi-Fi IP：\(ip)")
+                                    self.log(.info, .system, "通过 ADB 自动获取手机局域网地址")
                                 }
                             }
                         }
@@ -2516,7 +2548,7 @@ final class AssistantModel: ObservableObject {
     func testWiFiConnection() {
         guard useShizukuWiFi else { wifiPingStatus = "当前使用 ADB；请选择 Shizuku Wi-Fi 模式"; return }
         guard !wifiPingTesting, let transport = shizukuTransport else {
-            wifiPingStatus = "请先输入手机 IP 和配对码"; return
+            wifiPingStatus = "等待自动发现及首次 USB 信任"; return
         }
         wifiPingTesting = true
         wifiPingStatus = "正在核验 TLS 证书及身份……"
@@ -2525,19 +2557,24 @@ final class AssistantModel: ObservableObject {
             defer { self.wifiPingTesting = false }
             do {
                 let (status, _) = try await transport.request("/ping")
-                self.wifiPingStatus = status == 200 ? "手机安全连接成功，正在检测 Shizuku 音频" : "配对码被拒绝"
-            } catch { self.wifiPingStatus = "安全连接失败；请检查 IP、证书配对和手机服务" }
+                self.wifiPingStatus = status == 200 ? "手机安全连接成功，正在检测 Shizuku 音频" : "手机信任已失效；请通过 USB 重新建立信任"
+            } catch { self.wifiPingStatus = "安全连接失败；确认手机已授权 Shizuku 并与 Mac 位于同一网络" }
             self.resetBridgeRetry(); self.pollLiveBridge()
         }
     }
 
     private func autoDiscoverWiFiCompanionIfNeeded() {
-        guard useShizukuWiFi, !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
-              wifiHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let ip = wifiDiscovery.discoveredIP, BridgeRetryPolicy.validWirelessEndpoint(ip + ":18766") else { return }
-        wifiHost = ip
-        wifiPingStatus = "已发现手机 IP；安全配对成功后才连接"
-        pollLiveBridge()
+        guard useShizukuWiFi, liveSyncEnabled, !liveVoiceActive, !liveVoiceStarting,
+              !answerCallBusy, !bridgeBusy, !adbInstalling,
+              livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
+        guard let credentials = wifiCredentials else { importWiFiTrustIfNeeded(); return }
+        guard !wifiDirectActive, Date() >= nextWiFiDiscoveryAttempt else { return }
+        if let ip = WiFiDiscoveryCandidate.nextHost(trustedPin: credentials.pin, current: wifiHost,
+                failed: consecutivePollFailures >= 2, candidates: wifiDiscovery.candidates) {
+            nextWiFiDiscoveryAttempt = Date().addingTimeInterval(5)
+            wifiHost = ip
+            wifiPairStatus = "已发现信任手机，正在验证加密连接"
+        }
     }
 
     func launchShizukuOnPhone() {

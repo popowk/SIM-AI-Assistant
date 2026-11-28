@@ -1,92 +1,29 @@
 import Foundation
 import Network
+import SIMAICore
 
+/// Bonjour is only an address hint. A candidate becomes trusted exclusively
+/// after the existing pinned TLS certificate and bearer secret are verified.
 @MainActor
 final class BonjourWiFiScanner: ObservableObject {
-    @Published var discoveredIP: String? = nil
+    @Published private(set) var candidates: [WiFiDiscoveryCandidate] = []
     private var browser: NWBrowser?
-    private var resolverConnection: NWConnection?
 
-    init() {
-        start()
-    }
+    init() { start() }
 
     func start() {
         guard browser == nil else { return }
-        let descriptor = NWBrowser.Descriptor.bonjour(type: "_simai._tcp", domain: "local.")
-        let parameters = NWParameters()
-        let b = NWBrowser(for: descriptor, using: parameters)
+        let b = NWBrowser(for: .bonjour(type: "_simai._tcp", domain: "local."), using: NWParameters())
         b.browseResultsChangedHandler = { [weak self] results, _ in
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                for result in results {
-                    if case .service = result.endpoint {
-                        // 1. Prefer IPv4 advertised in Bonjour TXT record
-                        if case let .bonjour(txt) = result.metadata {
-                            let dict = txt.dictionary
-                            if let ip = dict["ipv4"], !ip.isEmpty,
-                               !ip.contains(":"), !ip.contains("%"),
-                               !ip.hasPrefix("127.") && !ip.hasPrefix("169.254.") {
-                                self.discoveredIP = ip
-                                return
-                            }
-                        }
-                        // 2. Resolve endpoint with IPv4 restriction
-                        self.resolve(endpoint: result.endpoint)
-                        return
-                    }
-                }
+            let candidates = results.compactMap { result -> WiFiDiscoveryCandidate? in
+                guard case .bonjour(let txt) = result.metadata,
+                      let ip = txt.dictionary["ipv4"], let pin = txt.dictionary["pin"] else { return nil }
+                return WiFiDiscoveryCandidate(host: ip, pin: pin)
             }
+            Task { @MainActor [weak self] in self?.candidates = Array(Set(candidates)).sorted { $0.host < $1.host } }
         }
         b.start(queue: .main)
-        self.browser = b
+        browser = b
     }
-
-    private func resolve(endpoint: NWEndpoint) {
-        resolverConnection?.cancel()
-        let params = NWParameters.tcp
-        if let ipOptions = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
-            ipOptions.version = .v4
-        }
-        let conn = NWConnection(to: endpoint, using: params)
-        resolverConnection = conn
-        conn.stateUpdateHandler = { [weak self, weak conn] state in
-            if case .ready = state {
-                if let path = conn?.currentPath,
-                   let remote = path.remoteEndpoint,
-                   case let .hostPort(host, _) = remote {
-                    var candidateIP: String? = nil
-                    switch host {
-                    case let .ipv4(v4):
-                        let ip = "\(v4)"
-                        if !ip.isEmpty && !ip.hasPrefix("127.") && !ip.hasPrefix("169.254.") && !ip.contains(":") {
-                            candidateIP = ip
-                        }
-                    default:
-                        // Strictly drop IPv6 and link-local addresses
-                        break
-                    }
-                    if let ip = candidateIP {
-                        Task { @MainActor [weak self] in
-                            self?.discoveredIP = ip
-                        }
-                    }
-                }
-                conn?.cancel()
-            }
-        }
-        conn.start(queue: .global(qos: .utility))
-    }
-
-    func stop() {
-        browser?.cancel()
-        browser = nil
-        resolverConnection?.cancel()
-        resolverConnection = nil
-    }
-
-    deinit {
-        browser?.cancel()
-        resolverConnection?.cancel()
-    }
+    deinit { browser?.cancel() }
 }

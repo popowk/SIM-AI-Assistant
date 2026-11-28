@@ -16,10 +16,19 @@ public final class NsdHelper {
     private NsdManager nsdManager;
     private NsdManager.RegistrationListener registrationListener;
     private WifiManager.MulticastLock multicastLock;
-    private boolean isRegistered = false;
+    private String advertisedIP = "";
+    private String advertisedPin = "";
+    private volatile boolean isRegistered = false;
 
-    public synchronized void register(Context context, int port) {
-        if (isRegistered) return;
+    public synchronized void register(Context context, int port, String pin) {
+        String wifiIp = getWifiIpAddress(context);
+        if (wifiIp == null || wifiIp.isEmpty() || pin == null || !pin.matches("[a-f0-9]{64}")) {
+            unregister(); return;
+        }
+        if (registrationListener != null && wifiIp.equals(advertisedIP) && pin.equals(advertisedPin)) return;
+        unregister();
+        advertisedIP = wifiIp;
+        advertisedPin = pin;
         try {
             WifiManager wm = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             if (wm != null) {
@@ -42,29 +51,32 @@ public final class NsdHelper {
             serviceInfo.setServiceName(deviceName);
             serviceInfo.setServiceType(SERVICE_TYPE);
             serviceInfo.setPort(port);
-            String wifiIp = getWifiIpAddress(context);
-            if (wifiIp != null && !wifiIp.isEmpty() && !wifiIp.startsWith("127.")) {
-                serviceInfo.setAttribute("ipv4", wifiIp);
-                serviceInfo.setAttribute("port", String.valueOf(port));
-            }
+            serviceInfo.setAttribute("ipv4", wifiIp);
+            serviceInfo.setAttribute("port", String.valueOf(port));
+            // A public certificate fingerprint is a discovery hint only, never a credential.
+            serviceInfo.setAttribute("pin", pin);
 
             registrationListener = new NsdManager.RegistrationListener() {
                 @Override
                 public void onServiceRegistered(NsdServiceInfo nsdServiceInfo) {
-                    isRegistered = true;
-                    Log.i(TAG, "mDNS Service registered: " + nsdServiceInfo.getServiceName());
+                    synchronized (NsdHelper.this) {
+                        if (registrationListener == this) isRegistered = true;
+                    }
                 }
 
                 @Override
                 public void onRegistrationFailed(NsdServiceInfo serviceInfo, int errorCode) {
-                    isRegistered = false;
+                    synchronized (NsdHelper.this) {
+                        if (registrationListener == this) { registrationListener = null; isRegistered = false; }
+                    }
                     Log.w(TAG, "mDNS Registration failed: " + errorCode);
                 }
 
                 @Override
                 public void onServiceUnregistered(NsdServiceInfo arg0) {
-                    isRegistered = false;
-                    Log.i(TAG, "mDNS Service unregistered");
+                    synchronized (NsdHelper.this) {
+                        if (registrationListener == this) { registrationListener = null; isRegistered = false; }
+                    }
                 }
 
                 @Override
@@ -75,14 +87,18 @@ public final class NsdHelper {
 
             nsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener);
         } catch (Throwable t) {
-            Log.w(TAG, "Failed to start NSD: " + t.getMessage());
+            unregister();
+            Log.w(TAG, "Failed to start NSD");
         }
     }
 
     public synchronized void unregister() {
-        if (nsdManager != null && registrationListener != null && isRegistered) {
+        NsdManager.RegistrationListener old = registrationListener;
+        registrationListener = null;
+        advertisedIP = ""; advertisedPin = "";
+        if (nsdManager != null && old != null) {
             try {
-                nsdManager.unregisterService(registrationListener);
+                nsdManager.unregisterService(old);
             } catch (Throwable t) {
                 Log.w(TAG, "Failed to unregister NSD: " + t.getMessage());
             }

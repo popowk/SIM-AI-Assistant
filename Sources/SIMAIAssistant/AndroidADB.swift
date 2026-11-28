@@ -928,6 +928,23 @@ enum ADBInspector {
 
     /// Automatically retrieves the device's true Wi-Fi IP address over ADB.
     /// Excludes cellular modem IPs (rmnet/ccmni) and returns pure IPv4.
+    /// Never connect or pair ADB over Wi-Fi. Import only from a unique physically
+    /// attached USB device already authorized by Android. No key is logged.
+    static func importUSBWiFiTrust(at selected: String?) -> (ShizukuWiFiCredentials, String?)? {
+        guard let adb = executable(at: selected),
+              case .completed(0, let output) = run(adb, args: ["devices", "-l"], timeout: 5) else { return nil }
+        let rows = output.split(whereSeparator: \.isNewline).map { $0.split(whereSeparator: \.isWhitespace) }
+        let authorized = rows.filter { $0.count >= 2 && $0[1] == "device" }
+        guard authorized.count == 1, let row = authorized.first,
+              row.dropFirst(2).contains(where: { $0.hasPrefix("usb:") }) else { return nil }
+        let serial = String(row[0])
+        guard !serial.contains(":"), !serial.contains("._adb-tls-connect._tcp"),
+              case .completed(0, let code) = run(adb, args: ["-s", serial, "exec-out", "run-as",
+                "com.popowk.simai.companion", "cat", "files/wifi-trust-private"], timeout: 4),
+              let credential = ShizukuWiFiCredentials(code: code) else { return nil }
+        return (credential, fetchDeviceWiFiIP(at: selected, serial: serial))
+    }
+
     static func fetchDeviceWiFiIP(at selected: String?, serial: String) -> String? {
         guard let adb = executable(at: selected) else { return nil }
         // 1. Try `ip -4 addr show wlan0`
