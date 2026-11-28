@@ -63,6 +63,7 @@ final class AssistantModel: ObservableObject {
         wifiTrustGeneration += 1
         nextUSBTrustAttempt = .distantPast
         nextWiFiDiscoveryAttempt = .distantPast
+        consecutivePollFailures = 0
         UserDefaults.standard.set(wifi, forKey: "SIMAI_SHIZUKU_WIFI_MODE")
         if !wifi { autoInspectADBIfNeeded(force: true) }
         pollLiveBridge()
@@ -78,6 +79,8 @@ final class AssistantModel: ObservableObject {
         wifiHost = ""
         livePhoneState = "未连接"; connectionTransport = "DISCONNECTED"
         nextUSBTrustAttempt = .distantPast
+        nextWiFiDiscoveryAttempt = .distantPast
+        consecutivePollFailures = 0
         wifiPairStatus = "请连接已授权 USB，手机启动并授权 Shizuku"
         resetBridgeRetry()
     }
@@ -108,6 +111,7 @@ final class AssistantModel: ObservableObject {
             }
             self.wifiCredentials = credential
             self.closeLiveBridge(); self.bridgeCursor = PhoneBridgeCursor()
+            self.consecutivePollFailures = 0
             self.wifiHost = ip ?? ""
             self.wifiPairStatus = "手机信任已自动保存，可拔掉数据线"
             self.resetBridgeRetry()
@@ -2388,7 +2392,10 @@ final class AssistantModel: ObservableObject {
                 do {
                     let (status, data) = try await transport.request("/events?since=\(since)")
                     guard self.liveSyncEnabled, generation == self.bridgeGeneration, self.useShizukuWiFi else { return }
-                    guard status == 200 else { throw URLError(.userAuthenticationRequired) }
+                    guard status == 200 else {
+                        if status == 403 { self.wifiPairStatus = "手机已撤销信任；可连接 USB 并重新建立信任" }
+                        throw URLError(.userAuthenticationRequired)
+                    }
                     let snapshot = try JSONDecoder().decode(PhoneBridgeSnapshot.self, from: data)
                     guard snapshot.schema == 1, snapshot.running, UUID(uuidString: snapshot.session) != nil,
                           ["IDLE", "RINGING", "OFFHOOK"].contains(snapshot.state),
@@ -2516,19 +2523,6 @@ final class AssistantModel: ObservableObject {
                     self.liveBridgeStatus = result.message
                     if self.bridgeConsecutiveFailures == 0 {
                         self.log(.info, .call, "ADB 端口转发连接建立（未读取设备序列号）")
-                    }
-                    let serial = link.serial
-                    Task.detached(priority: .utility) { [weak self] in
-                        // USB mode does not require Shizuku or start it automatically.
-                        if let ip = ADBInspector.fetchDeviceWiFiIP(at: path, serial: serial) {
-                            await MainActor.run {
-                                guard let self, !self.useShizukuWiFi else { return }
-                                if self.wifiHost != ip {
-                                    self.wifiHost = ip
-                                    self.log(.info, .system, "通过 ADB 自动获取手机局域网地址")
-                                }
-                            }
-                        }
                     }
                     self.pollLiveBridge()
                 } else {

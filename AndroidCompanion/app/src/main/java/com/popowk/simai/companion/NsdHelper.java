@@ -18,7 +18,6 @@ public final class NsdHelper {
     private WifiManager.MulticastLock multicastLock;
     private String advertisedIP = "";
     private String advertisedPin = "";
-    private volatile boolean isRegistered = false;
 
     public synchronized void register(Context context, int port, String pin) {
         String wifiIp = getWifiIpAddress(context);
@@ -42,7 +41,7 @@ public final class NsdHelper {
             }
 
             nsdManager = (NsdManager) context.getSystemService(Context.NSD_SERVICE);
-            if (nsdManager == null) return;
+            if (nsdManager == null) { unregister(); return; }
 
             NsdServiceInfo serviceInfo = new NsdServiceInfo();
             String rawModel = Build.MODEL != null ? Build.MODEL : "Android";
@@ -59,15 +58,13 @@ public final class NsdHelper {
             registrationListener = new NsdManager.RegistrationListener() {
                 @Override
                 public void onServiceRegistered(NsdServiceInfo nsdServiceInfo) {
-                    synchronized (NsdHelper.this) {
-                        if (registrationListener == this) isRegistered = true;
-                    }
+                    // Registration remains owned by this listener until replaced or stopped.
                 }
 
                 @Override
                 public void onRegistrationFailed(NsdServiceInfo serviceInfo, int errorCode) {
                     synchronized (NsdHelper.this) {
-                        if (registrationListener == this) { registrationListener = null; isRegistered = false; }
+                        if (registrationListener == this) { registrationListener = null; }
                     }
                     Log.w(TAG, "mDNS Registration failed: " + errorCode);
                 }
@@ -75,7 +72,7 @@ public final class NsdHelper {
                 @Override
                 public void onServiceUnregistered(NsdServiceInfo arg0) {
                     synchronized (NsdHelper.this) {
-                        if (registrationListener == this) { registrationListener = null; isRegistered = false; }
+                        if (registrationListener == this) { registrationListener = null; }
                     }
                 }
 
@@ -102,7 +99,6 @@ public final class NsdHelper {
             } catch (Throwable t) {
                 Log.w(TAG, "Failed to unregister NSD: " + t.getMessage());
             }
-            isRegistered = false;
         }
         if (multicastLock != null && multicastLock.isHeld()) {
             try {

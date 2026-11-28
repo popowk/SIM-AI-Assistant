@@ -13,7 +13,7 @@ final class BonjourWiFiScanner: ObservableObject {
 
     func start() {
         guard browser == nil else { return }
-        let b = NWBrowser(for: .bonjour(type: "_simai._tcp", domain: "local."), using: NWParameters())
+        let b = NWBrowser(for: .bonjourWithTXTRecord(type: "_simai._tcp", domain: "local."), using: NWParameters())
         b.browseResultsChangedHandler = { [weak self] results, _ in
             let candidates = results.compactMap { result -> WiFiDiscoveryCandidate? in
                 guard case .bonjour(let txt) = result.metadata,
