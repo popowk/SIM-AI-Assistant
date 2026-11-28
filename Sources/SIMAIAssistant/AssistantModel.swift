@@ -26,6 +26,12 @@ final class AssistantModel: ObservableObject {
     @Published var wifiHost = UserDefaults.standard.string(forKey: "simai_companion_wifi_host") ?? "" {
         didSet {
             UserDefaults.standard.set(wifiHost, forKey: "simai_companion_wifi_host")
+            if useShizukuWiFi && oldValue != wifiHost && !liveVoiceActive && !liveVoiceStarting {
+                closeLiveBridge(); bridgeCursor = PhoneBridgeCursor()
+                wifiDirectActive = false; shizukuAudioReady = false; isShizukuReady = false
+                livePhoneState = "未连接"; connectionTransport = "DISCONNECTED"
+                resetBridgeRetry()
+            }
         }
     }
     @Published var wifiDirectActive = false
@@ -38,7 +44,7 @@ final class AssistantModel: ObservableObject {
         ShizukuWiFiTransport(host: wifiHost, credentials: wifiCredentials)
     }
     private var phoneAudioTransportReady: Bool {
-        useShizukuWiFi ? (wifiDirectActive && shizukuAudioReady && isShizukuReady) : adbWasAuthorized
+        PhoneTransportReadiness.ready(wifi: useShizukuWiFi, adbAuthorized: adbWasAuthorized, authenticatedWiFi: wifiDirectActive, shizukuAuthorized: isShizukuReady, shizukuAudioReady: shizukuAudioReady)
     }
     func selectPhoneTransport(_ wifi: Bool) {
         guard wifi != useShizukuWiFi, !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
@@ -49,6 +55,7 @@ final class AssistantModel: ObservableObject {
         connectionTransport = "DISCONNECTED"
         wifiDirectActive = false; shizukuAudioReady = false; isShizukuReady = false
         resetBridgeRetry()
+        adbScanGeneration += 1; adbChecking = false; initialPhoneMonitorWarmup = false
         useShizukuWiFi = wifi
         UserDefaults.standard.set(wifi, forKey: "SIMAI_SHIZUKU_WIFI_MODE")
         if !wifi { autoInspectADBIfNeeded(force: true) }
@@ -1374,8 +1381,7 @@ final class AssistantModel: ObservableObject {
               bridgeCursor.session == observedRingingSession,
               bridgeCursor.lastSequence == observedRingingSequence,
               !bridgeCursor.session.isEmpty, bridgeCursor.lastSequence > 0,
-              let jar = Bundle.main.resourceURL?.appendingPathComponent("SIMAI-Audio-Probe.jar"),
-              FileManager.default.fileExists(atPath: jar.path) else { return false }
+              useShizukuWiFi || embeddedAudioProbeAvailable else { return false }
         localFallbackForCurrentRing = true
         incomingVoicePending = false; incomingVoiceDeadline = nil
         incomingPreflightPassed = false; incomingPreflightRunning = false
@@ -1504,15 +1510,13 @@ final class AssistantModel: ObservableObject {
         guard autoCallEnabled, localSpeechApproved, localReceptionReady, localReceptionEngine?.isReady == true,
               !adbInstalling, !audioProbeBusy else { return }
         if state == "RINGING" {
-            // ADB is still necessary for the existing cellular PCM helper,
-            // even when call state is supplied by Wi-Fi.
+            // Require the selected transport, not an unrelated ADB connection.
             guard phoneAudioTransportReady, bridgeCursor.lastSequence > 0,
                   !bridgeCursor.session.isEmpty,
                   !answerCallBusy, !liveVoiceActive, !liveVoiceStarting,
                   !automaticAnswerRequested, !automaticAnswerAcknowledged,
                   !(localRingSession == bridgeCursor.session && localRingSequence == bridgeCursor.lastSequence),
-                  let jar = Bundle.main.resourceURL?.appendingPathComponent("SIMAI-Audio-Probe.jar"),
-                  FileManager.default.fileExists(atPath: jar.path) else { return }
+                  useShizukuWiFi || embeddedAudioProbeAvailable else { return }
             localRingSession = bridgeCursor.session
             localRingSequence = bridgeCursor.lastSequence
             localAudioAttemptedForRing = false
@@ -1523,7 +1527,7 @@ final class AssistantModel: ObservableObject {
                   localRingSession == bridgeCursor.session,
                   localRingSequence > 0,
                   bridgeCursor.lastSequence == localRingSequence + 1,
-                  automaticAnswerRequested || automaticAnswerAcknowledged,
+                  automaticAnswerAcknowledged || (!useShizukuWiFi && automaticAnswerRequested),
                   !localAudioAttemptedForRing, !localCallAudioRequested, !liveVoiceActive, !liveVoiceStarting {
             if automaticAnswerAcknowledged && automaticAnswerSession == bridgeCursor.session {
                 automaticOffhookSequence = bridgeCursor.lastSequence
@@ -1766,7 +1770,7 @@ final class AssistantModel: ObservableObject {
         )
         let armed = autoCallEnabled && voiceSessionPrepared && browserReady &&
             automaticVoiceReadinessIssues().isEmpty && !adbInstalling &&
-            !audioProbeBusy && (state != "OFFHOOK" || automaticAnswerAcknowledged || automaticAnswerRequested)
+            !audioProbeBusy && (state != "OFFHOOK" || automaticAnswerAcknowledged || (!useShizukuWiFi && automaticAnswerRequested))
         let action = autoCallState.update(state: state, armed: armed)
         switch action {
         case .answerIncoming:
@@ -1862,10 +1866,9 @@ final class AssistantModel: ObservableObject {
         adbChecking = true
         let path = selectedADBPath
         let scanGeneration = adbScanGeneration
-        let wirelessHost = wifiHost
         nextADBScanAt = Date().addingTimeInterval(bridgeLink == nil ? 2.5 : 12)
         Task.detached(priority: .userInitiated) { [weak self] in
-            let found = ADBInspector.inspect(at: path, wirelessHost: wirelessHost)
+            let found = ADBInspector.inspect(at: path)
             let description = ADBInspector.discoveryLabel(at: path)
             await MainActor.run {
                 guard let self else { return }
@@ -2343,7 +2346,7 @@ final class AssistantModel: ObservableObject {
         // Resume state sync after the explicit audio preview ends.
         guard !liveVoiceStarting, !liveVoiceActive,
               liveSyncEnabled, !adbInstalling, !bridgeBusy,
-              !initialPhoneMonitorWarmup,
+              (!initialPhoneMonitorWarmup || useShizukuWiFi),
               Date() >= bridgeRetryAfter else { return }
         bridgeBusy = true
         let generation = bridgeGeneration
@@ -2492,14 +2495,13 @@ final class AssistantModel: ObservableObject {
                     }
                     let serial = link.serial
                     Task.detached(priority: .utility) { [weak self] in
-                        _ = ADBInspector.launchShizuku(at: path, serial: serial)
+                        // USB mode does not require Shizuku or start it automatically.
                         if let ip = ADBInspector.fetchDeviceWiFiIP(at: path, serial: serial) {
                             await MainActor.run {
-                                guard let self else { return }
+                                guard let self, !self.useShizukuWiFi else { return }
                                 if self.wifiHost != ip {
                                     self.wifiHost = ip
                                     self.log(.info, .system, "通过 ADB 自动获取手机局域网 Wi-Fi IP：\(ip)")
-                                    self.testWiFiConnection()
                                 }
                             }
                         }
@@ -3147,7 +3149,7 @@ final class AssistantModel: ObservableObject {
     }
 
     /// Require same Android ring before acknowledging a private-file request.
-    private func recordPrivateAutomaticAnswer(expectedSession: String, expectedSequence: Int) -> Bool {
+    private func recordPrivateAutomaticAnswer(expectedSession: String, expectedSequence: Int, viaWiFi: Bool = false) -> Bool {
         guard bridgeCursor.session == expectedSession,
               (livePhoneState == "RINGING" && bridgeCursor.lastSequence >= expectedSequence) ||
               (livePhoneState == "OFFHOOK" && bridgeCursor.lastSequence >= expectedSequence)
@@ -3157,9 +3159,9 @@ final class AssistantModel: ObservableObject {
         automaticAnswerSession = expectedSession
         autoCallState.markAnswerAttempted()
         autoVoiceCaptureObserved = autoVoiceCaptureObserved || embeddedVoiceCaptureActive
-        answerCallStatus = "Android 已通过独立私有通道请求接听；正在确认 OFFHOOK"
-        log(.info, .call, "Android 独立私有通道接听请求成功",
-            details: ["result": "ANSWER_FALLBACK_REQUESTED"])
+        answerCallStatus = viaWiFi ? "Shizuku 接听请求已确认" : "Android 已通过独立私有通道请求接听；正在确认 OFFHOOK"
+        log(.info, .call, viaWiFi ? "Shizuku 安全 Wi-Fi 接听请求成功" : "Android 独立私有通道接听请求成功",
+            details: ["result": viaWiFi ? "SHIZUKU_ANSWER_REQUESTED" : "ANSWER_FALLBACK_REQUESTED"])
         if livePhoneState == "OFFHOOK" {
             automaticOffhookSequence = bridgeCursor.lastSequence
             reactToAutomaticCallState("OFFHOOK")
@@ -3213,7 +3215,7 @@ final class AssistantModel: ObservableObject {
                     let (http, body) = try await transport.request("/call/answer", method: "POST", session: expectedRingSession, sequence: expectedRingSequence)
                     let parsed = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
                     if http == 200 && parsed?["result"] as? String == "answer_requested" {
-                        if automatic { _ = self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession, expectedSequence: expectedRingSequence) }
+                        if automatic { _ = self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession, expectedSequence: expectedRingSequence, viaWiFi: true) }
                         self.answerCallStatus = "Shizuku 接听请求成功，等待 OFFHOOK"
                         self.log(.info, .call, "已通过安全 Wi-Fi 请求接听", details: ["result": "SHIZUKU_ANSWER_REQUESTED"])
                     } else {

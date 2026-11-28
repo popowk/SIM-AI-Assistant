@@ -124,7 +124,7 @@ struct DashboardView: View {
             )
             statusPill(
                 title: "传输通道",
-                value: model.connectionTransport == "WIFI_DIRECT" ? "Wi-Fi 局域网直连" : (model.connectionTransport == "ADB_HTTP" ? "USB 数据线 (ADB)" : (model.connectionTransport == "ADB_FILE" ? "ADB 快照备用" : "未连接")),
+                value: model.connectionTransport == "WIFI_DIRECT" ? "Shizuku 安全 Wi-Fi" : (model.connectionTransport == "ADB_HTTP" ? "USB 数据线 (ADB)" : (model.connectionTransport == "ADB_FILE" ? "ADB 快照备用" : "未连接")),
                 symbol: model.connectionTransport == "WIFI_DIRECT" ? "wifi" : (model.connectionTransport == "ADB_HTTP" ? "cable.connector" : "wifi.slash"),
                 tint: model.connectionTransport == "WIFI_DIRECT" ? .green : (model.connectionTransport == "ADB_HTTP" ? .blue : .secondary)
             )
@@ -543,15 +543,14 @@ struct DashboardView: View {
                     }
                     Text(model.wifiPairStatus).font(.caption)
                     Text(model.shizukuAudioReady ? "Shizuku 音频已就绪" : "Shizuku 音频尚未就绪")
-                        .foregroundStyle(model.shizukuAudioReady ? .green : .secondary)
+                        .foregroundColor(model.shizukuAudioReady ? .green : .secondary)
                         .font(.caption)
                     if !model.wifiPingStatus.isEmpty { Text(model.wifiPingStatus).font(.caption) }
                     Text("手机端启动 Shizuku 并授权 Companion，点击「启用 Shizuku Wi-Fi / 显示配对码」。Mac 无需 ADB 配对。证书和配对码仅保存在本机钥匙串。")
                         .font(.caption2).foregroundStyle(.secondary)
                 } else {
-                    Text("USB ADB 继续使用原有状态、接听和 PCM 音频 Helper；不依赖 Shizuku。").font(.caption)
+                    Text("USB ADB 继续使用原有状态、接听和 PCM 音频 Helper；不依赖 Shizuku。").font(.caption).foregroundStyle(.secondary)
                 }
-                    .foregroundStyle(.secondary)
             }
             .padding(10)
             .background(.quaternary.opacity(0.2), in: RoundedRectangle(cornerRadius: 8))

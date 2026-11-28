@@ -147,8 +147,8 @@ final class SecurePhoneBridge {
             out.write(buffer, 0, n); out.flush();
         }
     }
-    void relayAudio(Socket socket) throws Exception {
-        if (!audioReady()) { socket.getOutputStream().write("ERR SHIZUKU_NOT_READY\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII)); return; }
+    void relayAudio(Socket socket, java.util.function.BooleanSupplier sameCall) throws Exception {
+        if (!audioReady() || !sameCall.getAsBoolean()) { socket.getOutputStream().write("ERR SHIZUKU_NOT_READY\n".getBytes(java.nio.charset.StandardCharsets.US_ASCII)); return; }
         ParcelFileDescriptor[] pair = ParcelFileDescriptor.createSocketPair();
         ParcelFileDescriptor app = pair[0], shell = pair[1];
         boolean started;
@@ -159,18 +159,29 @@ final class SecurePhoneBridge {
             return;
         }
         socket.setSoTimeout(6000);
+        java.util.concurrent.atomic.AtomicBoolean finished = new java.util.concurrent.atomic.AtomicBoolean(false);
+        Runnable finish = () -> {
+            if (!finished.compareAndSet(false, true)) return;
+            closePair(app);
+            try { socket.close(); } catch (IOException ignored) {}
+        };
+        Thread watchdog = new Thread(() -> {
+            long deadline = android.os.SystemClock.elapsedRealtime() + 185000;
+            while (!finished.get()) {
+                if (!enabled() || !audio.ready() || !sameCall.getAsBoolean() ||
+                        android.os.SystemClock.elapsedRealtime() >= deadline) { finish.run(); break; }
+                try { Thread.sleep(250); } catch (InterruptedException ignored) { break; }
+            }
+        }, "SIMAI-TLS-CallGuard");
+        watchdog.setDaemon(true); watchdog.start();
         Thread uplink = new Thread(() -> {
             try { copy(socket.getInputStream(), new FileOutputStream(app.getFileDescriptor())); }
-            catch (Exception ignored) {} finally {
-                closePair(app);
-                try { socket.close(); } catch (IOException ignored) {}
-            }
+            catch (Exception ignored) {} finally { finish.run(); }
         }, "SIMAI-TLS-Uplink");
         uplink.setDaemon(true); uplink.start();
         try { copy(new FileInputStream(app.getFileDescriptor()), socket.getOutputStream()); }
         finally {
-            closePair(app);
-            try { socket.close(); } catch (IOException ignored) {}
+            finish.run(); watchdog.interrupt();
             try { uplink.join(1000); } catch (InterruptedException ignored) {}
         }
     }

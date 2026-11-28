@@ -11,7 +11,7 @@ struct ShizukuWiFiCredentials: Codable {
     let token: String
     init?(code: String) {
         let parts = code.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ":")
-        guard parts.count == 2, parts.allSatisfy({ $0.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil }) else { return nil }
+        guard parts.count == 2, parts.allSatisfy({ String($0).range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil }) else { return nil }
         pin = String(parts[0]); token = String(parts[1])
     }
     private static var keychainQuery: [String: Any] {
@@ -194,13 +194,15 @@ private final class ShizukuTLSRelay {
             defer { stop(); group.leave() }
             while !isStopped {
                 let semaphore = DispatchSemaphore(value: 0)
-                let result = RelayResult()
+                let result = ReceiveResult()
                 connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, complete, error in
-                    var ok = error == nil && !complete
-                    if let data, !data.isEmpty { ok = self.writeLocal(data) && ok }
-                    result.set(ok); semaphore.signal()
+                    result.set(data, more: error == nil && !complete)
+                    semaphore.signal()
                 }
-                guard semaphore.wait(timeout: .now() + 7) == .success, result.value else { break }
+                guard semaphore.wait(timeout: .now() + 7) == .success, !isStopped else { break }
+                let (data, more) = result.value
+                if let data, !data.isEmpty, !writeLocal(data) { break }
+                if !more { break }
             }
         }
         group.notify(queue: .global(qos: .utility)) { [self] in _ = Darwin.close(fd) }
@@ -215,6 +217,13 @@ private final class ShizukuTLSRelay {
             }
             return true
         }
+    }
+    private final class ReceiveResult {
+        private let lock = NSLock()
+        private var bytes: Data?
+        private var more = false
+        func set(_ data: Data?, more: Bool) { lock.lock(); bytes = data; self.more = more; lock.unlock() }
+        var value: (Data?, Bool) { lock.lock(); defer { lock.unlock() }; return (bytes, more) }
     }
     private final class RelayResult {
         private let lock = NSLock()

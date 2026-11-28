@@ -439,7 +439,14 @@ final class PhoneEventBridge {
                 client.getOutputStream().write("ERR SHIZUKU_CALL_NOT_READY\n".getBytes(StandardCharsets.US_ASCII));
                 return;
             }
-            secureBridge.relayAudio(client);
+            final String guardedSession = expectedSession;
+            final int guardedSequence = expectedSequence;
+            secureBridge.relayAudio(client, () -> {
+                synchronized (this) {
+                    return active && session.equals(guardedSession) && sequence == guardedSequence &&
+                            "OFFHOOK".equals(lastState);
+                }
+            });
             return;
         }
         if (secure && first.startsWith("POST /sms/")) {

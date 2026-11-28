@@ -21,8 +21,7 @@ public final class ShizukuAudioUserService extends IShizukuAudio.Stub {
     @Override public int probe() {
         if (Build.VERSION.SDK_INT < 33 || (Process.myUid() != 2000 && Process.myUid() != 0)) return 0;
         try {
-            AudioManager.class.getMethod("getCallUplinkInjectionAudioTrack", AudioFormat.class);
-            return 1; // API and process only; actual call audio is verified on connect.
+            return AudioStreamServer.shellAudioAvailable() ? 1 : 0; // Actual call audio is verified on connect.
         } catch (Throwable failure) { return 0; }
     }
 

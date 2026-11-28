@@ -54,6 +54,15 @@ public final class AudioStreamServer {
         }
     }
 
+    /** Non-recording idle preflight in the actual shell process. */
+    public static boolean shellAudioAvailable() {
+        try {
+            return ProbeRuntime.context().getSystemService(AudioManager.class) != null &&
+                    AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT) > 0 &&
+                    AudioManager.class.getMethod("getCallUplinkInjectionAudioTrack", AudioFormat.class) != null;
+        } catch (Throwable failure) { return false; }
+    }
+
     /** Reused only through an already authorized Shizuku Binder socket pair.
      * No network listener or credentials are created by this entry point. */
     public static void serveConnected(InputStream input, OutputStream output, Runnable closeTransport) throws Exception {
