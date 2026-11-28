@@ -300,8 +300,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.52"
-    let buildNumber = "69"
+    let version = "0.4.53"
+    let buildNumber = "70"
     @Published private(set) var phoneDiagnosticsCollecting = false
     @Published private(set) var phoneDiagnosticsStatus = "导出时自动读取手机日志"
     @Published private(set) var phoneDiagnosticsPreview = ""

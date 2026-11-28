@@ -44,13 +44,19 @@ final class PhoneEventBridge {
     private final AtomicFile snapshotFile;
     private final Context context;
     private ScheduledExecutorService heartbeat;
+    private ScheduledExecutorService wirelessWorker;
+    // Only the wireless worker performs Shizuku/Binder and TLS operations.
+    // Snapshot and call-state threads consume cached health, never wait on it.
+    private volatile boolean cachedShizukuReady;
+    private volatile boolean cachedWiFiListening;
+    private volatile boolean cachedShizukuAudioReady;
     private final String token;
     private final SecurePhoneBridge secureBridge;
     private final List<CallEvent> events = new ArrayList<>();
     private volatile boolean active;
     private volatile String lastState = "UNKNOWN";
     private int sequence = 0;
-    private ServerSocket listener;
+    private volatile ServerSocket listener;
     private Thread worker;
     private ThreadPoolExecutor requests;
     private final File privateAnswerRequest;
@@ -116,8 +122,8 @@ final class PhoneEventBridge {
         if (!"IDLE".equals(state) && !"RINGING".equals(state) && !"OFFHOOK".equals(state))
             return;
         if (state.equals(lastState)) return;
-        lastState = state;
         synchronized (events) {
+            lastState = state;
             events.add(new CallEvent(++sequence, state, System.currentTimeMillis()));
             while (events.size() > MAX_EVENTS) events.remove(0);
         }
@@ -128,7 +134,8 @@ final class PhoneEventBridge {
     void start() throws Exception {
         if (active) return;
         // USB ADB forwarding reaches loopback only. LAN clients must use authenticated TLS.
-        listener = new ServerSocket(PORT, 32, java.net.InetAddress.getByName("127.0.0.1"));
+        // Binding a socket must not prevent telephony callbacks or private snapshots.
+        // The accept worker owns creation and recovery of the loopback listener.
         requests = new ThreadPoolExecutor(4, 8, 30L, TimeUnit.SECONDS,
                 new ArrayBlockingQueue<>(32), job -> {
                     Thread thread = new Thread(job, "SIMAI-CallBridge-Request");
@@ -143,16 +150,40 @@ final class PhoneEventBridge {
         });
         writeSnapshot();
         heartbeat.scheduleWithFixedDelay(() -> {
-            if (active) {
+            if (active) writeSnapshot();
+        }, 1, 1, TimeUnit.SECONDS);
+        wirelessWorker = Executors.newSingleThreadScheduledExecutor(job -> {
+            Thread thread = new Thread(job, "SIMAI-Wireless-Health");
+            thread.setDaemon(true);
+            return thread;
+        });
+        wirelessWorker.scheduleWithFixedDelay(() -> {
+            if (!active) return;
+            try {
                 secureBridge.reconcile();
-                if (secureBridge.listening()) {
+                if (!active) return;
+                cachedShizukuReady = ShizukuTelephonyBridge.isReady();
+                cachedWiFiListening = secureBridge.listening();
+                cachedShizukuAudioReady = secureBridge.audioReady();
+                if (cachedWiFiListening) {
                     nsdHelper.register(context, SecurePhoneBridge.PORT, secureBridge.discoveryPin());
                 } else {
                     nsdHelper.unregister();
                 }
-                writeSnapshot();
+            } catch (Exception | LinkageError failure) {
+                cachedShizukuReady = false;
+                cachedWiFiListening = false;
+                cachedShizukuAudioReady = false;
+                AndroidDiagnostics.event(context, "WIRELESS_WORKER_FAILED", "error=" + failure.getClass().getSimpleName());
+            } finally {
+                if (!active) {
+                    cachedShizukuReady = false;
+                    cachedWiFiListening = false;
+                    cachedShizukuAudioReady = false;
+                    secureBridge.stop(); nsdHelper.unregister();
+                }
             }
-        }, 1, 1, TimeUnit.SECONDS);
+        }, 0, 1, TimeUnit.SECONDS);
         privateAnswerPoller = Executors.newSingleThreadScheduledExecutor(job -> {
             Thread thread = new Thread(job, "SIMAI-PrivateAnswer");
             thread.setDaemon(true);
@@ -181,8 +212,19 @@ final class PhoneEventBridge {
 
     void stop() {
         active = false;
-        secureBridge.stop();
-        nsdHelper.unregister();
+        cachedShizukuReady = false;
+        cachedWiFiListening = false;
+        cachedShizukuAudioReady = false;
+        if (wirelessWorker != null) {
+            // A stalled Binder/TLS task must never hold the service main thread.
+            try {
+                wirelessWorker.execute(() -> {
+                    try { secureBridge.stop(); }
+                    finally { nsdHelper.unregister(); }
+                });
+            } catch (RejectedExecutionException ignored) {}
+            wirelessWorker.shutdown();
+        }
         if (stateQueryWorker != null) stateQueryWorker.shutdownNow();
         if (privateAnswerPoller != null) privateAnswerPoller.shutdownNow();
         if (heartbeat != null) heartbeat.shutdownNow();
@@ -195,6 +237,12 @@ final class PhoneEventBridge {
     private void serve() {
         while (active) {
             try {
+                if (listener == null || listener.isClosed()) {
+                    ServerSocket fresh = new ServerSocket(PORT, 32, InetAddress.getByName("127.0.0.1"));
+                    listener = fresh;
+                    if (!active) { fresh.close(); break; }
+                    AndroidDiagnostics.event(context, "USB_BRIDGE_LISTENING", "");
+                }
                 final Socket client = listener.accept();
                 if (!active) { client.close(); break; }
                 try {
@@ -213,8 +261,13 @@ final class PhoneEventBridge {
                     client.close();
                 }
             } catch (Exception error) {
-                if (active) Log.w("SIMAICompanion", "Bridge accept failed: "
-                        + error.getClass().getSimpleName());
+                if (active) {
+                    AndroidDiagnostics.event(context, "USB_BRIDGE_RETRY", "error=" + error.getClass().getSimpleName());
+                    ServerSocket old = listener; listener = null;
+                    if (old != null) try { old.close(); } catch (Exception ignored) {}
+                    try { Thread.sleep(2000); }
+                    catch (InterruptedException stopped) { Thread.currentThread().interrupt(); break; }
+                }
             }
         }
     }
@@ -633,12 +686,10 @@ final class PhoneEventBridge {
         body.put("schema", 1);
         body.put("session", session);
         body.put("running", active);
-        body.put("state", lastState);
-        body.put("seq", sequence);
         body.put("updatedAt", System.currentTimeMillis());
-        body.put("shizukuReady", ShizukuTelephonyBridge.isReady());
-        body.put("wifiListening", secureBridge.listening());
-        body.put("shizukuAudioReady", secureBridge.audioReady());
+        body.put("shizukuReady", cachedShizukuReady);
+        body.put("wifiListening", cachedWiFiListening);
+        body.put("shizukuAudioReady", cachedShizukuAudioReady);
         body.put("answerPermissionGranted",
                 context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
                     == PackageManager.PERMISSION_GRANTED);
@@ -654,6 +705,8 @@ final class PhoneEventBridge {
         body.put("privateAnswerResult", lastPrivateAnswerResult);
         JSONArray rows = new JSONArray();
         synchronized (events) {
+            body.put("state", lastState);
+            body.put("seq", sequence);
             for (CallEvent event : events) {
                 if (event.seq <= since) continue;
                 JSONObject row = new JSONObject();

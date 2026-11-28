@@ -101,7 +101,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.52" : "AI 电话自动值守 · 全双工音频 · v0.4.52")
+                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.53" : "AI 电话自动值守 · 全双工音频 · v0.4.53")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -645,7 +645,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.52 (Build 69)").font(.caption.monospaced())
+            Text("v0.4.53 (Build 70)").font(.caption.monospaced())
         }
     }
 
