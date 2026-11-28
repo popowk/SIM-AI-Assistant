@@ -155,7 +155,11 @@ public final class CallMonitorService extends Service {
                 telephonyManager = (TelephonyManager) getSystemService(TELEPHONY_SERVICE);
                 if (telephonyManager == null) throw new IllegalStateException("TelephonyManager unavailable");
                 lastState = "UNKNOWN";
-                int initialState = telephonyManager.getCallState();
+                int initialState = -1;
+                try { initialState = telephonyManager.getCallState(); }
+                catch (Exception error) {
+                    AndroidDiagnostics.event(this, "INITIAL_STATE_QUERY_FAILED", "error=" + error.getClass().getSimpleName());
+                }
                 // A protected PHONE_STATE wake can arrive before the vendor's
                 // aggregate getCallState() cache catches up. Only consume a
                 // very recent broadcast, never an old sticky restart intent.
@@ -189,6 +193,7 @@ public final class CallMonitorService extends Service {
                 running = true;
                 applyKeepAwakeSetting();
                 note("监听已启动，等待实际来电");
+                AndroidDiagnostics.event(this, "CALL_CALLBACK_REGISTERED", "sdk=" + Build.VERSION.SDK_INT);
                 recordPower("MONITOR_READY");
             } catch (Exception error) {
                 note("监听启动失败：" + error.getClass().getSimpleName());
@@ -202,7 +207,20 @@ public final class CallMonitorService extends Service {
         // User explicitly started a foreground monitor. Allow a system-requested
         // service restart after memory pressure; does not override force-stop or
         // vendor background restrictions.
-        if (running) applyKeepAwakeSetting();
+        if (running) {
+            // A second fresh protected broadcast can arrive while startup
+            // is queued; do not discard it merely because the service is running.
+            if (intent != null) {
+                long at = intent.getLongExtra("system_phone_state_elapsed", -1);
+                long age = android.os.SystemClock.elapsedRealtime() - at;
+                int state = intent.getIntExtra("system_phone_state", -1);
+                if (at >= 0 && age >= 0 && age <= 5000 &&
+                        (state == TelephonyManager.CALL_STATE_RINGING ||
+                         state == TelephonyManager.CALL_STATE_OFFHOOK ||
+                         state == TelephonyManager.CALL_STATE_IDLE)) handleState(state);
+            }
+            applyKeepAwakeSetting();
+        }
         return START_STICKY;
     }
 
@@ -301,6 +319,7 @@ public final class CallMonitorService extends Service {
     }
     @Override public void onDestroy() {
         recordPower("SERVICE_DESTROY");
+        running = false;
         wakeHandler.removeCallbacks(diagnosticTick);
         if (powerReceiverRegistered) {
             try { unregisterReceiver(powerReceiver); } catch (Exception ignored) {}

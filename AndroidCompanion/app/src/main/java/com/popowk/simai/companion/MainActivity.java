@@ -43,6 +43,7 @@ public final class MainActivity extends Activity {
 
     private rikka.shizuku.Shizuku.OnRequestPermissionResultListener shizukuPermissionListener;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private long nextMonitorStartAttempt;
     private final Runnable update = new Runnable() {
         @Override public void run() {
             refresh();
@@ -319,8 +320,8 @@ public final class MainActivity extends Activity {
     }
 
     private boolean hasCorePermissions() {
-        return checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED &&
-               checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED;
+        // Read-only phone state monitoring never requires answering or SMS permissions.
+        return checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED;
     }
 
     private boolean monitorDesired() {
@@ -333,14 +334,19 @@ public final class MainActivity extends Activity {
 
     private void startPhoneMonitorIfAllowed() {
         if (!monitorDesired() || CallMonitorService.running || !hasCorePermissions()) return;
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (now < nextMonitorStartAttempt) return;
+        nextMonitorStartAttempt = now + 5000;
         try {
             Intent service = new Intent(this, CallMonitorService.class);
             if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
             else startService(service);
         } catch (Exception exception) {
             CallMonitorService.note("自动启动监听失败：" + exception.getClass().getSimpleName());
+            AndroidDiagnostics.event(this, "MONITOR_START_REQUEST_FAILED", "error=" + exception.getClass().getSimpleName());
         }
-        refresh();
+        // Do not call refresh() here: it may request start again before the
+        // main looper can deliver onStartCommand, causing recursive startup.
     }
 
     private void requestAllPermissionsAndAutoStart() {
@@ -376,19 +382,21 @@ public final class MainActivity extends Activity {
     }
 
     private void refresh() {
+        startPhoneMonitorIfAllowed();
         boolean hasPhone = checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED;
         boolean hasAnswer = checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == PackageManager.PERMISSION_GRANTED;
         boolean hasSms = checkSelfPermission(Manifest.permission.RECEIVE_SMS) == PackageManager.PERMISSION_GRANTED;
 
         String serviceState = CallMonitorService.running ? "🟢 服务运行中" : "⚪ 服务已停止";
         statusHeader.setText(serviceState + " · 通话状态: " + CallMonitorService.lastState +
-                "\n电话权限: " + (hasPhone && hasAnswer ? "已授权" : "未授权") +
+                "\n来电识别权限: " + (hasPhone ? "已授权" : "未授权") +
+                " · 接听权限: " + (hasAnswer ? "已授权" : "未授权") +
                 " · 短信权限: " + (hasSms ? "已授权" : "未授权"));
 
         if (!hasPhone || !hasAnswer || !hasSms) {
             startOrRestartButton.setText("一键全部授权并启动服务");
         } else if (CallMonitorService.running) {
-            startOrRestartButton.setText("重启监听服务");
+            startOrRestartButton.setText("监听服务运行中");
         } else {
             startOrRestartButton.setText("启动监听服务");
         }
@@ -404,9 +412,6 @@ public final class MainActivity extends Activity {
         if (shizukuStatus != null) {
             if (ShizukuTelephonyBridge.isReady()) {
                 ShizukuTelephonyBridge.autoGrantAppPermissions(this);
-                if (!CallMonitorService.running && hasCorePermissions()) {
-                    startPhoneMonitorIfAllowed();
-                }
                 shizukuStatus.setText("🛡️ Shizuku 引擎: 已连接且已授权（电话音频需实测）");
                 if (shizukuGrant != null) shizukuGrant.setVisibility(View.GONE);
             } else if (ShizukuTelephonyBridge.isShizukuAvailable()) {
