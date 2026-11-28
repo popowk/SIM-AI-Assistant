@@ -8,6 +8,7 @@ struct ADBInspection {
     let unauthorized: Int
     let offline: Int
     let status: String
+    var wirelessAuthorized: Int = 0
 }
 
 struct ADBInstallOutcome {
@@ -166,6 +167,33 @@ enum ADBInspector {
         return false
     }
 
+    /// Connect only a user-specified, already paired Android wireless-debug endpoint.
+    static func connectPairedWireless(at selected: String?, endpoint: String, companionHost: String) -> ADBInstallOutcome {
+        guard BridgeRetryPolicy.validWirelessEndpoint(endpoint),
+              !endpoint.hasSuffix(":5555"),
+              !companionHost.isEmpty,
+              endpoint.hasPrefix(companionHost + ":"),
+              let adb = executable(at: selected) else {
+            return .init(succeeded: false, status: "请输入与 Companion 同一 IP 的无线调试连接端口（非配对端口）")
+        }
+        guard case .completed(0, let before) = run(adb, args: ["devices"], timeout: 5) else {
+            return .init(succeeded: false, status: "ADB 无法枚举设备")
+        }
+        let existing = parseDevices(before).filter { $0.state == "device" }
+        guard existing.isEmpty || (existing.count == 1 && existing[0].serial == endpoint) else {
+            return .init(succeeded: false, status: "请先拔掉 USB 或断开其他 ADB 设备，避免多设备误接")
+        }
+        _ = run(adb, args: ["connect", endpoint], timeout: 8)
+        guard case .completed(0, let after) = run(adb, args: ["devices"], timeout: 5) else {
+            return .init(succeeded: false, status: "无线 ADB 未确认，请检查无线调试")
+        }
+        let ready = parseDevices(after).filter { $0.state == "device" }
+        guard ready.count == 1, ready[0].serial == endpoint else {
+            return .init(succeeded: false, status: "未确认唯一的无线 ADB；请先在 Android 无线调试中完成配对并核对连接端口")
+        }
+        UserDefaults.standard.set(endpoint, forKey: "SIMAI_LAST_AUTHORIZED_WIFI_ADB")
+        return .init(succeeded: true, status: "无线 ADB 已授权，可在拔线状态建立电话音频")
+    }
     static func inspect(at selected: String? = nil, allowRestart: Bool = true, wirelessHost: String? = nil) -> ADBInspection {
         guard let executable = executable(at: selected) else {
             let message = (selected?.isEmpty == false)
@@ -227,6 +255,7 @@ enum ADBInspector {
                BridgeRetryPolicy.validWirelessEndpoint(serial) {
                 UserDefaults.standard.set(serial, forKey: "SIMAI_LAST_AUTHORIZED_WIFI_ADB")
             }
+            let wireless = items.filter { $0.state == "device" && (BridgeRetryPolicy.validWirelessEndpoint($0.serial) || $0.serial.contains("._adb-tls-connect._tcp")) }.count
             let status: String
             if authorized > 0 {
                 status = "ADB 已授权 \(authorized) 台；安装时必须只连接一台已授权设备"
@@ -238,7 +267,7 @@ enum ADBInspector {
                 status = "ADB 可以运行，但未发现已授权的安卓设备"
             }
             return ADBInspection(installed: true, authorized: authorized,
-                                 unauthorized: unauthorized, offline: offline, status: status)
+                                 unauthorized: unauthorized, offline: offline, status: status, wirelessAuthorized: wireless)
         case .completed(let code, _):
             return ADBInspection(installed: true, authorized: 0, unauthorized: 0,
                                  offline: 0, status: "ADB 设备查询失败，退出码 \(code)")

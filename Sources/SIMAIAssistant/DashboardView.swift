@@ -101,7 +101,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.48" : "AI 电话自动值守 · 全双工音频 · v0.4.48")
+                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.49" : "AI 电话自动值守 · 全双工音频 · v0.4.49")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -526,7 +526,7 @@ struct DashboardView: View {
         panel("Android · 手机连接与维护", symbol: "network") {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("Wi-Fi 局域网全自动发现与直连（免 USB 数据线 · 延迟 <5ms）")
+                    Text("Wi-Fi 电话状态连接与无线 ADB 音频")
                         .font(.subheadline.bold())
                     Spacer()
                     if model.wifiDirectActive || model.connectionTransport == "WIFI_DIRECT" {
@@ -534,7 +534,7 @@ struct DashboardView: View {
                             .font(.caption.bold())
                             .foregroundColor(.green)
                     } else if model.connectionTransport.starts(with: "ADB") {
-                        Text("● USB 数据线中")
+                        Text("● ADB 状态连接中")
                             .font(.caption.bold())
                             .foregroundColor(.blue)
                     }
@@ -561,6 +561,16 @@ struct DashboardView: View {
                     }
                 }
 
+                HStack(spacing: 8) {
+                    TextField("无线调试连接 IP:端口", text: $model.wirelessADBEndpoint)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 220)
+                    Button(model.wirelessADBConnecting ? "连接中…" : "连接已配对无线 ADB") {
+                        model.connectWirelessADB()
+                    }.disabled(model.wirelessADBConnecting || model.adbChecking || model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
+                }
+                Text(model.wirelessADBStatus).font(.caption)
+                Text("首次请在 Android 开发者选项开启无线调试并配对 Mac。此处填写无线调试主页面的连接端口，不是配对端口。请仅保留一个已授权 ADB 连接。").font(.caption2).foregroundStyle(.secondary)
                 if !model.wifiPingStatus.isEmpty {
                     Text(model.wifiPingStatus)
                         .font(.caption)
@@ -576,7 +586,7 @@ struct DashboardView: View {
                     }
                 }
 
-                Text("提示：系统已开启三重全自动探测（USB 快速协商、局域网 mDNS 广播、ARP 自动寻址），手机开机即自动连接，无需手动输入 IP。\n注意：若手机开启了梯子/VPN (如 v2rayNG)，请在 VPN 设置中开启「绕过局域网地址」或排除 Companion，否则局域网直连流量会被 VPN 拦截；USB 模式不受 VPN 影响。")
+                Text("电话状态和电话音频分开连接；Wi-Fi 状态在线不代表无线 ADB 已授权。\n注意：若手机开启了梯子/VPN (如 v2rayNG)，请在 VPN 设置中开启「绕过局域网地址」或排除 Companion，否则局域网直连流量会被 VPN 拦截；USB 模式不受 VPN 影响。")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -677,7 +687,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.48 (Build 65)").font(.caption.monospaced())
+            Text("v0.4.49 (Build 66)").font(.caption.monospaced())
         }
     }
 

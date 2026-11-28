@@ -29,6 +29,33 @@ final class AssistantModel: ObservableObject {
         }
     }
     @Published var wifiDirectActive = false
+    @Published var wirelessADBEndpoint = ""
+    @Published private(set) var wirelessADBConnecting = false
+    @Published private(set) var wirelessADBStatus = "尚未确认无线 ADB 音频连接"
+    private var latestADBConfirmed = false
+    private var adbReadyForAutomaticAnswer: Bool {
+        wifiDirectActive ? latestADBConfirmed : adbWasAuthorized
+    }
+    func connectWirelessADB() {
+        guard !wirelessADBConnecting, !adbChecking, !adbInstalling,
+              !liveVoiceActive, !liveVoiceStarting, !answerCallBusy,
+              livePhoneState != "RINGING", livePhoneState != "OFFHOOK" else { return }
+        let endpoint = wirelessADBEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        let host = wifiHost.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ":").first.map(String.init) ?? ""
+        let path = selectedADBPath
+        wirelessADBConnecting = true
+        wirelessADBStatus = "正在连接已配对的无线 ADB…"
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                ADBInspector.connectPairedWireless(at: path, endpoint: endpoint, companionHost: host)
+            }.value
+            guard let self else { return }
+            self.wirelessADBConnecting = false
+            self.wirelessADBStatus = result.status
+            self.nextADBScanAt = .distantPast
+            self.autoInspectADBIfNeeded(force: true)
+        }
+    }
     @Published var isShizukuReady = false
     @Published var wifiPingStatus = ""
     @Published var wifiPingTesting = false
@@ -217,8 +244,8 @@ final class AssistantModel: ObservableObject {
     @Published var reproductionNotes = ""
     @Published var exportOpen = false
 
-    let version = "0.4.48"
-    let buildNumber = "65"
+    let version = "0.4.49"
+    let buildNumber = "66"
     @Published private(set) var phoneDiagnosticsCollecting = false
     @Published private(set) var phoneDiagnosticsStatus = "导出时自动读取手机日志"
     @Published private(set) var phoneDiagnosticsPreview = ""
@@ -1307,7 +1334,7 @@ final class AssistantModel: ObservableObject {
     private func tryLocalFallbackBeforeAnswer(reason: String) -> Bool {
         guard localSpeechApproved, localFallbackEnabled, !localReceptionEnabled, !localFallbackForCurrentRing,
               autoCallEnabled, localReceptionReady, localReceptionEngine?.isReady == true,
-              adbWasAuthorized, livePhoneState == "RINGING", !answerCallBusy,
+              adbReadyForAutomaticAnswer, livePhoneState == "RINGING", !answerCallBusy,
               !automaticAnswerRequested, !automaticAnswerAcknowledged,
               !liveVoiceActive, !liveVoiceStarting, !adbInstalling, !audioProbeBusy,
               bridgeCursor.session == observedRingingSession,
@@ -1445,7 +1472,7 @@ final class AssistantModel: ObservableObject {
         if state == "RINGING" {
             // ADB is still necessary for the existing cellular PCM helper,
             // even when call state is supplied by Wi-Fi.
-            guard adbWasAuthorized, bridgeCursor.lastSequence > 0,
+            guard adbReadyForAutomaticAnswer, bridgeCursor.lastSequence > 0,
                   !bridgeCursor.session.isEmpty,
                   !answerCallBusy, !liveVoiceActive, !liveVoiceStarting,
                   !automaticAnswerRequested, !automaticAnswerAcknowledged,
@@ -1545,7 +1572,7 @@ final class AssistantModel: ObservableObject {
     private func automaticVoiceReadinessIssues() -> [String] {
         var problems: [String] = []
         if !liveSyncEnabled { problems.append("请打开电话状态同步") }
-        if !adbWasAuthorized { problems.append("ADB 音频通道尚未授权") }
+        if !adbReadyForAutomaticAnswer { problems.append(wifiDirectActive ? "Wi-Fi 状态已连接，但 ADB 电话音频尚未就绪" : "ADB 音频通道尚未授权") }
         if !automaticGPTOutputEnabled {
             problems.append("无人值守必须开启 GPT 自动音频配置")
         }
@@ -1795,7 +1822,7 @@ final class AssistantModel: ObservableObject {
     /// Android permissions or connects to multiple devices. Rate limits are
     /// deliberately long while live calls are streaming.
     private func autoInspectADBIfNeeded(force: Bool = false) {
-        guard autoADBDetectionEnabled, !adbChecking, !adbInstalling,
+        guard (autoADBDetectionEnabled || force), !adbChecking, !adbInstalling, !wirelessADBConnecting,
               !liveVoiceStarting, !liveVoiceActive,
               force || Date() >= nextADBScanAt else { return }
         adbChecking = true
@@ -1815,8 +1842,15 @@ final class AssistantModel: ObservableObject {
                 self.adbDiscoveryDescription = description
                 self.lastADBScanAt = Date()
                 let connected = found.authorized == 1
+                self.latestADBConfirmed = connected
+                self.wirelessADBStatus = found.authorized > 1
+                    ? "检测到多个 ADB 连接；请仅保留一个"
+                    : (found.wirelessAuthorized == 1 && connected
+                        ? "无线 ADB 已授权 · 可用作电话音频通道"
+                        : (connected ? "ADB 已连接，但未确认是无线连接" : "无线 ADB 未连接；请开启并配对无线调试"))
                 let hasOfflineDevice = found.offline > 0
                 self.nextADBScanAt = Date().addingTimeInterval(
+                    self.wifiDirectActive ? (connected ? 4.0 : 2.0) :
                     self.bridgeLink == nil ? (hasOfflineDevice ? 1.0 : 2.5) :
                     BridgeRetryPolicy.adbScanInterval(
                         authorizedDevices: found.authorized,
@@ -1851,8 +1885,12 @@ final class AssistantModel: ObservableObject {
                 if stableConnected && self.liveSyncEnabled && self.bridgeLink == nil {
                     self.resetBridgeRetry()
                     self.pollLiveBridge()
-                } else if !stableConnected && self.liveSyncEnabled {
+                } else if !stableConnected && self.liveSyncEnabled && !self.wifiDirectActive {
                     self.liveBridgeStatus = "ADB 暂时不可用，保留已有连接并自动重试"
+                }
+                if connected && self.livePhoneState == "RINGING", let sync = self.liveBridgeLastSync,
+                   Date().timeIntervalSince(sync) < 3 {
+                    self.reactToAutomaticCallState("RINGING")
                 }
             }
         }
@@ -2211,9 +2249,9 @@ final class AssistantModel: ObservableObject {
                           "actual": real, "cache": snapshot.state])
         }
         reactToAutomaticCallState(snapshot.state)
-        adbTransportHealth = "ADB 已授权"
-        adbShellHealth = "命令正常"
-        adbForwardHealth = source == "ADB_FILE" ? "HTTP 备用路径" : "工作正常"
+        adbTransportHealth = source == "WIFI_DIRECT" ? (latestADBConfirmed ? "ADB 已枚举授权设备" : "仅 Wi-Fi 状态连接；ADB 未确认") : "ADB 已授权"
+        adbShellHealth = source == "WIFI_DIRECT" ? "Wi-Fi 状态同步不验证 Shell" : "命令正常"
+        adbForwardHealth = source == "WIFI_DIRECT" ? "Wi-Fi 状态同步不验证 ADB 转发" : (source == "ADB_FILE" ? "HTTP 备用路径" : "工作正常")
         adbBridgeHealthDetail = source == "ADB_FILE"
             ? "HTTP 连接暂不可靠，已使用 ADB 私有状态快照"
             : (source == "WIFI_DIRECT" ? "Wi-Fi 局域网极速直连中" : "HTTP 状态桥接正常")
@@ -2483,7 +2521,9 @@ final class AssistantModel: ObservableObject {
                         self.wifiPingTesting = false
                         self.wifiDirectActive = true
                         self.connectionTransport = "WIFI_DIRECT"
-                        self.wifiPingStatus = "✅ 局域网直连成功！响应延迟 \(elapsedMs) ms"
+                        self.wifiPingStatus = "局域网状态直连成功（\(elapsedMs) ms）；另行检查无线 ADB 音频"
+                        self.nextADBScanAt = .distantPast
+                        self.autoInspectADBIfNeeded(force: true)
                         self.pollLiveBridge()
                     }
                 } else {
@@ -2602,6 +2642,7 @@ final class AssistantModel: ObservableObject {
         let path = selectedADBPath
         resetBridgeRetry()
         adbWasAuthorized = false
+        latestADBConfirmed = false
         adbTransientMissingScans = 0
         nextADBScanAt = .distantPast
         liveBridgeStatus = "正在重启 ADB 并重新扫描已授权设备……"
@@ -3194,7 +3235,7 @@ final class AssistantModel: ObservableObject {
                 : (voiceSessionPrepared && incomingPreflightPassed && useEmbeddedVoiceBrowser &&
                    embeddedVoiceBrowser.microphoneActive && embeddedVoiceBrowser.isolatedMicrophoneReady &&
                    (!isolatedChatGPTOutputEnabled || (embeddedVoiceBrowser.isolatedOutputReady && isSystemOutputSafeForIsolatedReturn())))
-            guard engineReady, adbWasAuthorized else {
+            guard engineReady, adbReadyForAutomaticAnswer else {
                 autoCallStatus = "语音引擎或 ADB 未就绪，不自动接听"
                 return
             }
@@ -3229,18 +3270,28 @@ final class AssistantModel: ObservableObject {
                     req.setValue(expectedRingSession, forHTTPHeaderField: "X-SIMAI-Expected-Session")
                     req.setValue(String(expectedRingSequence), forHTTPHeaderField: "X-SIMAI-Expected-Sequence")
                     req.setValue("0", forHTTPHeaderField: "Content-Length")
-                    if let (_, response) = try? await URLSession.shared.data(for: req),
-                       (response as? HTTPURLResponse)?.statusCode == 200 {
-                        self.log(.info, .call, "已通过 Wi-Fi 直连执行接听请求 (Shizuku)")
-                        self.answerCallBusy = false
-                        self.answerCallStatus = "已通过 Wi-Fi 发送接听请求"
-                        if automatic {
-                            self.automaticAnswerAcknowledged = true
-                            self.automaticAnswerSession = expectedRingSession
-                            self.autoCallState.markAnswerAttempted()
-                            self.autoVoiceCaptureObserved = self.autoVoiceCaptureObserved || self.embeddedVoiceCaptureActive
+                    if let (body, response) = try? await self.directBridgeSession.data(for: req) {
+                        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                        let payload = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+                        if status == 200 && payload?["result"] as? String == "answer_requested" {
+                            if automatic { _ = self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession, expectedSequence: expectedRingSequence) }
+                            self.log(.info, .call, "Wi-Fi 直连接听请求已确认", details: ["result": "WIFI_ANSWER_REQUESTED"])
+                            self.answerCallBusy = false
+                            self.answerCallStatus = "Wi-Fi 接听请求已确认，等待手机 OFFHOOK"
+                            return
                         }
-                        _ = self.recordPrivateAutomaticAnswer(expectedSession: expectedRingSession, expectedSequence: expectedRingSequence)
+                        if [202, 403, 409].contains(status) {
+                            self.answerCallBusy = false
+                            if automatic { self.automaticAnswerRequested = status == 202 }
+                            self.answerCallStatus = status == 202 ? "手机接听请求处理中" : (status == 403 ? "手机接听权限未授权" : "响铃已变化，不再接听")
+                            self.log(.warn, .call, "Wi-Fi 接听状态", details: ["http": "\(status)"])
+                            return
+                        }
+                    }
+                    guard self.bridgeCursor.session == expectedRingSession,
+                          self.livePhoneState == "RINGING",
+                          self.bridgeCursor.lastSequence == expectedRingSequence else {
+                        self.answerCallBusy = false
                         return
                     }
                     if attempt == 1 && existingLink == nil {
