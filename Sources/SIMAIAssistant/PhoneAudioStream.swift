@@ -17,7 +17,6 @@ enum LiveAudioEvent {
     case downlinkSignal(peakRMS: Double, recentRMS: Double)
     case replyWindowSignal(recentRMS: Double)
     case callerSilenceLimit
-    case gptCapturePreludeFinished
     case finished(String)
 }
 
@@ -530,7 +529,6 @@ final class PhoneAudioStream {
     }
     private let localCapture: LocalCallCapture?
     private let gptCaptureEngine: LocalReceptionEngine?
-    private var gptCapturePassThrough = true
     private let silenceSeconds: Int
     private var setup: ADBAudioStreamSetup?
     private var active = false
@@ -582,8 +580,9 @@ final class PhoneAudioStream {
         return success
     }
 
-    func setGPTCaptureAuthorization(_ enabled: Bool) -> Bool {
-        guard isActive, let gptCaptureEngine, gptCaptureEngine.isReady, let localCapture else { return false }
+    func setCallCaptureAuthorization(_ enabled: Bool) -> Bool {
+        guard isActive, let localCapture else { return false }
+        if enabled { guard (localReception ?? gptCaptureEngine)?.isReady == true else { return false } }
         if enabled { localCapture.authorize() } else { localCapture.revoke() }
         return true
     }
@@ -967,11 +966,10 @@ final class PhoneAudioStream {
             // not network downtime, and require consecutive audible frames to reset.
             gate.lock()
             let assistantSpeaking = Date().timeIntervalSince(lastAudibleUplink) < 1.0
-            let preludePending = gptCaptureEngine != nil && !gptCapturePassThrough
             let switching = takeoverPending
             let currentLocal = takeoverEngine ?? localReception
             gate.unlock()
-            if silenceSeconds > 0 && !assistantSpeaking && !preludePending && !switching {
+            if silenceSeconds > 0 && !assistantSpeaking && !switching {
                 quietFrames += 1
                 audibleFrames = rms >= 0.008 ? audibleFrames + 1 : 0
                 if audibleFrames >= 5 { quietFrames = 0 }
@@ -980,7 +978,6 @@ final class PhoneAudioStream {
             gate.lock()
             let callerMonitor = callerMonitorEnabled
             let virtualMic = chatGPTVirtualMic
-            let passThrough = gptCapturePassThrough
             gate.unlock()
             if currentLocal == nil && !switching, let gptCaptureEngine {
                 if !gptCaptureEngine.isReady { localCapture?.revoke() }
@@ -993,7 +990,7 @@ final class PhoneAudioStream {
                 if !currentLocal.isReady { reason = "LOCAL_ASR_FAILED"; break }
                 localCapture?.append(frame, uplink: false)
                 currentLocal.feed(frame)
-            } else if !switching && (gptCaptureEngine == nil || passThrough) {
+            } else if !switching {
                 if callerMonitor { speaker?.feed(frame) }
                 virtualMic?.feed(frame)
             }
@@ -1072,7 +1069,6 @@ final class PhoneAudioStream {
             gate.lock()
             let forwardAI = aiReplyToPhone
             let capture = aiReplyCapture
-            let passThrough = gptCapturePassThrough
             let currentLocal = takeoverEngine ?? localReception
             let switching = takeoverPending
             gate.unlock()
@@ -1081,8 +1077,6 @@ final class PhoneAudioStream {
                 data = [UInt8](repeating: 0, count: 640)
             } else if let currentLocal {
                 data = currentLocal.nextFrame()
-            } else if let gptCaptureEngine, !passThrough {
-                data = gptCaptureEngine.nextFrame()
             } else if forwardAI, let capture {
                 data = capture.nextPhoneFrame()
             } else {

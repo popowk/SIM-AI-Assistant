@@ -101,7 +101,7 @@ struct DashboardView: View {
         HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("SIM AI Assistant").font(.title2.bold())
-                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.47" : "AI 电话自动值守 · 全双工音频 · v0.4.47")
+                Text(model.localReceptionEnabled ? "AI 电话自动值守 · 本地离线接待 · v0.4.48" : "AI 电话自动值守 · 全双工音频 · v0.4.48")
                     .font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
@@ -228,13 +228,11 @@ struct DashboardView: View {
                             .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
                         Toggle("挂断后推送来电者识别文字", isOn: $model.localSendTranscript)
                             .disabled(model.liveVoiceActive || model.liveVoiceStarting || model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK")
-                        if model.gptCaptureAwaitingApproval && model.liveVoiceActive {
-                            Button(model.gptCaptureApproved ? "撤回本次录音及推送授权" : "已告知来电者并获得同意，开始本次录音 / 转写") {
-                                model.setCurrentGPTCaptureApproval(!model.gptCaptureApproved)
+                        if model.callCaptureAwaitingApproval && model.liveVoiceActive {
+                            Button(model.callCaptureApproved ? "撤回本次录音及推送授权" : "已告知来电者并获得同意，开始本次录音 / 转写") {
+                                model.setCurrentCallCaptureApproval(!model.callCaptureApproved)
                             }
                         }
-                        Text("GPT 直接接听，不播放本地录音告知。仅在明确确认本次授权后开始保存及推送；撤回清除本次记录。")
-                            .font(.caption).foregroundStyle(.secondary)
                         HStack {
                             Button("打开录音目录") { model.openLocalRecordings() }
                             Text(model.localCaptureStatus).font(.caption)
@@ -245,15 +243,16 @@ struct DashboardView: View {
                     Text(model.localReceptionStatus).font(.caption)
                     TextField("本地接待开场话术", text: $model.localGreeting)
                     TextField("本地接待结束话术", text: $model.localGoodbye)
-                    Text("修改后点击准备 / 重新自检生效；录音与转发确认话术不受影响。").font(.caption).foregroundStyle(.secondary)
+                    Text("修改后点击准备 / 重新自检并确认话术。").font(.caption).foregroundStyle(.secondary)
                     Toggle("保存本地双向录音和识别文字", isOn: $model.localRecordAudio)
                         .disabled(model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK" || model.liveVoiceActive || model.liveVoiceStarting)
                     Toggle("挂断后通过已配置的飞书 Webhook 推送文字", isOn: $model.localSendTranscript)
                         .disabled(model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK" || model.liveVoiceActive || model.liveVoiceStarting)
-                    Toggle("告知后自动开始，无需逐次回答同意", isOn: $model.localNoticeOnly)
-                        .disabled(model.livePhoneState == "RINGING" || model.livePhoneState == "OFFHOOK" || model.liveVoiceActive || model.liveVoiceStarting)
-                    Text("仅在适用规则允许时启用告知模式；接通先播报录音 / 文字转达告知，拒绝或撤回即清除记录。录音仅保存在 Mac，不随诊断包上传。")
-                        .font(.caption).foregroundStyle(.secondary)
+                    if model.callCaptureAwaitingApproval && model.liveVoiceActive {
+                        Button(model.callCaptureApproved ? "撤回本次录音及推送授权" : "已获得来电者同意，开始本次保存 / 转写") {
+                            model.setCurrentCallCaptureApproval(!model.callCaptureApproved)
+                        }
+                    }
                     HStack {
                         Button("打开录音目录") { model.openLocalRecordings() }
                         Text(model.localCaptureStatus).font(.caption)
@@ -678,7 +677,7 @@ struct DashboardView: View {
             Text("SIM AI Assistant · 通话语音与短信桥接")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Text("v0.4.47 (Build 64)").font(.caption.monospaced())
+            Text("v0.4.48 (Build 65)").font(.caption.monospaced())
         }
     }
 

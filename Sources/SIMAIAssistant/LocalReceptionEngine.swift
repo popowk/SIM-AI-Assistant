@@ -30,35 +30,18 @@ final class LocalReceptionEngine {
     private var policy = LocalReceptionPolicy()
     private var ignoreAfterGoodbye = false
     private var capture: LocalCallCapture?
-    private var consentPending = false
-    private var noticePending = false
     private var transcriptOnly = false
-    private var passThroughStarted = false
-    var readyForGPT: Bool {
-        gate.lock(); defer { gate.unlock() }
-        guard active, ready, !disposed, transcriptOnly else { return false }
-        if !consentPending && !noticePending && cursor >= speaking.count && Date() >= quietUntil {
-            passThroughStarted = true
-        }
-        return passThroughStarted
-    }
     /// Promote the same call's recognizer without resetting its capture authorization.
     func promoteToLocalReception() -> Bool {
         gate.lock()
-        guard active, ready, !disposed, transcriptOnly, passThroughStarted,
+        guard active, ready, !disposed, transcriptOnly,
               let greeting = replyPCM[.greeting], !greeting.isEmpty else { gate.unlock(); return false }
-        transcriptOnly = false; passThroughStarted = false
+        transcriptOnly = false
         policy = LocalReceptionPolicy(); ignoreAfterGoodbye = false
         speaking = greeting; cursor = 0; quietUntil = .distantPast
         gate.unlock()
         onEvent(.status("GPT 音频不可用，已由本地接待接管"))
         return true
-    }
-    func skipPendingConsentForGPT() {
-        gate.lock(); defer { gate.unlock() }
-        guard active, transcriptOnly, consentPending, !passThroughStarted else { return }
-        capture?.revoke(); consentPending = false
-        speaking.removeAll(); cursor = 0; quietUntil = .distantPast
     }
     init(customPhrases: [LocalReceptionPolicy.Reply: String] = [:], onEvent: @escaping (Event) -> Void) {
         self.customPhrases = customPhrases
@@ -136,30 +119,21 @@ final class LocalReceptionEngine {
                 gate.lock()
                 guard active, !disposed, !ignoreAfterGoodbye,
                       cursor >= speaking.count, Date() >= quietUntil else { gate.unlock(); continue }
-                if transcriptOnly && passThroughStarted {
+                if transcriptOnly {
                     if LocalCaptureConsent.revokes(text) { capture?.revoke() }
                     else { capture?.addCallerText(text) }
                     gate.unlock()
                     onEvent(.heard(text))
                     continue
                 }
-                let reply: LocalReceptionPolicy.Reply
-                if consentPending {
-                    consentPending = false
-                    if let capture, LocalCaptureConsent.accepts(text, recording: capture.recordAudio, forwarding: capture.requestsForwarding) {
-                        capture.authorize()
-                        reply = .consentAccepted
-                    } else {
-                        capture?.revoke()
-                        reply = .consentDeclined
-                    }
-                } else if LocalCaptureConsent.revokes(text) {
+                if LocalCaptureConsent.revokes(text) {
                     capture?.revoke()
-                    reply = .consentDeclined
-                } else {
-                    reply = policy.reply(to: text)
-                    capture?.addTurn(text, reply: reply, spokenText: customPhrases[reply])
+                    gate.unlock()
+                    onEvent(.heard(text))
+                    continue
                 }
+                let reply = policy.reply(to: text)
+                capture?.addTurn(text, reply: reply, spokenText: customPhrases[reply])
                 speaking = replyPCM[reply] ?? []
                 cursor = 0
                 if reply == .goodbye { ignoreAfterGoodbye = true }
@@ -175,8 +149,7 @@ final class LocalReceptionEngine {
         gate.lock()
         guard ready, !disposed, !active else { gate.unlock(); return false }
         self.capture = capture
-        transcriptOnly = true; passThroughStarted = true
-        consentPending = false; noticePending = false
+        transcriptOnly = true
         generation += 1; let epoch = generation
         active = true; policy = LocalReceptionPolicy(); ignoreAfterGoodbye = false
         speaking.removeAll(); cursor = 0; quietUntil = .distantPast
@@ -184,14 +157,11 @@ final class LocalReceptionEngine {
         enqueueReset(epoch)
         return true
     }
-    func beginCall(capture: LocalCallCapture? = nil, transcriptOnly: Bool = false) -> Bool {
+    func beginCall(capture: LocalCallCapture? = nil) -> Bool {
         gate.lock()
-        guard ready, !disposed, !active, let greeting = replyPCM[capture?.greeting ?? .greeting], !greeting.isEmpty else { gate.unlock(); return false }
+        guard ready, !disposed, !active, let greeting = replyPCM[.greeting], !greeting.isEmpty else { gate.unlock(); return false }
         self.capture = capture
-        self.transcriptOnly = transcriptOnly
-        passThroughStarted = false
-        consentPending = capture != nil && capture?.noticeOnly != true
-        noticePending = capture?.noticeOnly == true
+        transcriptOnly = false
         generation += 1; let epoch = generation
         active = true; policy = LocalReceptionPolicy(); ignoreAfterGoodbye = false
         speaking = greeting; cursor = 0; quietUntil = .distantPast
@@ -204,8 +174,8 @@ final class LocalReceptionEngine {
         gate.lock()
         if !active { gate.unlock(); return }
         active = false; generation += 1; let epoch = generation
-        capture = nil; consentPending = false; noticePending = false
-        transcriptOnly = false; passThroughStarted = false
+        capture = nil
+        transcriptOnly = false
         speaking.removeAll(); cursor = 0
         gate.unlock()
         enqueueReset(epoch)
@@ -256,7 +226,6 @@ final class LocalReceptionEngine {
         cursor += n
         if cursor == speaking.count {
             quietUntil = Date().addingTimeInterval(0.25)
-            if noticePending { noticePending = false; capture?.authorize() }
         }
         return bytes
     }
