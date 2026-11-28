@@ -116,6 +116,45 @@ public final class MainActivity extends Activity {
         });
         column.addView(shizukuGrant);
 
+        Button secureWifi = new Button(this);
+        secureWifi.setText("启用 Shizuku Wi-Fi / 显示配对码");
+        secureWifi.setOnClickListener(v -> {
+            if (!ShizukuTelephonyBridge.isReady()) {
+                android.widget.Toast.makeText(this, "请先在手机启动 Shizuku 并授权 Companion", android.widget.Toast.LENGTH_LONG).show();
+                return;
+            }
+            secureWifi.setEnabled(false);
+            new Thread(() -> {
+                try {
+                    String code = SecurePhoneBridge.enableAndCode(this);
+                    handler.post(() -> {
+                        secureWifi.setEnabled(true);
+                        setMonitorDesired(true);
+                        requestAllPermissionsAndAutoStart();
+                        TextView pairing = new TextView(this);
+                        pairing.setPadding(24, 16, 24, 16);
+                        pairing.setTextIsSelectable(true);
+                        pairing.setText("仅在你自己的 Mac 中输入此配对码；不要分享或上传诊断包。\n\n" + code);
+                        new android.app.AlertDialog.Builder(this).setTitle("Shizuku 安全 Wi-Fi 配对")
+                            .setView(pairing).setPositiveButton("关闭", null).show();
+                    });
+                } catch (Exception failure) {
+                    handler.post(() -> {
+                        secureWifi.setEnabled(true);
+                        android.widget.Toast.makeText(this, "无法初始化安全 Wi-Fi", android.widget.Toast.LENGTH_LONG).show();
+                    });
+                }
+            }, "SIMAI-WiFi-Pairing").start();
+        });
+        column.addView(secureWifi);
+        Button disableSecureWifi = new Button(this);
+        disableSecureWifi.setText("关闭 Shizuku Wi-Fi 并撤销配对");
+        disableSecureWifi.setOnClickListener(v -> {
+            SecurePhoneBridge.disable(this);
+            android.widget.Toast.makeText(this, "已撤销无线配对；USB ADB 不受影响", android.widget.Toast.LENGTH_SHORT).show();
+        });
+        column.addView(disableSecureWifi);
+
         LinearLayout row1 = new LinearLayout(this);
         row1.setOrientation(LinearLayout.HORIZONTAL);
         row1.setPadding(0, 8, 0, 8);
@@ -381,7 +420,7 @@ public final class MainActivity extends Activity {
                 if (!CallMonitorService.running && hasCorePermissions()) {
                     startPhoneMonitorIfAllowed();
                 }
-                shizukuStatus.setText("🛡️ Shizuku 引擎: 已连接且已授权 (免 Root 特权控制 100% 成功)");
+                shizukuStatus.setText("🛡️ Shizuku 引擎: 已连接且已授权（电话音频需实测）");
                 if (shizukuGrant != null) shizukuGrant.setVisibility(View.GONE);
             } else if (ShizukuTelephonyBridge.isShizukuAvailable()) {
                 shizukuStatus.setText("🛡️ Shizuku 引擎: 服务运行中，尚未授权");

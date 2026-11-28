@@ -45,6 +45,7 @@ final class PhoneEventBridge {
     private final Context context;
     private ScheduledExecutorService heartbeat;
     private final String token;
+    private final SecurePhoneBridge secureBridge;
     private final List<CallEvent> events = new ArrayList<>();
     private volatile boolean active;
     private volatile String lastState = "UNKNOWN";
@@ -82,6 +83,7 @@ final class PhoneEventBridge {
     PhoneEventBridge(Context context) throws Exception {
         this.context = context.getApplicationContext();
         token = loadToken(context);
+        secureBridge = new SecurePhoneBridge(context, socket -> handle(socket, true));
         snapshotFile = new AtomicFile(new File(context.getFilesDir(), "bridge-snapshot.json"));
         privateAnswerRequest = new File(context.getFilesDir(), "bridge-answer-request");
         privateAnswerResult = new File(context.getFilesDir(), "bridge-answer-result");
@@ -125,8 +127,8 @@ final class PhoneEventBridge {
 
     void start() throws Exception {
         if (active) return;
-        // Bind to all local interfaces (0.0.0.0) so Wi-Fi LAN direct and ADB forward loopback both work
-        listener = new ServerSocket(PORT, 32);
+        // USB ADB forwarding reaches loopback only. LAN clients must use authenticated TLS.
+        listener = new ServerSocket(PORT, 32, java.net.InetAddress.getByName("127.0.0.1"));
         requests = new ThreadPoolExecutor(4, 8, 30L, TimeUnit.SECONDS,
                 new ArrayBlockingQueue<>(32), job -> {
                     Thread thread = new Thread(job, "SIMAI-CallBridge-Request");
@@ -141,10 +143,10 @@ final class PhoneEventBridge {
         });
         writeSnapshot();
         heartbeat.scheduleWithFixedDelay(() -> {
-            if (active) writeSnapshot();
+            if (active) { secureBridge.reconcile(); writeSnapshot(); }
         }, 1, 1, TimeUnit.SECONDS);
         // Register mDNS / Bonjour for zero-config Mac discovery over Wi-Fi
-        nsdHelper.register(context, PORT);
+        nsdHelper.register(context, SecurePhoneBridge.PORT);
         privateAnswerPoller = Executors.newSingleThreadScheduledExecutor(job -> {
             Thread thread = new Thread(job, "SIMAI-PrivateAnswer");
             thread.setDaemon(true);
@@ -173,6 +175,7 @@ final class PhoneEventBridge {
 
     void stop() {
         active = false;
+        secureBridge.stop();
         nsdHelper.unregister();
         if (stateQueryWorker != null) stateQueryWorker.shutdownNow();
         if (privateAnswerPoller != null) privateAnswerPoller.shutdownNow();
@@ -193,7 +196,7 @@ final class PhoneEventBridge {
                         try (Socket connected = client) {
                             connected.setTcpNoDelay(true);
                             connected.setSoTimeout(3000);
-                            handle(connected);
+                            handle(connected, false);
                         } catch (Exception error) {
                             if (active) Log.w("SIMAICompanion", "Local bridge request: "
                                     + error.getClass().getSimpleName() + ": " + error.getMessage(), error);
@@ -372,7 +375,7 @@ final class PhoneEventBridge {
         return result;
     }
 
-    private void handle(Socket client) throws Exception {
+    private void handle(Socket client, boolean secure) throws Exception {
         // Read HTTP headers byte-by-byte. BufferedReader may read beyond the
         // blank line and swallow POST body bytes before JSON parsing.
         InputStream in = client.getInputStream();
@@ -411,18 +414,43 @@ final class PhoneEventBridge {
         if (!headersEnded) return;
 
         // Health probe endpoint requires no authentication
-        if (first.startsWith("GET /ping HTTP/1.")) {
+        if (!secure && first.startsWith("GET /ping HTTP/1.")) {
             reply(client, 200, "{\"ok\":true,\"status\":\"pong\"}");
             return;
         }
 
-        boolean authorized = accessToken.equals(token) || "simai-wifi".equals(accessToken);
+        boolean authorized = secure ? secureBridge.authorize(accessToken) : accessToken.equals(token);
         if (!authorized) {
             reply(client, 403, "{\"error\":\"forbidden\"}");
             return;
         }
 
+        if (secure && first.startsWith("GET /ping HTTP/1.")) {
+            reply(client, 200, "{\"ok\":true,\"status\":\"pong\"}");
+            return;
+        }
+        if (secure && first.startsWith("POST /audio/open HTTP/1.")) {
+            boolean sameCall;
+            synchronized (this) {
+                sameCall = active && session.equals(expectedSession) && sequence == expectedSequence &&
+                        "OFFHOOK".equals(lastState);
+            }
+            if (!sameCall || contentLength != 0 || !secureBridge.audioReady()) {
+                client.getOutputStream().write("ERR SHIZUKU_CALL_NOT_READY\n".getBytes(StandardCharsets.US_ASCII));
+                return;
+            }
+            secureBridge.relayAudio(client);
+            return;
+        }
+        if (secure && first.startsWith("POST /sms/")) {
+            reply(client, 403, "{\"error\":\"usb_configuration_only\"}");
+            return;
+        }
         if (first.startsWith("POST /call/answer HTTP/1.")) {
+            if (secure && !secureBridge.audioReady()) {
+                reply(client, 503, "{\"error\":\"shizuku_audio_not_ready\"}");
+                return;
+            }
             if (contentLength > 0 || expectedSession.isEmpty() || expectedSequence <= 0) {
                 reply(client, 400, "{\"error\":\"missing_call_guard\"}");
                 return;
@@ -593,7 +621,8 @@ final class PhoneEventBridge {
         body.put("seq", sequence);
         body.put("updatedAt", System.currentTimeMillis());
         body.put("shizukuReady", ShizukuTelephonyBridge.isReady());
-        body.put("wifiListening", true);
+        body.put("wifiListening", secureBridge.listening());
+        body.put("shizukuAudioReady", secureBridge.audioReady());
         body.put("answerPermissionGranted",
                 context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS)
                     == PackageManager.PERMISSION_GRANTED);
